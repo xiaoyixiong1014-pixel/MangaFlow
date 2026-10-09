@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>漫序 MangaFlow · 全站原型（二）画布与平台页</title>
+<style>
+:root{
+  --r-card:20px; --r-ctl:12px; --r-pill:999px;
+  --bg:#F5F7F6; --surface:#FFFFFF; --surface-2:#FAFAF8; --surface-3:#EFF2F1;
+  --border:rgba(0,0,0,.09); --border-strong:rgba(0,0,0,.16);
+  --text:#14181A; --text-2:#5F6B68; --text-3:#8E9A97;
+  --accent:#12B3A6; --accent-soft:rgba(18,179,166,.10);
+  --ok:#1E9E6A; --ok-soft:rgba(30,158,106,.12);
+  --warn:#B87100; --warn-soft:rgba(184,113,0,.13);
+  --danger:#CE4343; --danger-soft:rgba(206,67,67,.12);
+  --brand2:#7C6BF0; --brand2-soft:rgba(124,107,240,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px -12px rgba(0,0,0,.10);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+html[data-theme="dark"]{
+  --bg:#0E1112; --surface:#15191A; --surface-2:#1C2223; --surface-3:#111516;
+  --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
+  --text:#E8EDEA; --text-2:#9BA5A2; --text-3:#6B7573;
+  --accent:#4FD8CA; --accent-soft:rgba(18,179,166,.18);
+  --ok:#4CC38A; --ok-soft:rgba(76,195,138,.14);
+  --warn:#E0A33A; --warn-soft:rgba(224,163,58,.14);
+  --danger:#F0736F; --danger-soft:rgba(240,115,111,.14);
+  --brand2:#9A8CF5; --brand2-soft:rgba(124,107,240,.20);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px -14px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,textarea,select{font-family:inherit;font-size:inherit;color:inherit}
+svg{display:block;flex-shrink:0}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(127,127,127,.28);border-radius:5px}
+.app{display:flex;height:100vh;overflow:hidden}
+.sidebar{width:252px;flex-shrink:0;background:var(--surface-3);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.brand{display:flex;align-items:center;gap:11px;padding:18px 18px 15px}
+.brand-mark{width:30px;height:30px;border-radius:10px;background:linear-gradient(140deg,var(--accent),#7C6BF0);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.brand-name{font-weight:600;font-size:16px;white-space:nowrap}
+.nav{flex:1;overflow-y:auto;padding:4px 10px 12px}
+.nav-group{margin-bottom:15px}
+.nav-group-title{font-size:12.5px;color:var(--text-3);padding:8px 8px 6px;white-space:nowrap}
+.nav-item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:11px;width:100%;text-align:left;color:var(--text-2);position:relative;white-space:nowrap}
+.nav-item:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.nav-item.active::before{content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--accent)}
+.nav-label{flex:1;font-size:15px}
+.nav-badge{font-size:11.5px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(127,127,127,.14);color:var(--text-3)}
+.side-foot{border-top:1px solid var(--border);padding:10px}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:60px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border)}
+.page-title{font-size:16px;font-weight:600}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:8px}
+.points{display:flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:var(--r-pill);background:var(--surface);border:1px solid var(--border);font-size:14px;color:var(--text-2)}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
+.icon-btn:hover{background:rgba(127,127,127,.12);color:var(--text)}
+.avatar{width:32px;height:32px;border-radius:50%;background:linear-gradient(140deg,#7C6BF0,var(--accent));color:#fff;display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:600}
+.content{flex:1;overflow-y:auto;padding-bottom:56px}
+.wrap{max-width:960px;margin:0 auto;padding:0 24px}
+.pad{padding:22px 26px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:18px}
+.card.pad0{padding:0;overflow:hidden}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.sec-head h2{font-size:16px;font-weight:600}
+.sec-head .note{font-size:13px;color:var(--text-3)}
+.sec-head .act{margin-left:auto;font-size:13.5px;color:var(--text-2)}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.row{display:flex;align-items:center;gap:10px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.muted{color:var(--text-3);font-size:13px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--r-ctl);font-size:14.5px;border:1px solid var(--border);white-space:nowrap}
+.btn:hover{background:rgba(127,127,127,.10)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.ghost{border-color:transparent;color:var(--text-2)}
+.btn.sm{padding:6px 13px;font-size:13.5px;border-radius:10px}
+.tag{display:inline-flex;align-items:center;font-size:12px;padding:2px 9px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--text-2);white-space:nowrap}
+.tag.a{background:var(--accent-soft);color:var(--accent)}
+.tag.o{background:var(--ok-soft);color:var(--ok)}
+.tag.w{background:var(--warn-soft);color:var(--warn)}
+.tag.d{background:var(--danger-soft);color:var(--danger)}
+.tag.p{background:var(--brand2-soft);color:var(--brand2)}
+.node.sel{box-shadow:0 0 0 2px var(--brand2), var(--shadow)}
+.chip{padding:7px 15px;border-radius:var(--r-pill);font-size:14px;color:var(--text-2);border:1px solid var(--border);background:var(--surface)}
+.chip:hover,.chip.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);padding:0 16px}
+.tab{padding:11px 14px;font-size:14.5px;color:var(--text-2);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+.ph{border-radius:var(--r-ctl);display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:12px;border:1px solid var(--border)}
+.tile{aspect-ratio:1;border-radius:var(--r-ctl);position:relative;overflow:hidden;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:#fff;font-size:12px}
+.tile .tg{position:absolute;left:8px;bottom:7px;font-size:11px;padding:2px 8px;border-radius:var(--r-pill);background:rgba(0,0,0,.5)}
+.empty{padding:34px 16px;border:1px dashed var(--border-strong);border-radius:var(--r-ctl);text-align:center;color:var(--text-3);font-size:14px}
+.banner{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:var(--r-ctl);font-size:14px}
+.banner.w{background:var(--warn-soft);color:var(--warn)}
+.banner.d{background:var(--danger-soft);color:var(--danger)}
+.banner.a{background:var(--accent-soft);color:var(--accent)}
+.banner.o{background:var(--ok-soft);color:var(--ok)}
+.inp{width:100%;padding:10px 13px;border-radius:var(--r-ctl);border:1px solid var(--border);background:var(--surface-2);outline:0}
+.lbl{font-size:13px;color:var(--text-3);margin-bottom:6px;display:block}
+table.tb{width:100%;border-collapse:collapse;font-size:14px}
+.tb th{text-align:left;font-weight:500;color:var(--text-3);font-size:13px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.tb td{padding:11px 14px;border-bottom:1px solid var(--border)}
+.tb tr:hover td{background:var(--surface-2)}
+.bar{height:6px;border-radius:3px;background:rgba(127,127,127,.16);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent);border-radius:3px}
+.stat{padding:16px 18px;border-radius:var(--r-ctl);background:var(--surface);border:1px solid var(--border)}
+.stat .n{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+.stat .k{font-size:13px;color:var(--text-3);margin-top:3px}
+.sw-panel{position:fixed;top:70px;right:18px;z-index:220;width:300px;max-height:70vh;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow);padding:10px;display:none}
+.sw-panel.show{display:block}
+.sw-float{position:fixed;right:18px;bottom:18px;z-index:210;padding:9px 16px;border-radius:var(--r-pill);background:var(--text);color:var(--bg);box-shadow:var(--shadow);display:flex;align-items:center;gap:7px;font-size:13.5px}
+.sw-panel.show{display:block}
+.sw-g{font-size:11.5px;color:var(--text-3);padding:8px 10px 5px}
+.sw-i{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:9px;font-size:13.5px;color:var(--text-2)}
+.sw-i:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.sw-i.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.sw-id{font-family:var(--mono);font-size:11.5px;opacity:.7;width:42px}
+/* 画布 */
+.cv{position:relative;height:calc(100vh - 62px - 44px);overflow:hidden;background:
+  radial-gradient(circle,rgba(127,127,127,.22) 1px,transparent 1px) 0 0/22px 22px,var(--bg)}
+.node{position:absolute;width:180px;background:var(--surface);border:1px solid var(--border);border-radius:14px;box-shadow:var(--shadow);overflow:hidden}
+.node .nh{padding:8px 11px;font-size:13px;font-weight:500;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:7px}
+.node .nb{padding:10px 11px;font-size:12.5px;color:var(--text-2)}
+.node.dirty .nh{background:var(--warn-soft);color:var(--warn)}
+.node.cached .nh{background:var(--ok-soft);color:var(--ok)}
+.node.running .nh{background:var(--accent-soft);color:var(--accent)}
+.mini-map{position:absolute;right:16px;bottom:16px;width:150px;height:100px;background:var(--surface);border:1px solid var(--border);border-radius:10px;opacity:.9}
+@media(max-width:1360px){.sidebar{width:68px}.brand-name,.nav-group-title,.nav-label,.nav-badge{display:none}.brand,.nav-item{justify-content:center;padding:10px 0}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar" id="sidebar">
+    <div class="brand"><div class="brand-mark">漫</div><div class="brand-name">漫序 MangaFlow</div></div>
+    <nav class="nav">
+      <div class="nav-group"><div class="nav-group-title">创作</div>
+        <button class="nav-item" data-nav="W-01"><span class="nav-label">Agent</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">项目</div>
+        <button class="nav-item" data-nav="W-02"><span class="nav-label">漫剧项目</span></button>
+        <button class="nav-item" data-nav="C-01"><span class="nav-label">AI 画布</span></button>
+        <button class="nav-item" data-nav="collab"><span class="nav-label">协作</span><span class="nav-badge">即将开放</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">资产</div>
+        <button class="nav-item" data-nav="S-04"><span class="nav-label">角色与场景</span></button>
+        <button class="nav-item" data-nav="P-03"><span class="nav-label">素材库</span></button>
+        <button class="nav-item" data-nav="P-02"><span class="nav-label">提示词库</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">账户</div>
+        <button class="nav-item" data-nav="P-04"><span class="nav-label">模型配置</span></button>
+        <button class="nav-item" data-nav="P-05"><span class="nav-label">计费与配额</span></button>
+        <button class="nav-item" data-nav="P-06"><span class="nav-label">个人中心</span></button></div>
+    </nav>
+    <div class="side-foot"><button class="nav-item" data-nav="help"><span class="nav-label">帮助</span></button></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar"><div class="page-title" id="pageTitle">—</div>
+      <div class="top-right">
+        <button class="icon-btn" id="swTopBtn" title="切换页面">☰</button><span class="points">✦ <b>1,832</b></span>
+        <button class="icon-btn">◔</button><button class="icon-btn" id="themeBtn">◐</button><span class="avatar">小</span></div>
+    </header>
+    <div class="content" id="host"></div>
+  </div>
+</div>
+<div class="sw-panel" id="swPanel"></div>
+<button class="sw-float" id="swBtn">☰ 切换页面</button>
+
+<script>
+var A="#12B3A6", G1="#12332F", G2="#1F3B3A", G3="#4A3320", G4="#2E2450", G5="#20304A", G6="#402A2A";
+var P = {
+  "C-01": { t:"画布列表", h:`
+    <div class="pad">
+      <div class="row" style="margin-bottom:18px">
+        <input class="inp" style="max-width:240px" placeholder="搜索画布…">
+        <button class="btn sm" style="margin-left:auto">导入 JSON</button><button class="btn primary sm">+ 新建画布</button>
+      </div>
+      <div class="sec-head"><h2>从模板开始</h2><span class="note">不给空白页，给三个起点</span></div>
+      <div class="grid g3" style="margin-bottom:28px">
+        <div class="card"><b>剧本 → 分镜图</b><div class="muted" style="margin:8px 0 12px">铺好剧本解析、分镜拆解、生图节点</div><button class="btn sm">使用模板</button></div>
+        <div class="card"><b>角色三视图</b><div class="muted" style="margin:8px 0 12px">一次出正面 / 侧面 / 半身并并排对比</div><button class="btn sm">使用模板</button></div>
+        <div class="card"><b>风格试验</b><div class="muted" style="margin:8px 0 12px">同提示词多风格批量对比</div><button class="btn sm">使用模板</button></div>
+      </div>
+      <div class="sec-head"><h2>我的画布</h2></div>
+      <div class="grid g3">
+        ${[["小林造型探索","来自：深夜便利店的相遇","10-08 14:20",G1],["便利店分镜精修","来自：分镜 #12","10-08 13:05",G5],["画风对比","独立画布","10-07 20:11",G4]].map(function(c){
+          return '<div class="card"><div class="ph" style="aspect-ratio:16/10;background:linear-gradient(140deg,'+c[3]+','+A+');margin-bottom:12px"></div><div class="row"><b style="flex:1">'+c[0]+'</b></div><div class="muted" style="margin-top:6px">'+c[1]+' · '+c[2]+'</div><div class="row" style="gap:6px;margin-top:12px"><button class="btn sm">打开</button><button class="btn sm">重命名</button><button class="btn sm">复制</button><button class="btn sm">导出</button><button class="btn sm">删除</button></div></div>';}).join("")}
+      </div>
+      <div class="empty" style="margin-top:16px">空状态：还没有画布 → 试试从模板开始</div>
+    </div>` },
+
+  "C-02": { t:"画布编辑器", h:`
+    <div style="height:calc(100vh - 60px);display:flex;flex-direction:column">
+    <div class="row" style="padding:10px 18px;border-bottom:1px solid var(--border);gap:9px">
+      <button class="btn sm">←</button><b>小林造型探索</b>
+      <button class="btn sm">撤销</button><button class="btn sm">重做</button>
+      <span class="tag">缩放 80% ▾</span><span class="tag">适配 F</span>
+      <span class="muted">● 已自动保存 14:32</span>
+      <span class="muted" style="margin-left:auto">运行：</span>
+      <span class="chip on">运行选中</span><span class="chip">助手驱动</span><span class="chip">全图 DAG</span>
+      <button class="btn sm">投递来源：分镜 #12</button><button class="btn primary sm">沉淀回流</button>
+    </div>
+    <div style="flex:1;min-height:0;display:grid;grid-template-columns:92px minmax(0,1fr) 292px">
+      <div style="border-right:1px solid var(--border);padding:10px;overflow-y:auto">
+        <div class="muted" style="font-size:11.5px;margin-bottom:8px">节点</div>
+        ${["文本","图像","视频","音频","生成","资产","分镜","合成","逻辑","分组"].map(function(n){
+          return '<div class="ph" style="height:34px;margin-bottom:6px;font-size:12px">'+n+'</div>';}).join("")}
+      </div>
+
+      <div style="display:flex;flex-direction:column;min-height:0">
+        <div class="cv" style="flex:1;min-height:0;height:auto">
+          <svg style="position:absolute;inset:0;width:100%;height:100%;pointer-events:none">
+            <defs><marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+              <path d="M2 1L8 5L2 9" fill="none" style="stroke:var(--border-strong);stroke-width:1.6" stroke-linecap="round"/></marker></defs>
+            <line x1="207" y1="104" x2="294" y2="104" style="stroke:var(--border-strong);stroke-width:1.6" marker-end="url(#ar)"/>
+            <line x1="482" y1="104" x2="569" y2="104" style="stroke:var(--border-strong);stroke-width:1.6" marker-end="url(#ar)"/>
+            <line x1="390" y1="160" x2="390" y2="209" style="stroke:var(--border-strong);stroke-width:1.6" marker-end="url(#ar)"/>
+            <line x1="665" y1="160" x2="665" y2="209" style="stroke:var(--border-strong);stroke-width:1.6" marker-end="url(#ar)"/>
+          </svg>
+          <div class="node cached" style="left:25px;top:60px"><div class="nh">◈ 资产引用</div><div class="nb">小林（面部已锁）<br><span class="tag o" style="margin-top:6px">复用缓存</span></div></div>
+          <div class="node dirty sel" style="left:300px;top:60px"><div class="nh">⚡ 生成节点 · 文生图</div><div class="nb">已修改 → 重算中<br><span class="tag w" style="margin-top:6px">脏节点</span></div></div>
+          <div class="node cached" style="left:575px;top:60px"><div class="nh">⚡ 生成节点 · 图生图</div><div class="nb">风格迁移<br><span class="tag o" style="margin-top:6px">复用缓存</span></div></div>
+          <div class="node" style="left:300px;top:215px"><div class="nh">▣ 图像节点</div><div class="nb"><div class="ph" style="height:64px;background:linear-gradient(140deg,${G1},${A});color:#fff">结果图</div></div></div>
+          <div class="node" style="left:575px;top:215px"><div class="nh">▣ 图像节点</div><div class="nb"><div class="ph" style="height:64px;background:linear-gradient(140deg,${G4},#A55BB0);color:#fff">变体图</div></div></div>
+          <div class="mini-map"><svg width="150" height="100"><rect x="8" y="14" width="34" height="18" rx="4" fill="#9C9C95"/><rect x="56" y="14" width="34" height="18" rx="4" fill="#B87100"/><rect x="104" y="14" width="34" height="18" rx="4" fill="#9C9C95"/><rect x="56" y="58" width="34" height="18" rx="4" fill="#9C9C95"/><rect x="104" y="58" width="34" height="18" rx="4" fill="#9C9C95"/></svg></div>
+        </div>
+        <div class="row" style="padding:10px 16px;border-top:1px solid var(--border);font-size:13px;color:var(--text-3)">
+          节点 5 · 连线 4 · 运行中 1　　自动保存 14:32
+          <span style="margin-left:auto">增量执行：改「生成节点」只重算该节点与下游，上游复用缓存</span>
+        </div>
+      </div>
+
+      <div style="border-left:1px solid var(--border);overflow-y:auto">
+        <div class="tabs"><button class="tab on">检查器</button><button class="tab">画布助手</button></div>
+        <div style="padding:16px">
+          <b>生成节点 · 文生图</b>
+          <label class="lbl" style="margin-top:14px">模型</label><select class="inp"><option>通用图像 ▾</option></select>
+          <label class="lbl" style="margin-top:12px">引用资产</label><div class="row"><span class="tag a">小林（面部锁）</span><button class="btn sm">+</button></div>
+          <label class="lbl" style="margin-top:12px">提示词 · 可编辑层</label><textarea class="inp" rows="3">清冷气质，白色卫衣，冷调夜色光</textarea>
+          <label class="lbl" style="margin-top:12px">循环语义（逻辑节点）</label>
+          <label class="row"><input type="checkbox" style="width:16px;height:16px"> 重试直到满足相似度 ≥ 0.9</label>
+          <div class="banner a" style="margin-top:14px">助手：围绕选中节点与上游节点对话，结果可插回画布</div>
+          <div class="banner w" style="margin-top:10px">插件未授权：该插件申请「读取画布节点 / 调用图像生成」　<button class="btn sm">授权</button></div>
+          <div class="empty" style="margin-top:12px;padding:16px;font-size:13px">一句话生成子图 → 先预览，再落地</div>
+        </div>
+      </div>
+    </div>
+    </div>` },
+
+  "P-01": { t:"统一创作 Agent", h:`
+    <div class="pad" style="display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:18px">
+      <div class="card" style="display:flex;flex-direction:column;height:calc(100vh - 62px - 44px)">
+        <div style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:14px">
+          <div class="row" style="justify-content:flex-end"><div class="card" style="max-width:70%;background:var(--accent);border:0;color:#fff">帮我生成一个赛博朋克风格的少女角色</div></div>
+          <div class="row"><div class="card" style="max-width:78%">
+            <div class="muted" style="margin-bottom:8px">正在生成…</div>
+            <div class="ph" style="aspect-ratio:1;max-width:240px;background:linear-gradient(140deg,${G4},${A});color:#fff">结果图</div>
+            <div class="muted" style="margin-top:8px">生成完成 · 12s · 消耗 8 积分</div>
+            <div class="row" style="gap:6px;margin-top:10px;flex-wrap:wrap"><button class="btn sm">预览</button><button class="btn sm">下载</button><button class="btn sm">存为素材</button><button class="btn sm">继续创作</button><button class="btn sm">发送到画布</button></div>
+          </div></div>
+          <div class="banner a">意图不明确时会反问澄清：你是想生成图片还是视频？　<span class="tag" style="margin-left:auto">生成图片</span><span class="tag">生成视频</span></div>
+        </div>
+        <div class="row" style="margin-top:14px;border-top:1px solid var(--border);padding-top:14px">
+          <input class="inp" placeholder="输入创作意图…"><button class="btn sm">上传</button><button class="btn primary sm">发送</button>
+        </div>
+      </div>
+
+      <div>
+        <div class="card">
+          <b>参数与能力</b>
+          <label class="lbl" style="margin-top:12px">Skill</label><select class="inp"><option>分镜生成 ▾</option></select>
+          <label class="lbl" style="margin-top:12px">风格</label><select class="inp"><option>二次元 ▾</option></select>
+          <label class="lbl" style="margin-top:12px">比例 / 时长</label>
+          <div class="row" style="gap:7px;flex-wrap:wrap"><span class="chip on">9:16</span><span class="chip">16:9</span><span class="chip">1:1</span></div>
+          <label class="lbl" style="margin-top:12px">清晰度</label><select class="inp"><option>1024 ▾</option></select>
+          <label class="row" style="margin-top:12px;font-size:14px"><input type="checkbox" style="width:16px;height:16px"> 保存为默认偏好</label>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <b>本次消耗</b>
+          <div class="row" style="margin-top:10px"><span style="font-size:24px;font-weight:600">8</span><span class="muted">积分</span>
+            <span class="muted" style="margin-left:auto">剩余额度 1,832</span></div>
+          <div class="muted" style="margin-top:10px">仅展示本次消耗与剩余额度，计价规则不出后端</div>
+        </div>
+        <div class="card" style="margin-top:14px">
+          <b>引用</b>
+          <div class="row" style="gap:7px;margin-top:10px;flex-wrap:wrap"><span class="chip">提示词库</span><span class="chip">资产库</span><span class="chip">素材库</span></div>
+          <div class="banner w" style="margin-top:12px">长任务预估：解析 20 万字原著约需 5 分钟、消耗 320 积分</div>
+        </div>
+      </div>
+    </div>` },
+
+  "P-02": { t:"提示词库", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:16px"><button class="tab on">公共提示词</button><button class="tab">我的提示词</button></div>
+      <div class="row" style="margin-bottom:16px">
+        <input class="inp" style="max-width:240px" placeholder="搜索提示词…">
+        <select class="inp" style="max-width:150px"><option>分类：全部</option></select>
+        <select class="inp" style="max-width:150px"><option>标签：全部</option></select>
+        <button class="btn sm" style="margin-left:auto">从 JSON 来源导入</button><button class="btn primary sm">+ 新建提示词</button>
+      </div>
+      <div class="grid g3">
+        ${[["角色定妆 · 清冷","角色","1,240"],["分镜画面 · 电影感","分镜","890"],["运镜 · 推拉摇移","运镜","512"],
+           ["配音 · 少女音","配音","430"],["场景 · 夜景霓虹","场景","318"],["画风 · 水墨","风格","205"]].map(function(p){
+          return '<div class="card"><div class="row"><b style="flex:1">'+p[0]+'</b><span class="tag">'+p[1]+'</span></div><div class="muted" style="margin:10px 0 12px">适用于'+p[1]+'环节的标准提示词模板，可直接引用到 Agent / 画布 / Studio</div><div class="row"><span class="muted" style="flex:1">使用 '+p[2]+' 次</span><button class="btn sm">收藏</button><button class="btn sm">应用</button></div></div>';}).join("")}
+      </div>
+      <div class="sec-head" style="margin-top:20px"><h2>应用目标</h2></div>
+      <div class="row" style="gap:8px"><span class="chip on">统一 Agent</span><span class="chip">画布</span><span class="chip">Studio</span></div>
+      <div class="empty" style="margin-top:16px">空状态：还没有提示词 → 从公共库收藏或新建一个</div>
+    </div>` },
+
+  "P-03": { t:"素材库", h:`
+    <div class="pad">
+      <div class="row" style="margin-bottom:16px">
+        <button class="btn sm">图片</button><button class="btn sm ghost">视频</button><button class="btn sm ghost">音频</button><button class="btn sm ghost">文本</button>
+        <select class="inp" style="max-width:190px;margin-left:16px"><option>来源：全部</option><option>AI 生成</option><option>用户上传</option><option>画布</option><option>Studio</option></select>
+        <input class="inp" style="max-width:200px;margin-left:auto" placeholder="搜索素材…">
+        <button class="btn primary sm">上传素材</button>
+      </div>
+      <div class="grid" style="grid-template-columns:repeat(6,1fr)">
+        ${[["AI 生成",G1],["画布",G4],["用户上传",G3],["AI 生成",G5],["Studio",G2],["画布",G6]].map(function(x){
+          return '<div class="tile" style="background:linear-gradient(140deg,'+x[1]+',#12B3A6)"><span class="tg">'+x[0]+'</span></div>';}).join("")}
+      </div>
+      <div class="row" style="margin-top:18px">
+        <span class="muted">已选 2 项</span>
+        <button class="btn sm">发送到 Agent</button><button class="btn sm">发送到画布</button><button class="btn sm">发送到 Studio</button>
+        <button class="btn sm" style="margin-left:auto">删除</button>
+      </div>
+      <div class="banner w" style="margin-top:16px">删除被引用的素材时会提示引用位置，可选择「停用」而非删除</div>
+      <div class="empty" style="margin-top:16px">空状态：还没有素材 → 去创作或上传</div>
+    </div>` },
+
+  "P-04": { t:"模型配置中心", h:`
+    <div class="pad">
+      <div class="row" style="margin-bottom:16px">
+        <button class="btn sm">文本</button><button class="btn sm ghost">图像</button><button class="btn sm ghost">视频</button><button class="btn sm ghost">语音</button>
+        <span class="muted" style="margin-left:20px">配置层级</span><span class="chip">全局默认</span><span class="chip on">本项目覆盖</span>
+      </div>
+      <div class="card pad0" style="margin-bottom:18px">
+        <table class="tb">
+          <tr><th></th><th>模型</th><th>厂商</th><th>适用场景</th><th>价格 / 次</th><th>速度</th><th>文档</th></tr>
+          <tr><td>◉</td><td>通用文本</td><td>甲厂</td><td>通用文本创作</td><td>1 积分</td><td>快</td><td><span style="color:var(--accent)">查看</span></td></tr>
+          <tr><td>○</td><td>长文本模型</td><td>乙厂</td><td>长文本 / 原著解析</td><td>3 积分</td><td>中</td><td><span style="color:var(--accent)">查看</span></td></tr>
+          <tr><td>○</td><td>自有 Key 渠道</td><td>自定义</td><td>自备 Key</td><td>基础费 0.2</td><td>取决于渠道</td><td><span style="color:var(--accent)">配置</span></td></tr>
+        </table>
+      </div>
+      <div class="sec-head"><h2>效果对比与切换</h2></div>
+      <div class="grid g2" style="max-width:600px;margin-bottom:20px">
+        <div class="card"><div class="muted" style="margin-bottom:10px">模型 A</div><div class="ph" style="aspect-ratio:1;background:linear-gradient(140deg,${G1},${A})"></div></div>
+        <div class="card"><div class="muted" style="margin-bottom:10px">模型 B</div><div class="ph" style="aspect-ratio:1;background:linear-gradient(140deg,${G5},#4A7FB8)"></div></div>
+      </div>
+      <button class="btn">切换至此模型</button>
+      <div class="banner w" style="margin-top:16px">降级提示：主渠道异常，当前使用备用模型，效果可能略有差异　<button class="btn sm" style="margin-left:auto">重试主渠道</button></div>
+      <div class="sec-head" style="margin-top:22px"><h2>自有 Key 管理</h2></div>
+      <div class="card" style="max-width:640px">
+        <div class="grid g2" style="gap:12px">
+          <div><label class="lbl">渠道</label><select class="inp"><option>自定义</option></select></div>
+          <div><label class="lbl">接口地址</label><input class="inp" placeholder="https://"></div>
+        </div>
+        <label class="lbl" style="margin-top:12px">API Key（AES-256 加密，永不明文展示）</label>
+        <div class="row"><input class="inp" type="password" value="••••••••••••"><button class="btn sm">测试连通性</button></div>
+        <div class="row" style="margin-top:12px;color:var(--ok)">✓ 连通正常</div>
+        <div class="muted" style="margin-top:10px">自有 Key 免生成积分，仍按基础费计费（存储 / 带宽 / 编排）</div>
+      </div>
+    </div>` },
+
+  "P-05": { t:"计费中心", h:`
+    <div class="pad">
+      <div class="grid g4" style="margin-bottom:16px">
+        <div class="stat"><div class="n">1,832</div><div class="k">可用积分</div></div>
+        <div class="stat"><div class="n">40</div><div class="k">冻结积分</div></div>
+        <div class="stat"><div class="n">18,700</div><div class="k">本月消耗</div></div>
+        <div class="stat"><div class="n">20%</div><div class="k">剩余额度</div></div>
+      </div>
+      <div class="banner w" style="margin-bottom:18px">剩余额度低于 20%，建议充值</div>
+      <div class="tabs" style="padding:0;margin-bottom:18px"><button class="tab on">积分充值</button><button class="tab">订阅套餐</button><button class="tab">我的订单</button></div>
+      <div class="grid g3" style="margin-bottom:22px">
+        ${[["1,000 积分","¥49"],["5,000 积分","¥199"],["20,000 积分","¥699"]].map(function(x){
+          return '<div class="card" style="text-align:center"><b>'+x[0]+'</b><div style="font-size:22px;font-weight:600;margin:10px 0 14px">'+x[1]+'</div><button class="btn primary sm" style="width:100%;justify-content:center">立即购买</button></div>';}).join("")}
+      </div>
+      <div class="sec-head"><h2>订阅套餐对比</h2></div>
+      <div class="grid g3">
+        <div class="card"><b>免费版</b><div class="muted" style="margin:8px 0 12px">每日 200 积分</div><span class="tag">当前</span></div>
+        <div class="card" style="border-color:var(--accent)"><b>专业版</b><div class="muted" style="margin:8px 0 12px">每月 30,000 积分 · 更高并发</div><button class="btn primary sm">¥99 / 月</button></div>
+        <div class="card"><b>企业版</b><div class="muted" style="margin:8px 0 12px">多租户 · 团队协作</div><button class="btn sm">联系我们</button></div>
+      </div>
+      <div class="banner a" style="margin-top:18px">配额耗尽时已提交的任务会继续完成，仅新任务受限</div>
+      <div class="banner d" style="margin-top:10px">支付失败 / 回调超时：系统主动查询对账并提示，可重试</div>
+    </div>` },
+
+  "P-06": { t:"个人中心", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:18px"><button class="tab on">账号与安全</button><button class="tab">用量统计</button><button class="tab">导入导出</button><button class="tab">版本与日志</button></div>
+      <div class="grid g2">
+        <div class="card">
+          <b>账号与安全</b>
+          <div class="stack" style="margin-top:14px;font-size:14px">
+            <div class="row"><span class="muted" style="width:80px">头像</span><div class="avatar">小</div><button class="btn sm">更换</button></div>
+            <div class="row"><span class="muted" style="width:80px">用户名</span><span>小漫</span></div>
+            <div class="row"><span class="muted" style="width:80px">邮箱</span><span>xiaoman@example.com</span><button class="btn sm" style="margin-left:auto">修改</button></div>
+            <div class="row"><span class="muted" style="width:80px">手机</span><span>138****8888</span><button class="btn sm" style="margin-left:auto">修改</button></div>
+            <div class="row"><span class="muted" style="width:80px">密码</span><button class="btn sm">重置密码</button></div>
+            <div class="row"><span class="muted" style="width:80px">第三方</span><button class="btn sm">绑定微信</button><button class="btn sm">绑定 QQ</button></div>
+          </div>
+        </div>
+        <div class="card">
+          <b>用量统计</b><span class="muted" style="margin-left:10px">日 / 周 / 月 · 本周</span>
+          <div class="grid g2" style="gap:12px;margin-top:14px">
+            <div class="stat"><div class="n">1,204</div><div class="k">API 调用</div></div>
+            <div class="stat"><div class="n">892</div><div class="k">生成图片</div></div>
+            <div class="stat"><div class="n">96</div><div class="k">视频（分钟）</div></div>
+            <div class="stat"><div class="n">3.2G</div><div class="k">存储占用</div></div>
+          </div>
+          <div class="bar" style="margin-top:16px"><span style="width:20%"></span></div>
+          <div class="muted" style="margin-top:8px">剩余配额 1,832 积分</div>
+        </div>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card"><b>项目导入 / 导出</b>
+          <div class="row" style="margin-top:12px"><button class="btn sm">导出项目 ZIP</button><button class="btn sm">导入项目 ZIP</button></div>
+          <div class="muted" style="margin-top:10px">最近导出：project_A_20261008.zip <span style="color:var(--accent)">下载</span></div>
+        </div>
+        <div class="card"><b>版本快照</b>
+          <div class="muted" style="margin-top:6px">回退前将展示影响面</div>
+          <table class="tb" style="margin-top:8px">
+            <tr><th>时间</th><th>阶段</th><th>摘要</th><th></th></tr>
+            <tr><td>10-08 14:30</td><td>发布</td><td>成片 v3 · 42 镜</td><td><button class="btn sm">回退</button></td></tr>
+            <tr><td>10-08 12:05</td><td>生成</td><td>关键帧 42 张</td><td><button class="btn sm">回退</button></td></tr>
+          </table>
+        </div>
+      </div>
+      <div class="card" style="margin-top:14px"><div class="row"><b>操作日志</b><button class="btn sm" style="margin-left:auto">查看全部</button></div></div>
+    </div>` }
+};
+function render(id){
+  var p = P[id]; if(!p) return;
+  document.getElementById('pageTitle').textContent = id + ' · ' + p.t;
+  document.getElementById('host').innerHTML = p.h;
+  document.getElementById('swBtn').style.display = 'none';
+  __shellTheme = 'dark'; applyTheme();
+  document.querySelectorAll('.sw-i').forEach(function(b){ b.classList.toggle('on', b.dataset.id === id); });
+  document.querySelectorAll('.nav-item[data-nav]').forEach(function(b){ b.classList.toggle('active', b.dataset.nav === id); });
+  if (id.indexOf('P-') === 0) document.querySelectorAll('.nav-item[data-nav="'+id+'"]').forEach(function(b){ b.classList.add('active'); });
+}
+function buildSwitcher(){
+  var groups = [["AI 画布",["C-01","C-02"]],
+                ["平台功能页",["P-01","P-02","P-03","P-04","P-05","P-06"]],
+                ["官网与 Studio","见『全站原型（一）』"],
+                ["运营管理端","见『全站原型（三）』"]];
+  var html = '';
+  groups.forEach(function(g){
+    html += '<div class="sw-g">'+g[0]+'</div>';
+    if (typeof g[1] === 'string'){
+      html += '<div class="muted" style="padding:6px 10px;font-size:13px">'+g[1]+'</div>';
+      return;
+    }
+    g[1].forEach(function(id){
+      html += (P[id] ? '<button class="sw-i" data-id="'+id+'"><span class="sw-id">'+id+'</span>'+P[id].t+'</button>' : '');
+    });
+  });
+  document.getElementById('swPanel').innerHTML = html;
+  document.querySelectorAll('.sw-i').forEach(function(b){ b.addEventListener('click', function(){ render(b.dataset.id); }); });
+}
+function toggleSw(){ document.getElementById('swPanel').classList.toggle('show'); }
+document.getElementById('swBtn').addEventListener('click', toggleSw);
+var _st=document.getElementById('swTopBtn'); if(_st) _st.addEventListener('click', toggleSw);
+document.addEventListener('click', function(e){
+  var pn=document.getElementById('swPanel'); if(!pn.classList.contains('show')) return;
+  if(pn.contains(e.target) || e.target.closest('#swBtn') || e.target.closest('#swTopBtn')) return;
+  pn.classList.remove('show');
+});
+var __userTheme=null,__shellTheme='light';
+function applyTheme(){document.documentElement.setAttribute('data-theme', __userTheme || __shellTheme);}
+document.getElementById('themeBtn').addEventListener('click', function(){
+  var c=document.documentElement.getAttribute('data-theme');
+  __userTheme=(c==='dark')?'light':'dark'; applyTheme();
+});
+document.querySelectorAll('.nav-item[data-nav]').forEach(function(b){
+  b.addEventListener('click', function(){
+    var t = b.dataset.nav;
+    if (P[t]) { render(t); return; }
+    var m = { "W-01":"W-01 工作台（见『全站原型（一）』）","W-02":"W-02 项目列表（见『全站原型（一）』）",
+              "S-04":"S-04 资产管理（见『全站原型（一）』）","collab":"协作功能本期不做（V-03 / V-04）","help":"帮助中心（原型未展开）" };
+    alert(m[t] || t);
+  });
+});
+buildSwitcher();
+render("C-01");
+</script>
+</body>
+</html>

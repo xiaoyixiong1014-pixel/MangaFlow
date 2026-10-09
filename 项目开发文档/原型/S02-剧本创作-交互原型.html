@@ -1,0 +1,1050 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>漫序 MangaFlow · S-02 剧本创作（交互原型）</title>
+<style>
+:root{
+  --r-card:20px; --r-ctl:12px; --r-pill:999px;
+  --bg:#F5F7F6; --surface:#FFFFFF; --surface-2:#FAFAF8; --surface-3:#EFF2F1;
+  --border:rgba(0,0,0,.09); --border-strong:rgba(0,0,0,.16);
+  --text:#14181A; --text-2:#5F6B68; --text-3:#8E9A97;
+  --accent:#12B3A6; --accent-soft:rgba(18,179,166,.10);
+  --ok:#1E9E6A; --ok-soft:rgba(30,158,106,.12);
+  --warn:#B87100; --warn-soft:rgba(184,113,0,.13);
+  --danger:#CE4343; --danger-soft:rgba(206,67,67,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px -12px rgba(0,0,0,.10);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+html[data-theme="dark"]{
+  --bg:#0E1112; --surface:#15191A; --surface-2:#1C2223; --surface-3:#111516;
+  --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
+  --text:#E8EDEA; --text-2:#9BA5A2; --text-3:#6B7573;
+  --accent:#4FD8CA; --accent-soft:rgba(18,179,166,.18);
+  --ok:#4CC38A; --ok-soft:rgba(76,195,138,.14);
+  --warn:#E0A33A; --warn-soft:rgba(224,163,58,.14);
+  --danger:#F0736F; --danger-soft:rgba(240,115,111,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px -14px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:15.5px;line-height:1.6;-webkit-font-smoothing:antialiased;transition:background .2s,color .2s}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:0;cursor:pointer}
+svg{display:block;flex-shrink:0}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(127,127,127,.28);border-radius:5px}
+::-webkit-scrollbar-track{background:transparent}
+
+.app{display:flex;height:100vh;overflow:hidden}
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+
+/* ---------- 常驻左侧导航 ---------- */
+.sidebar{
+  width:252px;flex-shrink:0;background:var(--surface-3);
+  border-right:1px solid var(--border);display:flex;flex-direction:column;
+  transition:width .18s ease;overflow:hidden;
+}
+.app.collapsed .sidebar{width:68px}
+.brand{display:flex;align-items:center;gap:11px;padding:18px 18px 15px;flex-shrink:0}
+.brand-mark{
+  width:30px;height:30px;border-radius:10px;flex-shrink:0;
+  background:linear-gradient(140deg,var(--accent),#7C6BF0);
+  display:flex;align-items:center;justify-content:center;
+  color:#fff;font-weight:700;font-size:14px;
+}
+.brand-name{font-weight:600;font-size:16px;white-space:nowrap;letter-spacing:.2px}
+.app.collapsed .brand-name,.app.collapsed .nav-group-title,
+.app.collapsed .nav-label,.app.collapsed .nav-badge,.app.collapsed .side-foot-label{display:none}
+.app.collapsed .brand{justify-content:center;padding:18px 0 15px}
+.app.collapsed .nav-item{justify-content:center;padding:10px 0}
+.nav{flex:1;overflow-y:auto;padding:4px 10px 12px}
+.nav-group{margin-bottom:15px}
+.nav-group-title{font-size:12.5px;color:var(--text-3);padding:8px 8px 6px;letter-spacing:.4px;white-space:nowrap}
+.nav-item{
+  display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:11px;width:100%;
+  text-align:left;color:var(--text-2);position:relative;white-space:nowrap;
+  transition:background .13s ease,color .13s ease;
+}
+.nav-item:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.nav-item.active::before{
+  content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);
+  width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--accent);
+}
+.nav-label{flex:1;font-size:15px}
+.nav-badge{font-size:11.5px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(127,127,127,.14);color:var(--text-3)}
+.side-foot{border-top:1px solid var(--border);padding:10px;flex-shrink:0}
+.side-foot-label{flex:1;font-size:15px}
+
+@media (min-width:1025px) and (max-width:1360px){
+  .app:not(.force-open) .sidebar{width:68px}
+  .app:not(.force-open) .brand-name,
+  .app:not(.force-open) .nav-group-title,
+  .app:not(.force-open) .nav-label,
+  .app:not(.force-open) .nav-badge,
+  .app:not(.force-open) .side-foot-label{display:none}
+  .app:not(.force-open) .brand{justify-content:center;padding:18px 0 15px}
+  .app:not(.force-open) .nav-item{justify-content:center;padding:10px 0}
+}
+@media (max-width:1024px){
+  .sidebar{position:fixed;z-index:120;height:100%;transform:translateX(-100%);transition:transform .2s ease;width:252px}
+  .app.drawer .sidebar{transform:none}
+  .app.drawer .brand-name,.app.drawer .nav-group-title,.app.drawer .nav-label,
+  .app.drawer .nav-badge,.app.drawer .side-foot-label{display:block}
+  .app.drawer .nav-item{justify-content:flex-start;padding:9px 10px}
+  .cols{grid-template-columns:200px minmax(0,1fr) 300px}
+}
+
+/* ---------- 顶栏 ---------- */
+.topbar{
+  height:62px;flex-shrink:0;display:flex;align-items:center;gap:14px;padding:0 18px;
+  border-bottom:1px solid var(--border);background:var(--bg);
+}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--text-2);transition:background .13s,color .13s}
+.icon-btn:hover{background:rgba(127,127,127,.12);color:var(--text)}
+.proj-name{font-size:16px;font-weight:600;white-space:nowrap;margin-right:4px}
+
+.steps{display:flex;align-items:center;gap:4px;margin:0 auto}
+.step{
+  display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-pill);
+  font-size:14px;color:var(--text-3);transition:all .14s ease;white-space:nowrap;
+}
+.step:hover{background:rgba(127,127,127,.10);color:var(--text-2)}
+.step.done{color:var(--ok)}
+.step.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.step .idx{
+  width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;
+  font-size:11.5px;border:1.4px solid currentColor;font-variant-numeric:tabular-nums;
+}
+.step-sep{width:16px;height:1px;background:var(--border-strong)}
+
+.top-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.btn{
+  display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--r-ctl);
+  font-size:14.5px;border:1px solid var(--border);color:var(--text);transition:all .13s ease;white-space:nowrap;
+}
+.btn:hover{background:rgba(127,127,127,.10)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{filter:brightness(1.07)}
+.btn.ghost{border-color:transparent;color:var(--text-2)}
+.btn.sm{padding:6px 13px;font-size:13.5px;border-radius:10px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+
+/* ---------- 主体 ---------- */
+.body{flex:1;overflow:hidden;display:flex;flex-direction:column}
+
+/* ===== 生成态 ===== */
+#genView{flex:1;display:flex;flex-direction:column;padding:22px 26px 0;overflow:hidden}
+.gen-grid{flex:1;display:grid;grid-template-columns:1fr 1.35fr;gap:18px;min-height:0}
+.pane{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);display:flex;flex-direction:column;overflow:hidden}
+.pane-head{display:flex;align-items:center;gap:9px;padding:14px 18px;border-bottom:1px solid var(--border);flex-shrink:0}
+.pane-head h3{font-size:15px;font-weight:600}
+.pane-head .hint{font-size:13px;color:var(--text-3);margin-left:auto}
+.pane-body{padding:18px;overflow-y:auto;flex:1}
+.raw-text{font-size:15px;color:var(--text-2);line-height:1.85;white-space:pre-wrap}
+.stream-text{font-size:15px;line-height:1.9;white-space:pre-wrap}
+.stream-text .sc{color:var(--accent);font-weight:500}
+.stream-text .sp{color:var(--text-3)}
+.stream-text .ch{color:var(--ok);font-weight:500}
+.caret{display:inline-block;width:2px;height:17px;background:var(--accent);vertical-align:-3px;animation:blink 1s steps(2) infinite}
+@keyframes blink{0%,50%{opacity:1}51%,100%{opacity:0}}
+
+.gen-bar{
+  flex-shrink:0;display:flex;align-items:center;gap:14px;padding:16px 4px 20px;
+}
+.pill-state{display:flex;align-items:center;gap:8px;font-size:14.5px;color:var(--text-2)}
+.pill-state b{color:var(--text);font-weight:500;font-variant-numeric:tabular-nums}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--accent-soft);border-top-color:var(--accent);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+.bar{flex:1;height:6px;border-radius:3px;background:rgba(127,127,127,.16);overflow:hidden}
+.bar span{display:block;height:100%;background:var(--accent);border-radius:3px;width:0;transition:width .3s linear}
+
+/* ===== 编辑态三栏 ===== */
+#editView{flex:1;display:none;min-height:0}
+.cols{display:grid;grid-template-columns:236px minmax(0,1fr) 336px;height:100%}
+.col{display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--border)}
+.col:last-child{border-right:0}
+.col-head{
+  display:flex;align-items:center;gap:8px;padding:13px 16px;font-size:12.5px;
+  color:var(--text-3);letter-spacing:.3px;border-bottom:1px solid var(--border);flex-shrink:0;
+}
+.col-body{overflow-y:auto;flex:1;padding:12px}
+
+/* 大纲 */
+.out-item{
+  display:flex;align-items:flex-start;gap:9px;padding:9px 11px;border-radius:10px;width:100%;
+  text-align:left;color:var(--text-2);font-size:14px;transition:all .13s ease;margin-bottom:2px;
+}
+.out-item:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.out-item.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.out-no{
+  width:22px;height:22px;border-radius:6px;background:rgba(127,127,127,.14);flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;font-size:11.5px;font-variant-numeric:tabular-nums;
+}
+.out-item.on .out-no{background:rgba(18,179,166,.20)}
+.out-meta{min-width:0;flex:1}
+.out-title{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.out-sub{font-size:11.5px;color:var(--text-3);margin-top:2px}
+.out-item.on .out-sub{color:var(--accent);opacity:.8}
+.add-scene{
+  display:flex;align-items:center;justify-content:center;gap:6px;width:100%;padding:9px;
+  border:1px dashed var(--border-strong);border-radius:10px;color:var(--text-3);font-size:13.5px;margin-top:6px;
+}
+.add-scene:hover{border-color:var(--accent);color:var(--accent)}
+
+/* 正文 */
+.scene{
+  border:1px solid var(--border);border-radius:var(--r-ctl);padding:16px 18px;margin-bottom:14px;
+  background:var(--surface);transition:box-shadow .2s,border-color .2s;
+}
+.scene.hl{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.scene-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.scene-title{font-size:14.5px;font-weight:600}
+.scene-tag{font-size:12px;padding:2px 9px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--text-2)}
+.scene-tools{margin-left:auto;display:flex;gap:4px;opacity:0;transition:opacity .14s}
+.scene:hover .scene-tools{opacity:1}
+.mini{width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;color:var(--text-3)}
+.mini:hover{background:rgba(127,127,127,.12);color:var(--text)}
+.scene-body{font-size:15px;line-height:1.95;outline:0}
+.scene-body:focus{outline:0}
+.scene-body .line{display:block;margin-bottom:2px}
+.scene-body .hr{color:var(--text-3)}
+.scene-body .dlg{color:var(--text)}
+.scene-body .act{color:var(--text-2);font-style:italic}
+
+/* 字段同步提示 */
+.sync-bar{
+  display:none;align-items:center;gap:10px;margin:0 0 12px;padding:11px 14px;
+  border-radius:var(--r-ctl);background:var(--warn-soft);color:var(--warn);font-size:14px;
+}
+.sync-bar.show{display:flex}
+.sync-bar b{font-weight:500}
+.sync-bar .btn.sm{border-color:transparent;background:rgba(255,255,255,.55);color:inherit}
+html[data-theme="dark"] .sync-bar .btn.sm{background:rgba(0,0,0,.25)}
+.sync-bar .btn.sm:hover{filter:brightness(.96)}
+
+/* 右栏 */
+.tabs{display:flex;gap:3px;padding:9px 10px;border-bottom:1px solid var(--border);flex-shrink:0}
+.tab{
+  flex:1;padding:8px;border-radius:9px;font-size:14px;color:var(--text-2);transition:all .13s;
+}
+.tab:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.tab.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.panel{display:none}
+.panel.on{display:block}
+.field-label{font-size:12.5px;color:var(--text-3);margin:14px 0 7px;letter-spacing:.3px}
+.field-label:first-child{margin-top:2px}
+.seg-row{display:flex;gap:6px;flex-wrap:wrap}
+.seg{padding:6px 13px;border-radius:var(--r-pill);font-size:13.5px;color:var(--text-2);border:1px solid var(--border);transition:all .12s}
+.seg:hover{border-color:var(--border-strong);color:var(--text)}
+.seg.on{background:var(--accent);border-color:var(--accent);color:#fff}
+textarea.ta{
+  width:100%;border:1px solid var(--border);border-radius:var(--r-ctl);padding:11px 13px;
+  font-family:inherit;font-size:14.5px;line-height:1.6;background:var(--surface-2);color:var(--text);
+  resize:vertical;min-height:74px;outline:0;transition:border-color .14s,box-shadow .14s;
+}
+textarea.ta:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+
+/* diff */
+.diff{
+  margin-top:14px;border:1px solid var(--border);border-radius:var(--r-ctl);overflow:hidden;display:none;
+}
+.diff.show{display:block;animation:pop .16s ease}
+@keyframes pop{from{opacity:0;transform:translateY(-5px)}to{opacity:1;transform:none}}
+.diff-head{padding:10px 13px;font-size:13px;color:var(--text-3);background:var(--surface-2);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.diff-item{padding:11px 13px;border-bottom:1px solid var(--border)}
+.diff-item:last-child{border-bottom:0}
+.diff-line{font-size:14px;line-height:1.7;padding:3px 8px;border-radius:6px;font-family:var(--font)}
+.diff-line.del{background:var(--danger-soft);color:var(--danger);text-decoration:line-through;text-decoration-thickness:1px}
+.diff-line.add{background:var(--ok-soft);color:var(--ok)}
+.diff-acts{display:flex;gap:6px;margin-top:9px}
+.diff-item.applied{opacity:.45}
+.diff-item.rejected .diff-line{opacity:.4}
+
+/* 体检 */
+.health-item{
+  padding:12px 13px;border:1px solid var(--border);border-radius:var(--r-ctl);margin-bottom:9px;
+  background:var(--surface);
+}
+.health-item .h-top{display:flex;align-items:center;gap:8px;font-size:14px;color:var(--text)}
+.h-ico{width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;flex-shrink:0;color:#fff;background:var(--warn)}
+.health-item .h-desc{font-size:13px;color:var(--text-3);margin:6px 0 9px}
+.loc-btn{font-size:13px;color:var(--accent);display:flex;align-items:center;gap:4px}
+.loc-btn:hover{text-decoration:underline}
+.all-clear{text-align:center;padding:28px 12px;color:var(--ok);font-size:14px}
+
+/* 底部 */
+.bottombar{
+  flex-shrink:0;display:flex;align-items:center;gap:12px;padding:13px 22px;
+  border-top:1px solid var(--border);background:var(--surface-2);
+}
+.bottombar .grow{flex:1}
+.cost-hint{font-size:13.5px;color:var(--text-3)}
+.cost-hint b{color:var(--text);font-weight:500}
+
+/* 弹窗 */
+.mask{
+  position:fixed;inset:0;background:rgba(0,0,0,.36);backdrop-filter:blur(2px);
+  display:none;align-items:center;justify-content:center;z-index:200;padding:20px;
+}
+.mask.show{display:flex;animation:fade .16s ease}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{
+  width:100%;max-width:520px;background:var(--surface);border:1px solid var(--border);
+  border-radius:var(--r-card);box-shadow:0 24px 64px -20px rgba(0,0,0,.4);overflow:hidden;
+  animation:pop .2s ease;
+}
+.modal-head{padding:20px 24px 14px;display:flex;align-items:center;gap:10px}
+.modal-head h3{font-size:18px;font-weight:600}
+.modal-ico{width:34px;height:34px;border-radius:10px;background:var(--warn-soft);color:var(--warn);display:flex;align-items:center;justify-content:center}
+.modal-body{padding:0 24px 20px;font-size:14.5px;color:var(--text-2);line-height:1.75}
+.impact-list{margin:12px 0 4px;border:1px solid var(--border);border-radius:var(--r-ctl);overflow:hidden}
+.impact-row{display:flex;align-items:center;gap:10px;padding:11px 14px;border-bottom:1px solid var(--border);font-size:14px}
+.impact-row:last-child{border-bottom:0}
+.impact-row .n{margin-left:auto;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.modal-foot{padding:14px 24px 20px;display:flex;gap:10px;justify-content:flex-end}
+
+/* Toast */
+.toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:300;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{display:flex;align-items:center;gap:8px;padding:10px 17px;border-radius:var(--r-pill);background:var(--text);color:var(--bg);font-size:14px;box-shadow:var(--shadow);animation:pop .16s ease}
+.toast .t-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.6}
+
+/* 演示控制 */
+.demo-toggle{position:fixed;right:22px;bottom:22px;z-index:150;padding:8px 15px;border-radius:var(--r-pill);font-size:13.5px;background:var(--surface);border:1px solid var(--border);color:var(--text-2);box-shadow:var(--shadow);display:flex;align-items:center;gap:7px}
+.demo-toggle:hover{color:var(--text);border-color:var(--border-strong)}
+.demo-panel{position:fixed;right:22px;bottom:74px;z-index:150;width:286px;padding:16px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow);display:none}
+.demo-panel.show{display:block;animation:pop .14s ease}
+.demo-title{font-size:12.5px;color:var(--text-3);margin-bottom:9px;letter-spacing:.3px}
+.demo-seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.demo-seg:last-child{margin-bottom:0}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- ============ 常驻侧栏（与工作台完全一致，全站常驻） ============ -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark">漫</div>
+      <div class="brand-name">漫序 MangaFlow</div>
+    </div>
+
+    <nav class="nav" id="nav">
+      <div class="nav-group">
+        <div class="nav-group-title">创作</div>
+        <button class="nav-item" data-page="agent">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.7 4.6L18 9.3l-4.3 1.7L12 15.6l-1.7-4.6L6 9.3l4.3-1.7z"/><path d="M18.5 15.5l.7 1.9 1.8.6-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.6z"/></svg>
+          <span class="nav-label">Agent</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">项目</div>
+        <button class="nav-item active" data-page="projects">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5A1.5 1.5 0 014.5 6h4l2 2.2h9A1.5 1.5 0 0121 9.7v8.3a1.5 1.5 0 01-1.5 1.5h-15A1.5 1.5 0 013 18z"/></svg>
+          <span class="nav-label">漫剧项目</span>
+        </button>
+        <button class="nav-item" data-page="canvas">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="2"/><rect x="13.5" y="3.5" width="7" height="7" rx="2"/><rect x="3.5" y="13.5" width="7" height="7" rx="2"/><rect x="13.5" y="13.5" width="7" height="7" rx="2"/></svg>
+          <span class="nav-label">AI 画布</span>
+        </button>
+        <button class="nav-item" data-page="collab">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3"/><path d="M3.5 19c0-2.8 2.5-4.5 5.5-4.5s5.5 1.7 5.5 4.5"/><circle cx="17" cy="7.5" r="2.4"/><path d="M16 13.2c2.6.2 4.5 1.6 4.5 4.1"/></svg>
+          <span class="nav-label">协作</span>
+          <span class="nav-badge">即将开放</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">资产</div>
+        <button class="nav-item" data-page="assets">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><circle cx="9" cy="10" r="1.8"/><path d="M4 17l4.5-4.2 3.5 3 3-2.6 5 4.3"/></svg>
+          <span class="nav-label">角色与场景</span>
+        </button>
+        <button class="nav-item" data-page="media">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6.5" width="13" height="11" rx="2"/><path d="M7 4.5h11.5A1.5 1.5 0 0120 6v9"/></svg>
+          <span class="nav-label">素材库</span>
+        </button>
+        <button class="nav-item" data-page="prompts">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4.5h9.5A2.5 2.5 0 0117 7v12.5H7.5A2.5 2.5 0 015 17z"/><path d="M17 7h2v12.5h-2.5"/><path d="M8.5 9h5M8.5 12.5h5"/></svg>
+          <span class="nav-label">提示词库</span>
+        </button>
+      </div>
+
+      <div class="nav-group">
+        <div class="nav-group-title">账户</div>
+        <button class="nav-item" data-page="models">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="7.5" y="7.5" width="9" height="9" rx="2"/><path d="M10 3.5v4M14 3.5v4M10 16.5v4M14 16.5v4M3.5 10h4M3.5 14h4M16.5 10h4M16.5 14h4"/></svg>
+          <span class="nav-label">模型配置</span>
+        </button>
+        <button class="nav-item" data-page="billing">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="6" width="17" height="12" rx="2.5"/><path d="M3.5 10h17"/><path d="M7 14h3"/></svg>
+          <span class="nav-label">计费与配额</span>
+        </button>
+        <button class="nav-item" data-page="profile">
+          <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8.5" r="3.5"/><path d="M5 20c0-3.5 3.1-5.5 7-5.5s7 2 7 5.5"/></svg>
+          <span class="nav-label">个人中心</span>
+        </button>
+      </div>
+    </nav>
+
+    <div class="side-foot">
+      <button class="nav-item" onclick="toast('帮助中心（原型未展开）')">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.4a2.5 2.5 0 114 2.1c-.9.7-1.6 1-1.6 2.1"/><circle cx="12" cy="16.6" r=".9" fill="currentColor" stroke="none"/></svg>
+        <span class="side-foot-label">帮助</span>
+      </button>
+    </div>
+  </aside>
+
+  <div class="main">
+
+  <!-- ============ 顶栏 ============ -->
+  <header class="topbar">
+    <button class="icon-btn" id="collapseBtn" title="折叠 / 展开导航">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    </button>
+    <div class="proj-name">深夜便利店的相遇</div>
+
+    <div class="steps" id="steps">
+      <button class="step active" data-stage="1"><span class="idx">1</span>剧本</button>
+      <span class="step-sep"></span>
+      <button class="step" data-stage="2"><span class="idx">2</span>资产</button>
+      <span class="step-sep"></span>
+      <button class="step" data-stage="3"><span class="idx">3</span>分镜</button>
+      <span class="step-sep"></span>
+      <button class="step" data-stage="4"><span class="idx">4</span>生成</button>
+      <span class="step-sep"></span>
+      <button class="step" data-stage="5"><span class="idx">5</span>发布</button>
+    </div>
+
+    <div class="top-actions">
+      <button class="btn ghost sm" id="themeBtn" title="切换主题">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M20 14.2A8.2 8.2 0 019.8 4 8.4 8.4 0 1020 14.2z"/></svg>
+      </button>
+      <button class="btn sm" onclick="toast('项目设置（原型未展开）')">设置</button>
+      <button class="btn sm" onclick="toast('导出剧本 PDF / 纯文本（S-02 导出）')">导出</button>
+    </div>
+  </header>
+
+  <div class="body">
+
+    <!-- ===== 生成态 ===== -->
+    <section id="genView">
+      <div class="gen-grid">
+        <div class="pane">
+          <div class="pane-head">
+            <h3>原始输入</h3>
+            <span class="hint">一句话创意 · 忠实度：大纲遵循</span>
+          </div>
+          <div class="pane-body">
+            <div class="raw-text">把这句话做成漫剧：深夜便利店的相遇
+
+体裁：都市
+风格：二次元
+目标时长：3 分钟
+输出比例：9:16</div>
+          </div>
+        </div>
+
+        <div class="pane">
+          <div class="pane-head">
+            <h3>AI 生成（流式）</h3>
+            <span class="hint" id="modelHint">文本模型 · 通用文本</span>
+          </div>
+          <div class="pane-body"><div class="stream-text" id="streamOut"></div></div>
+        </div>
+      </div>
+
+      <div class="gen-bar">
+        <div class="pill-state">
+          <span class="spin" id="spin"></span>
+          <span id="genState">正在生成… <b id="genPct">0%</b></span>
+        </div>
+        <div class="bar"><span id="genBar"></span></div>
+        <button class="btn sm" id="pauseBtn">暂停</button>
+        <button class="btn sm" id="cancelBtn">取消</button>
+        <button class="btn sm primary" id="skipBtn">跳过动画，直接进入编辑</button>
+      </div>
+    </section>
+
+    <!-- ===== 编辑态 ===== -->
+    <section id="editView">
+      <div class="cols">
+
+        <!-- 左：大纲 -->
+        <div class="col">
+          <div class="col-head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h10"/></svg>
+            大纲导航
+          </div>
+          <div class="col-body" id="outline"></div>
+        </div>
+
+        <!-- 中：正文 -->
+        <div class="col">
+          <div class="col-head">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 4l6 6-9.5 9.5-6-6z"/><path d="M4.5 19.5l1.5-4 4 1.5z"/></svg>
+            剧本正文 · 富文本编辑
+            <span style="margin-left:auto;font-size:12.5px">已自动保存</span>
+          </div>
+          <div class="col-body">
+            <div class="sync-bar" id="syncBar">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 8v5M12 16.2v.2"/><circle cx="12" cy="12" r="8.5"/></svg>
+              <span>检测到正文与结构化字段不一致：<b>「小林」性格描述</b></span>
+              <button class="btn sm" id="syncOk" style="margin-left:auto">同步</button>
+              <button class="btn sm" id="syncNo">忽略</button>
+            </div>
+            <div id="scenes"></div>
+          </div>
+        </div>
+
+        <!-- 右：助手 / 体检 -->
+        <div class="col">
+          <div class="tabs">
+            <button class="tab on" data-panel="assist">AI 助手</button>
+            <button class="tab" data-panel="health">结构化体检 <span style="color:var(--warn)">3</span></button>
+          </div>
+
+          <div class="col-body">
+            <!-- AI 助手 -->
+            <div class="panel on" id="panel-assist">
+              <div class="field-label">优化粒度</div>
+              <div class="seg-row" id="granularity">
+                <button class="seg" data-g="all">整篇</button>
+                <button class="seg on" data-g="scene">本场</button>
+                <button class="seg" data-g="para">本段</button>
+                <button class="seg" data-g="field">单字段</button>
+              </div>
+              <div class="field-label">优化指令</div>
+              <textarea class="ta" id="instr" placeholder="例如：这场对白太干，补一点动作描写，别改剧情">这场对白太干，补一点动作描写，别改剧情</textarea>
+              <div style="display:flex;gap:8px;margin-top:10px">
+                <button class="btn sm primary" id="genSug" style="flex:1">生成建议</button>
+                <button class="btn sm" onclick="document.getElementById('instr').value='';toast('已清空指令')">清空</button>
+              </div>
+
+              <div class="diff" id="diff">
+                <div class="diff-head">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 4v16M4 12h16"/></svg>
+                  <span id="diffScope">作用于：第 2 场</span>
+                  <span style="margin-left:auto">逐条接受 / 拒绝</span>
+                </div>
+                <div id="diffBody"></div>
+                <div style="padding:11px 13px;display:flex;gap:8px;border-top:1px solid var(--border)">
+                  <button class="btn sm primary" id="applyAll" style="flex:1">全部接受</button>
+                  <button class="btn sm" id="dropAll">全部拒绝</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- 体检 -->
+            <div class="panel" id="panel-health">
+              <div class="health-item">
+                <div class="h-top"><span class="h-ico">!</span>第 2 场连续多轮对白，缺少动作描写</div>
+                <div class="h-desc">建议在 2-3 处对白之间插入人物动作或环境细节，避免读起来像广播剧。</div>
+                <button class="loc-btn" data-goto="2">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.2 7-11a7 7 0 10-14 0c0 5.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                  定位到第 2 场
+                </button>
+              </div>
+              <div class="health-item">
+                <div class="h-top"><span class="h-ico">!</span>第 4 场缺少情绪高点</div>
+                <div class="h-desc">收尾场铺垫充分但缺少一个释放点，建议增加一个动作或台词转折。</div>
+                <button class="loc-btn" data-goto="4">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.2 7-11a7 7 0 10-14 0c0 5.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                  定位到第 4 场
+                </button>
+              </div>
+              <div class="health-item">
+                <div class="h-top"><span class="h-ico">!</span>角色「店员」在第 3-4 场出场断层</div>
+                <div class="h-desc">该角色在第 2 场后消失，若为配角可忽略；若需贯穿请补充戏份。</div>
+                <button class="loc-btn" data-goto="2">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-5.2 7-11a7 7 0 10-14 0c0 5.8 7 11 7 11z"/><circle cx="12" cy="10" r="2.6"/></svg>
+                  查看角色出场分布
+                </button>
+              </div>
+              <button class="btn sm" style="width:100%;justify-content:center;margin-top:4px" onclick="toast('重新扫描剧本（结构化体检）')">重新扫描</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+  </div>
+
+  <!-- ============ 底部 ============ -->
+  <footer class="bottombar">
+    <button class="btn sm" onclick="toast('回到项目列表')">上一步</button>
+    <span class="grow"></span>
+    <span class="cost-hint">4 场 · 12 轮对白 · <b>2 个角色 / 3 个场景</b></span>
+    <button class="btn sm" id="toCanvas">同步到画布</button>
+    <button class="btn sm" onclick="toast('导出剧本 PDF（S-02）')">导出</button>
+    <button class="btn primary" id="confirmScript">确认剧本 → 进入资产</button>
+  </footer>
+
+  </div><!-- /main -->
+</div>
+
+<!-- 影响面预览 -->
+<div class="mask" id="mask">
+  <div class="modal">
+    <div class="modal-head">
+      <div class="modal-ico">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 8v5M12 16.2v.2"/><circle cx="12" cy="12" r="8.5"/></svg>
+      </div>
+      <h3>确认前，先看影响面</h3>
+    </div>
+    <div class="modal-body">
+      确认剧本后将进入资产管理阶段。若之后回来修改剧本，以下下游内容会受影响：
+      <div class="impact-list">
+        <div class="impact-row"><span>角色资产</span><span class="n">2 个</span></div>
+        <div class="impact-row"><span>场景资产</span><span class="n">3 个</span></div>
+        <div class="impact-row"><span>已生成定妆照</span><span class="n">6 张</span></div>
+        <div class="impact-row"><span>分镜（尚未生成）</span><span class="n">0 个</span></div>
+      </div>
+      <div style="margin-top:14px;font-size:14px">
+        <span style="color:var(--warn)">●</span> 提示：进入资产阶段后，剧本改动会标记为「影响下游」，需人工确认。
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" id="modalCancel">再改改</button>
+      <button class="btn primary" id="modalOk">确认并进入资产</button>
+    </div>
+  </div>
+</div>
+
+<!-- 演示控制 -->
+<button class="demo-toggle" id="demoToggle">
+  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+  演示控制
+</button>
+<div class="demo-panel" id="demoPanel">
+  <div class="demo-title">视图</div>
+  <div class="demo-seg">
+    <button class="seg on" data-view="gen">生成态</button>
+    <button class="seg" data-view="edit">编辑态</button>
+  </div>
+  <div class="demo-title">触发</div>
+  <div class="demo-seg">
+    <button class="seg" id="dSync">字段同步提示</button>
+    <button class="seg" id="dPause">暂停生成</button>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+(function(){
+  'use strict';
+  var $ = function(s){ return document.querySelector(s); };
+  var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+  function toast(msg){
+    var box = $('#toasts'), el = document.createElement('div');
+    el.className = 'toast';
+    el.innerHTML = '<span class="t-dot"></span>' + msg;
+    box.appendChild(el);
+    setTimeout(function(){
+      el.style.transition = 'opacity .22s ease, transform .22s ease';
+      el.style.opacity = '0'; el.style.transform = 'translateY(-6px)';
+      setTimeout(function(){ el.remove(); }, 240);
+    }, 2300);
+  }
+
+  /* ---------- 主题 ---------- */
+  $('#themeBtn').addEventListener('click', function(){
+    var cur = document.documentElement.getAttribute('data-theme');
+    document.documentElement.setAttribute('data-theme', cur === 'dark' ? 'light' : 'dark');
+  });
+
+  /* ---------- 剧本数据 ---------- */
+  var SCENES = [
+    { id:1, title:'便利店 · 夜 · 内', time:'00:42', shots:5,
+      lines:[
+        ['sp','〔场景〕24 小时便利店，日光灯冷白，货架整齐，只有收银台后有人。'],
+        ['act','（门被推开，风铃响了一声。小林低头看着手机走进来）'],
+        ['dlg','小林：「麻烦…一杯热美式。」'],
+        ['dlg','店员：「好的，稍等。」'],
+        ['act','（小林走到窗边坐下，把手机屏幕朝下扣在桌上）']
+      ]},
+    { id:2, title:'便利店 · 夜 · 内', time:'01:20', shots:4,
+      lines:[
+        ['dlg','店员：「您的咖啡。」'],
+        ['dlg','小林：「谢谢。」'],
+        ['act','（两人手指在杯壁上短暂相触，小林迅速收回手）'],
+        ['dlg','店员：「外面…要下雨了。」']
+      ]},
+    { id:3, title:'便利店门口 · 夜 · 外', time:'02:05', shots:3,
+      lines:[
+        ['sp','〔场景〕霓虹招牌一闪一闪，地砖还留着白天晒过的余温。'],
+        ['act','（小林靠在玻璃门上，捧着纸杯，呵出一口白气）'],
+        ['dlg','小林：（自言自语）「再待一会儿吧。」']
+      ]},
+    { id:4, title:'街道 · 雨 · 外', time:'02:48', shots:3,
+      lines:[
+        ['sp','〔场景〕雨突然落下，路灯在积水里碎成一片。'],
+        ['act','（小林没有撑伞，慢慢走进雨里）'],
+        ['dlg','小林：「…反正也没人等我。」']
+      ]}
+  ];
+
+  var RAW_FULL = [
+    '第 1 场 · 便利店 · 夜 · 内',
+    '',
+    '〔场景〕24 小时便利店，日光灯冷白，货架整齐，只有收银台后有人。',
+    '（门被推开，风铃响了一声。小林低头看着手机走进来）',
+    '小林：「麻烦…一杯热美式。」',
+    '店员：「好的，稍等。」',
+    '（小林走到窗边坐下，把手机屏幕朝下扣在桌上）',
+    '',
+    '第 2 场 · 便利店 · 夜 · 内',
+    '',
+    '店员：「您的咖啡。」',
+    '小林：「谢谢。」',
+    '（两人手指在杯壁上短暂相触，小林迅速收回手）',
+    '店员：「外面…要下雨了。」',
+    '',
+    '第 3 场 · 便利店门口 · 夜 · 外',
+    '',
+    '〔场景〕霓虹招牌一闪一闪，地砖还留着白天晒过的余温。',
+    '（小林靠在玻璃门上，捧着纸杯，呵出一口白气）',
+    '小林：（自言自语）「再待一会儿吧。」',
+    '',
+    '第 4 场 · 街道 · 雨 · 外',
+    '',
+    '〔场景〕雨突然落下，路灯在积水里碎成一片。',
+    '（小林没有撑伞，慢慢走进雨里）',
+    '小林：「…反正也没人等我。」'
+  ];
+
+  /* ---------- 渲染大纲与正文 ---------- */
+  function renderOutline(){
+    var box = $('#outline'), html = '';
+    SCENES.forEach(function(s){
+      html += '<button class="out-item' + (s.id === 1 ? ' on' : '') + '" data-id="' + s.id + '">' +
+        '<span class="out-no">' + s.id + '</span>' +
+        '<span class="out-meta"><span class="out-title">' + s.title.split('·')[0].trim() + ' · ' + s.title.split('·')[1].trim() + '</span>' +
+        '<span class="out-sub">' + s.shots + ' 镜 · ' + s.time + '</span></span></button>';
+    });
+    html += '<button class="add-scene" onclick="window.__addScene()">' +
+            '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>新增场次</button>';
+    box.innerHTML = html;
+
+    $$('#outline .out-item').forEach(function(b){
+      b.addEventListener('click', function(){ focusScene(parseInt(b.getAttribute('data-id'), 10)); });
+    });
+  }
+
+  function renderScenes(){
+    var box = $('#scenes'), html = '';
+    SCENES.forEach(function(s){
+      html += '<div class="scene" id="scene-' + s.id + '">' +
+        '<div class="scene-head"><span class="scene-title">第 ' + s.id + ' 场</span>' +
+        '<span class="scene-tag">' + s.title + '</span>' +
+        '<span class="scene-tools">' +
+        '<button class="mini" title="拆分" onclick="toast(\'拆分场次（支持文字级切分）\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M12 3v18M7 8l-3 4 3 4M17 8l3 4-3 4"/></svg></button>' +
+        '<button class="mini" title="合并" onclick="toast(\'与下一场合并\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round"><path d="M4 12h16M9 7l-5 5 5 5M15 7l5 5-5 5"/></svg></button>' +
+        '<button class="mini" title="删除" onclick="toast(\'删除场次（需二次确认）\')"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M5 7h14M9 7V5h6v2M7 7l1 12h8l1-12"/></svg></button>' +
+        '</span></div>' +
+        '<div class="scene-body" contenteditable="true" data-id="' + s.id + '">';
+      s.lines.forEach(function(l){
+        var cls = l[0] === 'dlg' ? 'dlg' : (l[0] === 'act' ? 'act' : 'sp');
+        html += '<span class="line ' + cls + '">' + l[1] + '</span>';
+      });
+      html += '</div></div>';
+    });
+    box.innerHTML = html;
+
+    $$('#scenes .scene-body').forEach(function(el){
+      el.addEventListener('input', function(){ $('#syncBar').classList.add('show'); });
+    });
+  }
+
+  var lastFocus = 1;
+  function focusScene(id){
+    $$('#outline .out-item').forEach(function(b){
+      b.classList.toggle('on', parseInt(b.getAttribute('data-id'), 10) === id);
+    });
+    var el = $('#scene-' + id);
+    if (!el) return;
+    el.scrollIntoView({ behavior:'smooth', block:'center' });
+    $$('.scene').forEach(function(s){ s.classList.remove('hl'); });
+    el.classList.add('hl');
+    lastFocus = id;
+    setTimeout(function(){ el.classList.remove('hl'); }, 2200);
+  }
+
+  window.__addScene = function(){ toast('新增场次（原型未展开）'); };
+
+  /* ---------- 生成态 ---------- */
+  var gen = { timer:null, p:0, paused:false, finished:false };
+  function startGen(){
+    var out = $('#streamOut'), html = '';
+    var colors = { sp:'sp', act:'act', dlg:'dlg' };
+    out.innerHTML = '';
+    var buf = [];
+    RAW_FULL.forEach(function(line){
+      var cls = '', txt = line;
+      if (/^第 \d+ 场/.test(line)) cls = 'sc';
+      else if (line.indexOf('〔场景〕') === 0) cls = 'sp';
+      else if (line.indexOf('（') === 0) cls = 'act';
+      else if (line.indexOf('：') > 0) cls = 'ch';
+      buf.push('<span class="line ' + cls + '">' + (txt || '&nbsp;') + '</span>');
+    });
+
+    var i = 0;
+    gen.timer = setInterval(function(){
+      if (gen.paused) return;
+      i++;
+      out.innerHTML = buf.slice(0, i).join('') + '<span class="caret"></span>';
+      var pct = Math.round(i / buf.length * 100);
+      gen.p = pct;
+      $('#genPct').textContent = pct + '%';
+      $('#genBar').style.width = pct + '%';
+      $('#streamOut').scrollTop = $('#streamOut').scrollHeight;
+      if (i >= buf.length){
+        clearInterval(gen.timer);
+        gen.finished = true;
+        out.innerHTML = buf.join('');
+        $('#spin').style.animation = 'none';
+        $('#spin').style.background = 'var(--ok)';
+        $('#spin').style.borderColor = 'var(--ok)';
+        $('#genState').innerHTML = '生成完成 · 共 4 场 ' + '<b>' + SCENES.reduce(function(a,s){return a+s.shots;},0) + ' 镜</b>';
+        $('#pauseBtn').disabled = true;
+        $('#skipBtn').textContent = '进入编辑 →';
+        toast('剧本生成完成，可进入编辑');
+      }
+    }, 130);
+  }
+
+  $('#pauseBtn').addEventListener('click', function(){
+    if (gen.finished) return;
+    gen.paused = !gen.paused;
+    this.textContent = gen.paused ? '继续' : '暂停';
+    $('#genState').innerHTML = gen.paused ? '已暂停 · 已生成内容已保留' + ' <b>' + gen.p + '%</b>' : '正在生成… <b>' + gen.p + '%</b>';
+    toast(gen.paused ? '已暂停（检查点已落，可续跑）' : '继续生成');
+  });
+  $('#cancelBtn').addEventListener('click', function(){
+    clearInterval(gen.timer);
+    toast('已取消本次生成，可重新发起');
+    switchView('gen'); startGen();
+  });
+  $('#skipBtn').addEventListener('click', function(){
+    if (!gen.finished){
+      clearInterval(gen.timer);
+      gen.finished = true;
+      $('#streamOut').innerHTML = RAW_FULL.map(function(l){
+        var cls = '';
+        if (/^第 \d+ 场/.test(l)) cls = 'sc';
+        else if (l.indexOf('〔场景〕') === 0) cls = 'sp';
+        else if (l.indexOf('（') === 0) cls = 'act';
+        else if (l.indexOf('：') > 0) cls = 'ch';
+        return '<span class="line ' + cls + '">' + (l || '&nbsp;') + '</span>';
+      }).join('');
+      $('#genBar').style.width = '100%'; $('#genPct').textContent = '100%';
+    }
+    switchView('edit');
+  });
+
+  /* ---------- 视图切换 ---------- */
+  function switchView(v){
+    $('#genView').style.display = v === 'gen' ? 'flex' : 'none';
+    $('#editView').style.display = v === 'edit' ? 'block' : 'none';
+    $$('[data-view]').forEach(function(b){ b.classList.toggle('on', b.getAttribute('data-view') === v); });
+  }
+  $$('[data-view]').forEach(function(b){
+    b.addEventListener('click', function(){
+      var v = b.getAttribute('data-view');
+      if (v === 'gen' && gen.finished === false && !gen.timer){ startGen(); }
+      switchView(v);
+    });
+  });
+
+  /* ---------- 步骤条 ---------- */
+  $$('#steps .step').forEach(function(b){
+    b.addEventListener('click', function(){
+      var stage = parseInt(b.getAttribute('data-stage'), 10);
+      if (stage === 1){ toast('当前阶段：剧本创作'); return; }
+      if (stage === 2){ $('#confirmScript').click(); return; }
+      toast('需先完成「' + (stage - 1 === 1 ? '资产' : stage === 3 ? '资产' : '上一阶段') + '」才能进入该阶段');
+    });
+  });
+
+  /* ---------- Tabs ---------- */
+  $$('.tab').forEach(function(t){
+    t.addEventListener('click', function(){
+      $$('.tab').forEach(function(x){ x.classList.remove('on'); });
+      t.classList.add('on');
+      var p = t.getAttribute('data-panel');
+      $$('.panel').forEach(function(x){ x.classList.remove('on'); });
+      $('#panel-' + p).classList.add('on');
+    });
+  });
+
+  /* ---------- 粒度 ---------- */
+  $$('#granularity .seg').forEach(function(s){
+    s.addEventListener('click', function(){
+      $$('#granularity .seg').forEach(function(x){ x.classList.remove('on'); });
+      s.classList.add('on');
+      var map = { all:'整篇', scene:'第 2 场', para:'第 2 场 · 第 1 段', field:'「小林」动作描述' };
+      $('#diffScope').textContent = '作用于：' + map[s.getAttribute('data-g')];
+    });
+  });
+
+  /* ---------- diff 建议 ---------- */
+  var DIFF = [
+    { del:'店员：「您的咖啡。」', add:'店员把纸杯推过吧台，杯壁凝着一层薄雾：「您的咖啡。」', state:'' },
+    { del:'小林：「谢谢。」', add:'小林抬眼，指尖在杯身上停了一下：「谢谢。」', state:'' },
+    { del:'（两人手指在杯壁上短暂相触，小林迅速收回手）', add:'（递接的一瞬，两人的指尖在杯壁上碰到，小林像被烫到一样收回手，视线落回桌面）', state:'' }
+  ];
+  function renderDiff(){
+    var box = $('#diffBody'), html = '';
+    DIFF.forEach(function(d, i){
+      html += '<div class="diff-item ' + d.state + '" data-i="' + i + '">' +
+        '<div class="diff-line del">− ' + d.del + '</div>' +
+        '<div class="diff-line add">+ ' + d.add + '</div>' +
+        '<div class="diff-acts">' +
+        '<button class="btn sm primary" data-act="acc" data-i="' + i + '">接受</button>' +
+        '<button class="btn sm" data-act="rej" data-i="' + i + '">拒绝</button>' +
+        '</div></div>';
+    });
+    box.innerHTML = html;
+    $$('#diffBody [data-act]').forEach(function(b){
+      b.addEventListener('click', function(){
+        var i = parseInt(b.getAttribute('data-i'), 10);
+        var act = b.getAttribute('data-act');
+        var item = DIFF[i];
+        if (item.state) { toast('该条已处理'); return; }
+        if (act === 'acc'){
+          item.state = 'applied';
+          applyToScene(item);
+          toast('已接受第 ' + (i + 1) + ' 条改动');
+        } else {
+          item.state = 'rejected';
+          toast('已拒绝第 ' + (i + 1) + ' 条改动');
+        }
+        var el = $('#diffBody .diff-item[data-i="' + i + '"]');
+        el.className = 'diff-item ' + item.state;
+      });
+    });
+  }
+  function applyToScene(item){
+    var body = document.querySelector('#scene-2 .scene-body');
+    if (!body) return;
+    var spans = body.querySelectorAll('.line');
+    for (var k = 0; k < spans.length; k++){
+      var t = spans[k].textContent.trim();
+      if (t === item.del){
+        spans[k].textContent = item.add;
+        spans[k].style.background = 'var(--ok-soft)';
+        spans[k].style.color = 'var(--ok)';
+        spans[k].style.borderRadius = '6px';
+        setTimeout(function(el){ el.style.background = ''; el.style.color = ''; }, 2600, spans[k]);
+        break;
+      }
+    }
+    $('#syncBar').classList.add('show');
+  }
+
+  $('#genSug').addEventListener('click', function(){
+    var txt = $('#instr').value.trim();
+    if (!txt){ toast('先写一句优化指令'); return; }
+    this.disabled = true; this.textContent = '生成中…';
+    var self = this;
+    setTimeout(function(){
+      self.disabled = false; self.textContent = '生成建议';
+      DIFF.forEach(function(d){ d.state = ''; });
+      renderDiff();
+      $('#diff').classList.add('show');
+      toast('已生成 3 条建议，请逐条确认');
+    }, 900);
+  });
+  $('#applyAll').addEventListener('click', function(){
+    DIFF.forEach(function(d){ if (!d.state){ d.state = 'applied'; applyToScene(d); } });
+    renderDiff();
+    toast('已全部接受');
+  });
+  $('#dropAll').addEventListener('click', function(){
+    DIFF.forEach(function(d){ if (!d.state) d.state = 'rejected'; });
+    renderDiff();
+    toast('已全部拒绝');
+  });
+
+  /* ---------- 同步提示 ---------- */
+  $('#syncOk').addEventListener('click', function(){
+    $('#syncBar').classList.remove('show');
+    toast('结构化字段已同步（仅同步你确认的改动）');
+  });
+  $('#syncNo').addEventListener('click', function(){
+    $('#syncBar').classList.remove('show');
+    toast('已忽略，字段保持原值（用户修改不会被覆盖）');
+  });
+  $('#dSync').addEventListener('click', function(){ $('#syncBar').classList.add('show'); });
+
+  /* ---------- 体检定位 ---------- */
+  $$('.loc-btn').forEach(function(b){
+    b.addEventListener('click', function(){
+      var id = parseInt(b.getAttribute('data-goto'), 10);
+      focusScene(id);
+      toast('已定位到第 ' + id + ' 场');
+    });
+  });
+
+  /* ---------- 影响面弹窗 ---------- */
+  $('#confirmScript').addEventListener('click', function(){ $('#mask').classList.add('show'); });
+  $('#modalCancel').addEventListener('click', function(){ $('#mask').classList.remove('show'); });
+  $('#mask').addEventListener('click', function(e){ if (e.target === this) this.classList.remove('show'); });
+  $('#modalOk').addEventListener('click', function(){
+    $('#mask').classList.remove('show');
+    toast('剧本已确认，正在从剧本中提取角色与场景…');
+    $$('#steps .step').forEach(function(b){
+      var s = parseInt(b.getAttribute('data-stage'), 10);
+      b.classList.toggle('done', s === 1);
+      b.classList.toggle('active', s === 2);
+    });
+    setTimeout(function(){ toast('提取完成 → 进入实体提取确认页（S-03）'); }, 900);
+  });
+
+  $('#toCanvas').addEventListener('click', function(){ toast('已投递到画布，生成子画布（携带资产约束）'); });
+
+  /* ---------- 演示控制 ---------- */
+  $('#demoToggle').addEventListener('click', function(){ $('#demoPanel').classList.toggle('show'); });
+  $('#dPause').addEventListener('click', function(){ $('#pauseBtn').click(); });
+
+  /* ---------- 侧栏：全站常驻导航 ---------- */
+  document.getElementById('collapseBtn').addEventListener('click', function(){
+    var app = document.querySelector('.app');
+    if (window.innerWidth <= 1024) app.classList.toggle('drawer');
+    else app.classList.toggle('collapsed');
+  });
+
+  var NAV_MAP = {
+    agent:'统一创作 Agent（P-01）',
+    projects:'漫剧项目列表（W-02）',
+    canvas:'AI 画布（C-01 / C-02）',
+    collab:'协作（V-03 / V-04，本期不做）',
+    assets:'角色与场景（A-01 ~ A-10）',
+    media:'素材库（PL-16 ~ PL-19）',
+    prompts:'提示词库（PL-12 ~ PL-15）',
+    models:'模型配置（PL-07 ~ PL-11 / PL-26 ~ PL-29）',
+    billing:'计费与配额（PL-20 ~ PL-25）',
+    profile:'个人中心（U-03 ~ U-06 / V-01 / V-02）'
+  };
+  $$('#nav .nav-item').forEach(function(b){
+    b.addEventListener('click', function(){
+      var page = b.getAttribute('data-page');
+      if (page === 'collab'){ toast('协作功能本期不做（V-03 / V-04）'); return; }
+      if (page === 'projects'){ toast('返回漫剧项目列表（W-02）'); return; }
+      toast('跳转：' + (NAV_MAP[page] || page) + ' —— 本原型仅实现 S-02');
+    });
+  });
+
+  /* ---------- 初始化 ---------- */
+  renderOutline();
+  renderScenes();
+  startGen();
+})();
+</script>
+</body>
+</html>

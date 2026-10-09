@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>漫序 MangaFlow · S-04 资产管理（交互原型）</title>
+<style>
+:root{
+  --r-card:20px; --r-ctl:12px; --r-pill:999px;
+  --bg:#F5F7F6; --surface:#FFFFFF; --surface-2:#FAFAF8; --surface-3:#EFF2F1;
+  --border:rgba(0,0,0,.09); --border-strong:rgba(0,0,0,.16);
+  --text:#14181A; --text-2:#5F6B68; --text-3:#8E9A97;
+  --accent:#12B3A6; --accent-soft:rgba(18,179,166,.10);
+  --brand2:#7C6BF0; --brand2-soft:rgba(124,107,240,.12);
+  --ok:#1E9E6A; --ok-soft:rgba(30,158,106,.12);
+  --warn:#B87100; --warn-soft:rgba(184,113,0,.13);
+  --danger:#CE4343; --danger-soft:rgba(206,67,67,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px -12px rgba(0,0,0,.10);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+}
+html[data-theme="dark"]{
+  --bg:#0E1112; --surface:#15191A; --surface-2:#1C2223; --surface-3:#111516;
+  --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
+  --text:#E8EDEA; --text-2:#9BA5A2; --text-3:#6B7573;
+  --accent:#4FD8CA; --accent-soft:rgba(18,179,166,.18);
+  --brand2:#9A8CF5; --brand2-soft:rgba(124,107,240,.20);
+  --ok:#4CC38A; --ok-soft:rgba(76,195,138,.14);
+  --warn:#E0A33A; --warn-soft:rgba(224,163,58,.14);
+  --danger:#F0736F; --danger-soft:rgba(240,115,111,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.30), 0 12px 32px -14px rgba(0,0,0,.60);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:0;cursor:pointer}
+select,input{font-family:inherit;font-size:inherit;color:inherit}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(127,127,127,.28);border-radius:5px}
+.app{display:flex;height:100vh;overflow:hidden}
+
+/* 侧栏 */
+.sidebar{width:252px;flex-shrink:0;background:var(--surface-3);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+.brand{display:flex;align-items:center;gap:11px;padding:18px 18px 15px}
+.brand-mark{width:30px;height:30px;border-radius:10px;background:linear-gradient(140deg,var(--accent),var(--brand2));color:#0E1112;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.brand-name{font-weight:600;font-size:16px;white-space:nowrap}
+.nav{flex:1;overflow-y:auto;padding:4px 10px 12px}
+.nav-group{margin-bottom:15px}
+.nav-group-title{font-size:12.5px;color:var(--text-3);padding:8px 8px 6px;white-space:nowrap}
+.nav-item{display:flex;align-items:center;gap:11px;padding:9px 10px;border-radius:11px;width:100%;text-align:left;color:var(--text-2);position:relative;white-space:nowrap}
+.nav-item:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.nav-item.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.nav-item.active::before{content:"";position:absolute;left:-10px;top:50%;transform:translateY(-50%);width:3px;height:18px;border-radius:0 3px 3px 0;background:var(--accent)}
+.nav-label{flex:1;font-size:15px}
+.nav-badge{font-size:11.5px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(127,127,127,.14);color:var(--text-3)}
+.side-foot{border-top:1px solid var(--border);padding:10px}
+
+.main{flex:1;display:flex;flex-direction:column;min-width:0}
+.topbar{height:60px;flex-shrink:0;display:flex;align-items:center;gap:12px;padding:0 18px;border-bottom:1px solid var(--border)}
+.icon-btn{width:34px;height:34px;border-radius:10px;display:flex;align-items:center;justify-content:center;color:var(--text-2)}
+.icon-btn:hover{background:rgba(127,127,127,.12);color:var(--text)}
+.proj-name{font-size:16px;font-weight:600;white-space:nowrap}
+.steps{display:flex;align-items:center;gap:4px;margin:0 auto}
+.step{display:flex;align-items:center;gap:7px;padding:7px 13px;border-radius:var(--r-pill);font-size:14px;color:var(--text-3);white-space:nowrap}
+.step:hover{background:rgba(127,127,127,.10);color:var(--text-2)}
+.step.done{color:var(--ok)}
+.step.active{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.step .idx{width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11.5px;border:1.4px solid currentColor}
+.step-sep{width:16px;height:1px;background:var(--border-strong)}
+.top-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+
+.content{flex:1;overflow-y:auto;padding:20px 24px 24px}
+.row{display:flex;align-items:center;gap:10px}
+.muted{color:var(--text-3);font-size:13px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 15px;border-radius:var(--r-ctl);font-size:14px;border:1px solid var(--border);white-space:nowrap}
+.btn:hover{background:rgba(127,127,127,.10)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#0E1112}
+.btn.primary:hover{filter:brightness(1.06)}
+.btn.ghost{border-color:transparent;color:var(--text-2)}
+.btn.sm{padding:6px 12px;font-size:13.5px;border-radius:10px}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.tag{display:inline-flex;align-items:center;gap:4px;font-size:12px;padding:2px 9px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--text-2);white-space:nowrap}
+.tag.a{background:var(--accent-soft);color:var(--accent)}
+.tag.p{background:var(--brand2-soft);color:var(--brand2)}
+.tag.o{background:var(--ok-soft);color:var(--ok)}
+.tag.w{background:var(--warn-soft);color:var(--warn)}
+.tag.d{background:var(--danger-soft);color:var(--danger)}
+.chip{padding:7px 15px;border-radius:var(--r-pill);font-size:14px;color:var(--text-2);border:1px solid var(--border);background:var(--surface)}
+.chip.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.tabs2{display:flex;gap:6px;margin-bottom:16px;flex-wrap:wrap}
+.inp{width:100%;padding:10px 13px;border-radius:var(--r-ctl);border:1px solid var(--border);background:var(--surface-2);outline:0}
+.inp:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-soft)}
+.lbl{font-size:13px;color:var(--text-3);margin-bottom:6px;display:block}
+.banner{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:var(--r-ctl);font-size:14px}
+.banner.a{background:var(--accent-soft);color:var(--accent)}
+.banner.w{background:var(--warn-soft);color:var(--warn)}
+.banner.d{background:var(--danger-soft);color:var(--danger)}
+.banner.o{background:var(--ok-soft);color:var(--ok)}
+.bar{height:6px;border-radius:3px;background:rgba(127,127,127,.16);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent);border-radius:3px;width:0;transition:width .3s linear}
+.spin{width:14px;height:14px;border-radius:50%;border:2px solid var(--accent-soft);border-top-color:var(--accent);animation:sp .8s linear infinite}
+@keyframes sp{to{transform:rotate(360deg)}}
+
+/* 资产卡 */
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(330px,1fr));gap:16px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:16px}
+.card-head{display:flex;align-items:center;gap:9px;margin-bottom:12px}
+.card-head b{font-size:15.5px}
+.medias{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.slot{aspect-ratio:1;border-radius:var(--r-ctl);border:1px solid var(--border);position:relative;overflow:hidden;display:flex;align-items:center;justify-content:center;font-size:12px;color:var(--text-3)}
+.slot.filled{border:0;color:#fff}
+.slot .cap{position:absolute;left:7px;bottom:6px;font-size:11px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(0,0,0,.5)}
+.slot .lock{position:absolute;right:7px;top:6px;font-size:11px;padding:2px 7px;border-radius:var(--r-pill);background:rgba(30,158,106,.92);color:#fff}
+.slot.gen{border-style:solid;border-color:var(--accent)}
+.slot .prog{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(255,255,255,.25)}
+.slot .prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s linear}
+.card-acts{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}
+.hint{font-size:12.5px;color:var(--text-3);margin-top:10px;line-height:1.6}
+
+/* 一致性校验 */
+.cons{margin-top:26px}
+.cons-grid{display:grid;grid-template-columns:repeat(2,minmax(0,260px));gap:16px;margin-top:12px}
+.diffbox{position:relative}
+.diffbox .ov{position:absolute;border:2px dashed var(--warn);border-radius:50%;display:none}
+.diffbox.on .ov{display:block}
+.ov1{left:28%;top:18%;width:44%;height:26%}
+.ov2{left:24%;top:46%;width:52%;height:16%}
+
+/* 底部 */
+.bottombar{flex-shrink:0;display:flex;align-items:center;gap:12px;padding:13px 22px;border-top:1px solid var(--border);background:var(--surface-2)}
+
+/* 抽屉 / 弹窗 */
+.mask{position:fixed;inset:0;background:rgba(0,0,0,.42);backdrop-filter:blur(3px);display:none;align-items:center;justify-content:center;padding:20px;z-index:120;overflow:auto}
+.mask.show{display:flex}
+.panel{width:100%;max-width:560px;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:0 24px 64px -20px rgba(0,0,0,.5);overflow:hidden;animation:pop .18s ease}
+@keyframes pop{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:none}}
+.panel-h{padding:20px 24px 14px;display:flex;align-items:center;gap:10px}
+.panel-h h3{font-size:17px;font-weight:600}
+.panel-b{padding:0 24px 20px;font-size:14.5px;color:var(--text-2);max-height:62vh;overflow-y:auto}
+.panel-f{padding:14px 24px 20px;display:flex;gap:10px;justify-content:flex-end}
+.locked-layer{background:var(--surface-3);border-radius:var(--r-ctl);padding:12px 14px;margin-bottom:10px}
+.toasts{position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:300;display:flex;flex-direction:column;gap:8px;align-items:center}
+.toast{display:flex;align-items:center;gap:8px;padding:10px 17px;border-radius:var(--r-pill);background:var(--text);color:var(--bg);font-size:14px;box-shadow:var(--shadow);animation:pop .16s ease}
+.toast .d{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.6}
+.reset{position:fixed;right:18px;bottom:78px;z-index:150;padding:9px 16px;border-radius:var(--r-pill);background:var(--surface);border:1px solid var(--border);color:var(--text-2);font-size:13.5px;box-shadow:var(--shadow)}
+.reset:hover{color:var(--text);border-color:var(--border-strong)}
+@media(max-width:1360px){.sidebar{width:68px}.brand-name,.nav-group-title,.nav-label,.nav-badge{display:none}.brand,.nav-item{justify-content:center;padding:10px 0}}
+</style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="brand"><div class="brand-mark">漫</div><div class="brand-name">漫序 MangaFlow</div></div>
+    <nav class="nav">
+      <div class="nav-group"><div class="nav-group-title">创作</div>
+        <button class="nav-item"><span class="nav-label">Agent</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">项目</div>
+        <button class="nav-item active"><span class="nav-label">漫剧项目</span></button>
+        <button class="nav-item"><span class="nav-label">AI 画布</span></button>
+        <button class="nav-item"><span class="nav-label">协作</span><span class="nav-badge">即将开放</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">资产</div>
+        <button class="nav-item"><span class="nav-label">角色与场景</span></button>
+        <button class="nav-item"><span class="nav-label">素材库</span></button>
+        <button class="nav-item"><span class="nav-label">提示词库</span></button></div>
+      <div class="nav-group"><div class="nav-group-title">账户</div>
+        <button class="nav-item"><span class="nav-label">模型配置</span></button>
+        <button class="nav-item"><span class="nav-label">计费与配额</span></button>
+        <button class="nav-item"><span class="nav-label">个人中心</span></button></div>
+    </nav>
+    <div class="side-foot"><button class="nav-item"><span class="nav-label">帮助</span></button></div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn" onclick="toast('返回项目列表（W-02）')">‹</button>
+      <div class="proj-name">深夜便利店的相遇</div>
+      <div class="steps">
+        <button class="step done" data-s="1"><span class="idx">1</span>剧本</button><span class="step-sep"></span>
+        <button class="step active" data-s="2"><span class="idx">2</span>资产</button><span class="step-sep"></span>
+        <button class="step" data-s="3"><span class="idx">3</span>分镜</button><span class="step-sep"></span>
+        <button class="step" data-s="4"><span class="idx">4</span>生成</button><span class="step-sep"></span>
+        <button class="step" data-s="5"><span class="idx">5</span>发布</button>
+      </div>
+      <div class="top-actions">
+        <button class="icon-btn" id="themeBtn" title="切换主题">◐</button>
+        <button class="btn sm" onclick="toast('项目设置（原型未展开）')">设置</button>
+      </div>
+    </header>
+
+    <div class="content" id="content">
+      <div class="tabs2" id="typeTabs">
+        <button class="chip on" data-t="char">角色 (2)</button>
+        <button class="chip" data-t="scene">场景 (3)</button>
+        <button class="chip" data-t="prop">道具 (1)</button>
+        <button class="chip" data-t="style">风格 (1)</button>
+        <input class="inp" id="search" style="max-width:220px;margin-left:auto" placeholder="搜索 / 语义检索…">
+        <button class="btn sm" onclick="toast('批量分类（原型未展开）')">批量分类</button>
+      </div>
+
+      <div class="row" style="margin-bottom:14px">
+        <span class="muted" id="progText">生成进度 0/4</span>
+        <div class="bar" style="flex:1"><span id="progBar"></span></div>
+        <button class="btn sm" id="pauseBtn">暂停</button>
+      </div>
+
+      <div class="banner a" style="margin-bottom:18px">
+        <b>先出主定妆照</b>　确认满意后才会解锁「派生其他角度」，避免三张脸各长各的
+        <button class="btn sm" style="margin-left:auto" onclick="genAll()">批量生成主照</button>
+      </div>
+
+      <div class="grid" id="assetGrid"></div>
+
+      <div class="cons" id="consArea"></div>
+    </div>
+
+    <footer class="bottombar">
+      <button class="btn sm" onclick="toast('上一步：剧本创作（S-02）')">上一步</button>
+      <span class="muted" style="margin-left:auto" id="footStat">已锁定 0 个资产 · 待确认 2 个</span>
+      <button class="btn sm" onclick="toast('已发送到画布（携带资产约束）')">发送到画布</button>
+      <button class="btn primary" id="nextBtn">确认资产 → 进入分镜</button>
+    </footer>
+  </div>
+</div>
+
+<!-- 提示词抽屉 -->
+<div class="mask" id="promptMask">
+  <div class="panel">
+    <div class="panel-h"><h3 id="pmTitle">视觉提示词</h3><button class="icon-btn" style="margin-left:auto" onclick="closeMask('promptMask')">✕</button></div>
+    <div class="panel-b">
+      <div class="locked-layer">
+        <div class="row" style="justify-content:space-between">
+          <b style="font-size:13px;color:var(--text-2)">🔒 系统锁定层（不可删除）</b>
+          <span class="tag">资产约束</span>
+        </div>
+        <div style="margin-top:8px;font-size:13.5px" id="pmLocked"></div>
+      </div>
+      <label class="lbl">用户可编辑层（改这里不影响一致性约束）</label>
+      <textarea class="inp" id="pmEdit" rows="4"></textarea>
+      <div class="banner w" style="margin-top:12px">修改可编辑层后需重新生成才能生效，本次消耗 8 积分</div>
+    </div>
+    <div class="panel-f"><button class="btn" onclick="closeMask('promptMask')">取消</button><button class="btn primary" id="pmApply">应用并重新生成</button></div>
+  </div>
+</div>
+
+<!-- 变体面板 -->
+<div class="mask" id="variantMask">
+  <div class="panel">
+    <div class="panel-h"><h3 id="vmTitle">造型与变体</h3><button class="icon-btn" style="margin-left:auto" onclick="closeMask('variantMask')">✕</button></div>
+    <div class="panel-b">
+      <label class="lbl">当前造型</label>
+      <div class="row" id="vmList" style="gap:10px;margin-bottom:18px;flex-wrap:wrap"></div>
+      <label class="lbl">变体名称</label>
+      <input class="inp" id="vmName" placeholder="例如：战斗装 / 童年 / 反派形态" style="margin-bottom:14px">
+      <label class="lbl">继承声明（决定与基础资产共享哪些特征）</label>
+      <div style="display:flex;flex-direction:column;gap:9px;font-size:14px">
+        <label class="row"><input type="checkbox" checked id="inFace" style="width:16px;height:16px"> 面部特征（脸型 / 五官 / 发色）<span class="muted">← 换装必继承</span></label>
+        <label class="row"><input type="checkbox" id="inBody" style="width:16px;height:16px"> 体型</label>
+        <label class="row"><input type="checkbox" checked id="inArt" style="width:16px;height:16px"> 画风</label>
+      </div>
+      <div class="banner a" style="margin-top:14px">面部层锁定后，任何变体都会继承面部特征——这就是「换了衣服但还是同一个人」</div>
+    </div>
+    <div class="panel-f"><button class="btn" onclick="closeMask('variantMask')">取消</button><button class="btn primary" id="vmAdd">生成变体</button></div>
+  </div>
+</div>
+
+<!-- 删除保护 -->
+<div class="mask" id="delMask">
+  <div class="panel" style="max-width:460px">
+    <div class="panel-h"><h3>无法删除</h3></div>
+    <div class="panel-b">
+      <div class="banner d" style="margin-bottom:14px">该资产已被下游引用，删除会断链</div>
+      <div style="font-size:14px">引用位置：</div>
+      <div style="margin-top:8px;font-size:14px">
+        · 分镜 #03 / #07 / #12（涉及角色）<br>
+        · 成片 v3（已合成）
+      </div>
+      <div class="muted" style="margin-top:14px">可以改为「停用」：保留历史引用，但不再用于新的生成任务。</div>
+    </div>
+    <div class="panel-f"><button class="btn" onclick="closeMask('delMask')">取消</button><button class="btn primary" onclick="closeMask('delMask');toast('已停用该资产（历史引用保留）')">改为停用</button></div>
+  </div>
+</div>
+
+<button class="reset" id="resetBtn">↻ 重放演示</button>
+<div class="toasts" id="toasts"></div>
+
+<script>
+'use strict';
+var $ = function(s){ return document.querySelector(s); };
+var $$ = function(s){ return Array.prototype.slice.call(document.querySelectorAll(s)); };
+
+function toast(m){
+  var el = document.createElement('div');
+  el.className = 'toast';
+  el.innerHTML = '<span class="d"></span>' + m;
+  $('#toasts').appendChild(el);
+  setTimeout(function(){ el.style.transition='opacity .22s'; el.style.opacity='0'; setTimeout(function(){ el.remove(); },240); }, 2200);
+}
+function openMask(id){ $('#'+id).classList.add('show'); }
+function closeMask(id){ $('#'+id).classList.remove('show'); }
+$$('.mask').forEach(function(m){ m.addEventListener('click', function(e){ if(e.target===this) this.classList.remove('show'); }); });
+
+/* ---------- 主题 ---------- */
+$('#themeBtn').addEventListener('click', function(){
+  var c = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', c === 'dark' ? 'light' : 'dark');
+});
+
+/* ---------- 数据 ---------- */
+var PALETTE = ['linear-gradient(140deg,#12332F,#12B3A6)','linear-gradient(140deg,#1F3B3A,#2E8B7A)',
+               'linear-gradient(140deg,#4A3320,#C08443)','linear-gradient(140deg,#2E2450,#7C6BF0)',
+               'linear-gradient(140deg,#20304A,#4A7FB8)','linear-gradient(140deg,#402A2A,#B85B5B)'];
+
+var DATA = {
+  char: [
+    { id:'c1', name:'小林', role:'主角', desc:'黑色短发 / 白色卫衣 · 性格内敛',
+      state:'empty',            /* empty | generating | main_ready | locked */
+      main:null, angles:{ side:null, half:null },
+      refs:3, variants:['日常装'], lockFace:false },
+    { id:'c2', name:'店员', role:'配角', desc:'短发 / 便利店制服 · 温和',
+      state:'empty', main:null, angles:{ side:null, half:null },
+      refs:1, variants:['工装'], lockFace:false }
+  ],
+  scene: [
+    { id:'s1', name:'24h 便利店', role:'内 · 夜', desc:'日光灯冷白，货架整齐', state:'locked',
+      main:PALETTE[4], angles:{ side:PALETTE[4], half:null }, refs:5, variants:['夜景','白天','雨天'], lockFace:true },
+    { id:'s2', name:'便利店门口', role:'外 · 夜', desc:'霓虹招牌闪烁', state:'main_ready',
+      main:PALETTE[0], angles:{ side:null, half:null }, refs:2, variants:['夜景'], lockFace:false },
+    { id:'s3', name:'街道', role:'外 · 雨', desc:'积水倒映路灯', state:'empty',
+      main:null, angles:{ side:null, half:null }, refs:0, variants:[], lockFace:false }
+  ],
+  prop: [
+    { id:'p1', name:'纸杯', role:'道具', desc:'白色纸杯，杯壁有薄雾', state:'main_ready',
+      main:PALETTE[2], angles:{ side:null, half:null }, refs:2, variants:[], lockFace:false }
+  ],
+  style: [
+    { id:'t1', name:'清冷都市', role:'全局风格', desc:'低饱和冷调 · 胶片颗粒', state:'locked',
+      main:PALETTE[3], angles:{ side:null, half:null }, refs:99, variants:[], lockFace:true }
+  ]
+};
+var curType = 'char';
+var busy = false;
+
+/* ---------- 渲染 ---------- */
+function slots(a){
+  var out = [];
+  var labels = (curType === 'char') ? ['正面 · 主照','侧面','半身'] : ['主图','俯视','细节'];
+  var keys = ['main','side','half'];
+  labels.forEach(function(lb, i){
+    var url = (i === 0) ? a.main : a.angles[keys[i]];
+    if (url && i === 0){
+      out.push('<div class="slot filled" style="background:'+url+'"><span class="cap">'+lb+'</span>'+
+        (a.lockFace ? '<span class="lock">🔒 已锁</span>' : '')+'</div>');
+    } else if (url){
+      out.push('<div class="slot filled" style="background:'+url+'"><span class="cap">'+lb+'</span></div>');
+    } else if ((i > 0) && a.state === 'generating'){
+      out.push('<div class="slot gen"><div style="text-align:center"><div class="spin" style="margin:0 auto 6px"></div>'+lb+'</div></div>');
+    } else if ((i > 0) && !canDerive(a)){
+      out.push('<div class="slot"><div style="text-align:center;font-size:11.5px">🔒 '+lb+'<br>需先锁定主照</div></div>');
+    } else {
+      out.push('<div class="slot"><div style="text-align:center">'+lb+'</div></div>');
+    }
+  });
+  return out.join('');
+}
+function canDerive(a){ return (a.state === 'locked' || a.state === 'derived'); }
+
+function cardActs(a){
+  var b = [];
+  if (a.state === 'empty')   b.push('<button class="btn primary sm" onclick="genMain(\''+a.id+'\')">生成主定妆照</button>');
+  if (a.state === 'main_ready'){
+    b.push('<button class="btn primary sm" onclick="lockFace(\''+a.id+'\')">满意并锁定</button>');
+    b.push('<button class="btn sm" onclick="genMain(\''+a.id+'\')">重生成</button>');
+  }
+  if (a.state === 'locked'){
+    b.push('<button class="btn sm" onclick="derive(\''+a.id+'\',\'side\')">派生侧面</button>');
+    b.push('<button class="btn sm" onclick="derive(\''+a.id+'\',\'half\')">派生半身</button>');
+  }
+  if (a.state === 'derived'){
+    b.push('<button class="btn sm" onclick="derive(\''+a.id+'\',\'side\')">重派生侧面</button>');
+    b.push('<button class="btn sm" onclick="derive(\''+a.id+'\',\'half\')">重派生半身</button>');
+  }
+  if (a.state !== 'empty'){
+    b.push('<button class="btn sm" onclick="openPrompt(\''+a.id+'\')">改提示词</button>');
+    b.push('<button class="btn sm" onclick="openVariants(\''+a.id+'\')">变体 (' + a.variants.length + ')</button>');
+    b.push('<button class="btn sm" onclick="toast(\'上传替换（原型未展开）\')">上传替换</button>');
+    b.push('<button class="btn ghost sm" onclick="tryDelete()">删除</button>');
+  }
+  return b.join('');
+}
+
+function render(){
+  var list = DATA[curType] || [];
+  var html = list.map(function(a){
+    var badge = a.state === 'locked' ? '<span class="tag o">已锁定</span>'
+              : a.state === 'derived' ? '<span class="tag o">已派生</span>'
+              : a.state === 'main_ready' ? '<span class="tag w">待确认</span>'
+              : a.state === 'generating' ? '<span class="tag a">生成中</span>'
+              : '<span class="tag">待生成</span>';
+    return '<div class="card">'+
+      '<div class="card-head"><b>'+a.name+'</b><span class="tag">'+a.role+'</span>'+
+        (a.lockFace && a.state === 'locked' ? '<span class="tag p">面部已锁</span>' : '')+
+        '<span style="margin-left:auto">'+badge+'</span></div>'+
+      '<div class="medias">'+slots(a)+'</div>'+
+      '<div class="hint">'+a.desc+'　·　服饰变体：'+a.variants.join(' / ')+'　·　被下游引用 '+a.refs+' 处</div>'+
+      '<div class="card-acts">'+cardActs(a)+'</div>'+
+    '</div>';
+  }).join('');
+  $('#assetGrid').innerHTML = html || '<div class="card"><div class="muted">该类型下暂无资产</div></div>';
+  renderCons();
+  updateFoot();
+}
+
+function renderCons(){
+  var a = DATA.char[0];
+  if (!(a.state === 'locked' || a.state === 'derived')){
+    $('#consArea').innerHTML = '<div class="row" style="justify-content:space-between"><b style="font-size:15.5px">一致性校验</b>'+
+      '<span class="muted">锁定主照并派生角度后，这里会自动比对</span></div>'+
+      '<div class="banner a" style="margin-top:12px">等待「小林」生成主定妆照…</div>';
+    return;
+  }
+  if (!a.angles.side){
+    $('#consArea').innerHTML = '<div class="row" style="justify-content:space-between"><b style="font-size:15.5px">一致性校验</b></div>'+
+      '<div class="banner a" style="margin-top:12px">已锁定正面主照，点击「派生侧面」后自动比对</div>';
+    return;
+  }
+  $('#consArea').innerHTML =
+    '<div class="row" style="justify-content:space-between"><b style="font-size:15.5px">一致性校验</b>'+
+    '<span class="muted">仅用于内部判定，界面以视觉对比呈现，不暴露相似度数字</span>'+
+    '<button class="btn sm" id="diffBtn" style="margin-left:auto">显示差异</button></div>'+
+    '<div class="cons-grid">'+
+      '<div><div class="muted" style="margin-bottom:8px">小林 · 正面（锁定基准）</div>'+
+        '<div class="slot filled" style="aspect-ratio:1;background:'+a.main+'"></div></div>'+
+      '<div><div class="muted" style="margin-bottom:8px">小林 · 侧面（派生）</div>'+
+        '<div class="diffbox" id="diffBox"><div class="slot filled" style="aspect-ratio:1;background:'+a.angles.side+'"></div>'+
+        '<span class="ov ov1"></span><span class="ov ov2"></span></div></div>'+
+    '</div>'+
+    '<div class="row" style="margin-top:14px"><button class="btn primary sm" onclick="toast(\'已重生成侧面并用面部特征重新约束\')">重生成侧面</button>'+
+    '<button class="btn sm" onclick="toast(\'已接受差异，侧面通过校验\')">接受差异</button>'+
+    '<span class="muted" style="margin-left:12px">差异集中在眼型与发际线，属于可接受范围</span></div>';
+  $('#diffBtn').addEventListener('click', function(){
+    var on = $('#diffBox').classList.toggle('on');
+    this.textContent = on ? '隐藏差异' : '显示差异';
+  });
+}
+
+function updateFoot(){
+  var all = DATA.char.concat(DATA.scene, DATA.prop, DATA.style);
+  var locked = all.filter(function(a){ return a.state === 'locked' || a.state === 'derived'; }).length;
+  var pend = all.filter(function(a){ return a.state === 'empty' || a.state === 'main_ready'; }).length;
+  $('#footStat').innerHTML = '已锁定 <b>' + locked + '</b> 个资产 · 待确认 <b>' + pend + '</b> 个';
+  var total = all.length, done = locked;
+  $('#progText').textContent = '生成进度 ' + done + '/' + total;
+  $('#progBar').style.width = Math.round(done / total * 100) + '%';
+}
+
+function find(id){
+  var pools = [DATA.char, DATA.scene, DATA.prop, DATA.style];
+  for (var i = 0; i < pools.length; i++)
+    for (var j = 0; j < pools[i].length; j++)
+      if (pools[i][j].id === id) return pools[i][j];
+  return null;
+}
+
+/* ---------- 交互 ---------- */
+function genMain(id){
+  var a = find(id); if (!a || busy) return;
+  busy = true;
+  a.state = 'generating'; render();
+  toast('已提交主定妆照生成 · 本次消耗 8 积分');
+  var p = 0;
+  var t = setInterval(function(){
+    p += 14 + Math.random() * 10;
+    if (p >= 100){
+      clearInterval(t);
+      a.state = 'main_ready';
+      a.main = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+      busy = false; render();
+      toast('主定妆照已生成，确认满意后即可锁定');
+    }
+  }, 320);
+}
+function lockFace(id){
+  var a = find(id); if (!a) return;
+  a.state = 'locked'; a.lockFace = true; render();
+  toast('已锁定「' + a.name + '」面部层 · 解锁角度派生（服饰层仍可切换）');
+}
+function derive(id, key){
+  var a = find(id); if (!a || busy) return;
+  if (!canDerive(a)){ toast('请先锁定主定妆照'); return; }
+  busy = true;
+  var before = a.state;
+  a.state = 'generating'; render();
+  var t = setInterval(function(){
+    clearInterval(t);
+    a.angles[key] = PALETTE[Math.floor(Math.random() * PALETTE.length)];
+    a.state = 'derived';
+    busy = false; render();
+    toast('已派生素材（继承面部特征生成）');
+  }, 900);
+}
+function genAll(){
+  var pending = DATA.char.filter(function(a){ return a.state === 'empty'; });
+  if (!pending.length){ toast('所有角色都已有主照'); return; }
+  toast('批量生成主照（' + pending.length + ' 个角色）');
+  pending.forEach(function(a, i){ setTimeout(function(){ genMain(a.id); }, i * 1200); });
+}
+function openPrompt(id){
+  var a = find(id); if (!a) return;
+  $('#pmTitle').textContent = a.name + ' · 视觉提示词';
+  $('#pmLocked').textContent = '角色名：' + a.name + '｜' + a.desc + '｜面部特征向量已绑定（脸型 / 眼型 / 发色）';
+  $('#pmEdit').value = '正面半身，冷调夜色光，胶片颗粒，浅景深，构图居中';
+  $('#pmApply').onclick = function(){
+    closeMask('promptMask');
+    toast('可编辑层已更新，正在用面部约束重新生成…');
+  };
+  openMask('promptMask');
+}
+function openVariants(id){
+  var a = find(id); if (!a) return;
+  $('#vmTitle').textContent = a.name + ' · 造型与变体';
+  $('#vmList').innerHTML = a.variants.map(function(v, i){
+    return '<div style="text-align:center"><div class="slot filled" style="width:68px;aspect-ratio:1;background:'+PALETTE[(i+1)%PALETTE.length]+'"></div>'+
+           '<div class="muted" style="margin-top:5px">'+v+'</div></div>';
+  }).join('') + '<div style="text-align:center"><div class="slot" style="width:68px;aspect-ratio:1;border-style:dashed">+</div><div class="muted" style="margin-top:5px">新增</div></div>';
+  $('#vmAdd').onclick = function(){
+    var n = $('#vmName').value.trim();
+    if (!n){ toast('先填写变体名称'); return; }
+    if (!$('#inFace').checked){ toast('换装类变体必须继承面部特征，否则会变脸'); return; }
+    a.variants.push(n);
+    closeMask('variantMask'); render();
+    toast('已生成变体「' + n + '」（继承面部与画风）');
+  };
+  openMask('variantMask');
+}
+function tryDelete(){ openMask('delMask'); }
+
+$$('#typeTabs .chip').forEach(function(c){
+  c.addEventListener('click', function(){
+    $$('#typeTabs .chip').forEach(function(x){ x.classList.remove('on'); });
+    c.classList.add('on');
+    curType = c.getAttribute('data-t');
+    render();
+  });
+});
+$('#pauseBtn').addEventListener('click', function(){ toast('已暂停生成队列（检查点已落，可续跑）'); });
+$('#nextBtn').addEventListener('click', function(){
+  var all = DATA.char.concat(DATA.scene, DATA.prop, DATA.style);
+  var un = all.filter(function(a){ return a.state !== 'locked' && a.state !== 'derived'; });
+  if (un.length){
+    toast('还有 ' + un.length + ' 个资产未确认，已定位到「' + un[0].name + '」');
+    return;
+  }
+  toast('资产已确认（2 角色 / 3 场景 / 1 道具 / 1 风格）→ 进入分镜设计');
+  $$('.step').forEach(function(b){
+    var s = +b.getAttribute('data-s');
+    b.classList.toggle('done', s <= 2);
+    b.classList.toggle('active', s === 3);
+  });
+});
+$('#resetBtn').addEventListener('click', function(){
+  DATA.char[0].state = 'empty'; DATA.char[0].main = null; DATA.char[0].angles = { side:null, half:null }; DATA.char[0].lockFace = false;
+  DATA.char[1].state = 'empty'; DATA.char[1].main = null; DATA.char[1].angles = { side:null, half:null }; DATA.char[1].lockFace = false;
+  curType = 'char';
+  $$('#typeTabs .chip').forEach(function(x,i){ x.classList.toggle('on', i === 0); });
+  render();
+  toast('演示已重置，可从「生成主定妆照」重新走一遍');
+});
+
+render();
+</script>
+</body>
+</html>

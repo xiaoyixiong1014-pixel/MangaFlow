@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>漫序 MangaFlow · 全站原型（三）运营管理端</title>
+<style>
+:root{
+  --r-card:20px; --r-ctl:12px; --r-pill:999px;
+  --bg:#F5F7F6; --surface:#FFFFFF; --surface-2:#FAFAF8; --surface-3:#EFF2F1;
+  --border:rgba(0,0,0,.09); --border-strong:rgba(0,0,0,.16);
+  --text:#14181A; --text-2:#5F6B68; --text-3:#8E9A97;
+  --accent:#12B3A6; --accent-soft:rgba(18,179,166,.10);
+  --ok:#1E9E6A; --ok-soft:rgba(30,158,106,.12);
+  --warn:#B87100; --warn-soft:rgba(184,113,0,.13);
+  --danger:#CE4343; --danger-soft:rgba(206,67,67,.12);
+  --shadow:0 1px 2px rgba(0,0,0,.04), 0 8px 24px -12px rgba(0,0,0,.10);
+  --font:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+html[data-theme="dark"]{
+  --bg:#0E1112; --surface:#15191A; --surface-2:#1C2223; --surface-3:#111516;
+  --border:rgba(255,255,255,.09); --border-strong:rgba(255,255,255,.16);
+  --text:#E8EDEA; --text-2:#9BA5A2; --text-3:#6B7573;
+  --accent:#4FD8CA; --accent-soft:rgba(18,179,166,.18);
+  --ok:#4CC38A; --ok-soft:rgba(76,195,138,.14);
+  --warn:#E0A33A; --warn-soft:rgba(224,163,58,.14);
+  --danger:#F0736F; --danger-soft:rgba(240,115,111,.14);
+  --shadow:0 1px 2px rgba(0,0,0,.3), 0 12px 32px -14px rgba(0,0,0,.6);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{font-family:var(--font);background:var(--bg);color:var(--text);font-size:15px;line-height:1.6;-webkit-font-smoothing:antialiased;display:flex;flex-direction:column}
+button{font-family:inherit;font-size:inherit;color:inherit;background:none;border:0;cursor:pointer}
+input,textarea,select{font-family:inherit;font-size:inherit;color:inherit}
+svg{display:block;flex-shrink:0}
+::-webkit-scrollbar{width:9px;height:9px}
+::-webkit-scrollbar-thumb{background:rgba(127,127,127,.28);border-radius:5px}
+.anav{height:60px;flex-shrink:0;display:flex;align-items:center;gap:8px;padding:0 20px;border-bottom:1px solid var(--border);background:var(--surface-3)}
+.brand{display:flex;align-items:center;gap:10px;margin-right:24px}
+.brand-mark{width:28px;height:28px;border-radius:9px;background:linear-gradient(140deg,#12B3A6,#7C6BF0);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+.anav-item{padding:8px 14px;border-radius:10px;font-size:14.5px;color:var(--text-2)}
+.anav-item:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.anav-item.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.content{flex:1;overflow-y:auto;padding-bottom:56px}
+.pad{padding:22px 26px}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);padding:18px}
+.card.pad0{padding:0;overflow:hidden}
+.sec-head{display:flex;align-items:baseline;gap:12px;margin:0 0 12px}
+.sec-head h2{font-size:16px;font-weight:600}
+.sec-head .note{font-size:13px;color:var(--text-3)}
+.grid{display:grid;gap:14px}
+.g2{grid-template-columns:repeat(2,1fr)}
+.g3{grid-template-columns:repeat(3,1fr)}
+.g4{grid-template-columns:repeat(4,1fr)}
+.g5{grid-template-columns:repeat(5,1fr)}
+.row{display:flex;align-items:center;gap:10px}
+.stack{display:flex;flex-direction:column;gap:12px}
+.muted{color:var(--text-3);font-size:13px}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:var(--r-ctl);font-size:14.5px;border:1px solid var(--border);white-space:nowrap}
+.btn:hover{background:rgba(127,127,127,.10)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.ghost{border-color:transparent;color:var(--text-2)}
+.btn.sm{padding:6px 13px;font-size:13.5px;border-radius:10px}
+.tag{display:inline-flex;align-items:center;font-size:12px;padding:2px 9px;border-radius:var(--r-pill);background:var(--surface-3);color:var(--text-2);white-space:nowrap}
+.tag.a{background:var(--accent-soft);color:var(--accent)}
+.tag.o{background:var(--ok-soft);color:var(--ok)}
+.tag.w{background:var(--warn-soft);color:var(--warn)}
+.tag.d{background:var(--danger-soft);color:var(--danger)}
+.chip{padding:7px 15px;border-radius:var(--r-pill);font-size:14px;color:var(--text-2);border:1px solid var(--border);background:var(--surface)}
+.chip:hover,.chip.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--border);padding:0 16px}
+.tab{padding:11px 14px;font-size:14.5px;color:var(--text-2);border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab.on{color:var(--accent);border-bottom-color:var(--accent);font-weight:500}
+.ph{border-radius:var(--r-ctl);display:flex;align-items:center;justify-content:center;color:var(--text-3);font-size:12px;border:1px solid var(--border)}
+.empty{padding:34px 16px;border:1px dashed var(--border-strong);border-radius:var(--r-ctl);text-align:center;color:var(--text-3);font-size:14px}
+.banner{display:flex;align-items:center;gap:10px;padding:11px 14px;border-radius:var(--r-ctl);font-size:14px}
+.banner.w{background:var(--warn-soft);color:var(--warn)}
+.banner.d{background:var(--danger-soft);color:var(--danger)}
+.banner.a{background:var(--accent-soft);color:var(--accent)}
+.banner.o{background:var(--ok-soft);color:var(--ok)}
+.inp{width:100%;padding:10px 13px;border-radius:var(--r-ctl);border:1px solid var(--border);background:var(--surface-2);outline:0}
+.lbl{font-size:13px;color:var(--text-3);margin-bottom:6px;display:block}
+table.tb{width:100%;border-collapse:collapse;font-size:14px}
+.tb th{text-align:left;font-weight:500;color:var(--text-3);font-size:13px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.tb td{padding:11px 14px;border-bottom:1px solid var(--border)}
+.tb tr:hover td{background:var(--surface-2)}
+.bar{height:6px;border-radius:3px;background:rgba(127,127,127,.16);overflow:hidden}
+.bar>span{display:block;height:100%;background:var(--accent);border-radius:3px}
+.stat{padding:16px 18px;border-radius:var(--r-ctl);background:var(--surface);border:1px solid var(--border)}
+.stat .n{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+.stat .k{font-size:13px;color:var(--text-3);margin-top:3px}
+.chart{display:flex;align-items:flex-end;gap:5px;height:120px}
+.chart i{flex:1;background:var(--accent);border-radius:3px 3px 0 0;opacity:.85}
+.sw-panel{position:fixed;top:70px;right:18px;z-index:220;width:300px;max-height:70vh;overflow-y:auto;background:var(--surface);border:1px solid var(--border);border-radius:var(--r-card);box-shadow:var(--shadow);padding:10px;display:none}
+.sw-panel.show{display:block}
+.sw-float{position:fixed;right:18px;bottom:18px;z-index:210;padding:9px 16px;border-radius:var(--r-pill);background:var(--text);color:var(--bg);box-shadow:var(--shadow);display:flex;align-items:center;gap:7px;font-size:13.5px}
+.sw-panel.show{display:block}
+.sw-g{font-size:11.5px;color:var(--text-3);padding:8px 10px 5px}
+.sw-i{display:flex;align-items:center;gap:8px;width:100%;text-align:left;padding:7px 10px;border-radius:9px;font-size:13.5px;color:var(--text-2)}
+.sw-i:hover{background:rgba(127,127,127,.10);color:var(--text)}
+.sw-i.on{background:var(--accent-soft);color:var(--accent);font-weight:500}
+.sw-id{font-family:var(--mono);font-size:11.5px;opacity:.7;width:42px}
+.login-wrap{flex:1;display:flex;align-items:center;justify-content:center}
+</style>
+</head>
+<body>
+<header class="anav" id="anav">
+  <div class="brand"><div class="brand-mark">漫</div><b>漫序 · 运营管理后台</b></div>
+  <button class="anav-item" data-nav="A-02">看板</button>
+  <button class="anav-item" data-nav="A-03">用户</button>
+  <button class="anav-item" data-nav="A-04">审核</button>
+  <button class="anav-item" data-nav="A-05">模型</button>
+  <button class="anav-item" data-nav="A-06">订单</button>
+  <button class="anav-item" data-nav="A-07">内容</button>
+  <button class="anav-item" data-nav="A-08">系统</button>
+  <div class="row" style="margin-left:auto;gap:8px"><button class="icon-btn" id="swTopBtn" title="切换页面">☰</button>
+    <button class="btn sm" id="themeBtn">◐</button>
+    <span class="tag">管理员</span>
+  </div>
+</header>
+<div class="content" id="host"></div>
+<div class="sw-panel" id="swPanel"></div>
+<button class="sw-float" id="swBtn">☰ 切换页面</button>
+
+<script>
+var A="#12B3A6", G1="#12332F", G2="#1F3B3A", G5="#20304A";
+var P = {
+  "A-01": { t:"管理端登录", login:true, h:`
+    <div class="login-wrap"><div class="card" style="width:400px;padding:30px">
+      <div class="row" style="gap:10px;margin-bottom:6px"><div class="brand-mark">漫</div><b style="font-size:17px">运营管理后台</b></div>
+      <div class="muted" style="margin-bottom:22px">与用户端入口隔离 · 独立登录</div>
+      <label class="lbl">管理员账号 *</label><input class="inp" placeholder="请输入">
+      <div style="height:14px"></div>
+      <label class="lbl">密码 *</label><input class="inp" type="password">
+      <div style="height:14px"></div>
+      <label class="lbl">二次验证码（如启用）</label><input class="inp" placeholder="6 位动态码">
+      <button class="btn primary" style="width:100%;justify-content:center;margin-top:18px">登 录</button>
+      <div class="banner d" style="margin-top:16px">该账号无管理权限 / 密码错误 / 账号被禁用</div>
+    </div></div>` },
+
+  "A-02": { t:"经营分析看板", h:`
+    <div class="pad">
+      <div class="row" style="margin-bottom:18px">
+        <span class="muted">时间范围</span><span class="chip on">今日</span><span class="chip">近 7 天</span><span class="chip">近 30 天</span>
+      </div>
+      <div class="grid g5" style="margin-bottom:18px">
+        <div class="stat"><div class="n">1,284</div><div class="k">用户数</div></div>
+        <div class="stat"><div class="n">¥12,340</div><div class="k">收入</div></div>
+        <div class="stat"><div class="n">1.2M</div><div class="k">积分负债</div></div>
+        <div class="stat"><div class="n">342</div><div class="k">订单数</div></div>
+        <div class="stat"><div class="n">8,921</div><div class="k">生成量</div></div>
+      </div>
+      <div class="grid g2" style="margin-bottom:18px">
+        <div class="card"><b>收入趋势</b>
+          <div class="chart" style="margin-top:16px">
+            ${[30,42,36,55,48,68,74,62,80,70,58,44].map(function(v){return '<i style="height:'+v+'%"></i>';}).join("")}
+          </div>
+          <div class="row" style="justify-content:space-between;margin-top:8px"><span class="muted">10-01</span><span class="muted">10-08</span></div>
+        </div>
+        <div class="card"><b>生成健康度</b>
+          <div class="stack" style="margin-top:14px;font-size:14px">
+            <div class="row"><span style="flex:1">任务成功率</span><b style="color:var(--ok)">96.2%</b></div>
+            <div class="row"><span style="flex:1">平均耗时</span><b>3m12s</b></div>
+            <div class="row"><span style="flex:1">队列积压</span><b>12</b></div>
+            <div class="row"><span style="flex:1">失败原因分布</span><div class="bar" style="width:120px"><span style="width:62%"></span></div></div>
+          </div>
+        </div>
+      </div>
+      <div class="sec-head"><h2>资损与告警</h2><span class="note">资金三件套指标，任一异常即标红</span></div>
+      <div class="grid g4" style="margin-bottom:14px">
+        <div class="stat"><div class="n">0</div><div class="k">重复扣费</div></div>
+        <div class="stat" style="border-color:var(--danger)"><div class="n" style="color:var(--danger)">1</div><div class="k">异常退款</div></div>
+        <div class="stat"><div class="n">0</div><div class="k">负余额</div></div>
+        <div class="stat"><div class="n">420ms</div><div class="k">P95 延迟</div></div>
+      </div>
+      <div class="banner d">有 1 条异常退款待核查<button class="btn sm" style="margin-left:auto">查看</button></div>
+      <div class="empty" style="margin-top:16px">空状态：新平台无数据 → 显示「数据积累中」</div>
+    </div>` },
+
+  "A-03": { t:"用户管理", h:`
+    <div class="pad">
+      <div class="row" style="margin-bottom:16px">
+        <input class="inp" style="max-width:280px" placeholder="搜索用户名 / 邮箱 / 手机号">
+        <select class="inp" style="max-width:140px"><option>状态：全部</option></select>
+        <select class="inp" style="max-width:140px"><option>套餐：全部</option></select>
+        <button class="btn sm" style="margin-left:auto">导出</button><button class="btn primary sm">+ 创建用户</button>
+      </div>
+      <div class="card pad0" style="margin-bottom:18px">
+        <table class="tb">
+          <tr><th>用户</th><th>邮箱</th><th>套餐</th><th>状态</th><th>项目</th><th>积分</th><th>操作</th></tr>
+          <tr><td>小漫</td><td>xxxx@xx.com</td><td>专业版</td><td><span class="tag o">正常</span></td><td>11</td><td>1,832</td><td><button class="btn sm">详情</button></td></tr>
+          <tr><td>老白</td><td>xxxx@xx.com</td><td>免费版</td><td><span class="tag o">正常</span></td><td>3</td><td>120</td><td><button class="btn sm">详情</button></td></tr>
+          <tr><td>老王</td><td>xxxx@xx.com</td><td>免费版</td><td><span class="tag d">禁用</span></td><td>0</td><td>-40</td><td><button class="btn sm">详情</button></td></tr>
+        </table>
+      </div>
+      <div class="sec-head"><h2>用户详情（抽屉）</h2></div>
+      <div class="card" style="max-width:720px">
+        <div class="grid g3" style="gap:12px">
+          <div><label class="lbl">角色</label><select class="inp"><option>用户</option><option>管理员</option></select></div>
+          <div><label class="lbl">状态</label><select class="inp"><option>启用</option><option>禁用</option></select></div>
+          <div><label class="lbl">套餐</label><select class="inp"><option>专业版</option></select></div>
+        </div>
+        <label class="lbl" style="margin-top:12px">积分调整</label>
+        <div class="row"><input class="inp" style="max-width:140px" placeholder="+ / -"><input class="inp" placeholder="调整原因（必填）"><button class="btn primary sm">提交调整</button></div>
+        <div class="banner w" style="margin-top:14px">高危操作：调整积分 / 禁用账号需二次确认并填写原因，操作写入审计日志（建议双人复核）</div>
+      </div>
+      <div class="row" style="justify-content:center;gap:6px;margin-top:18px">
+        <span class="tag a">1</span><span class="tag">2</span><span class="tag">3</span><span class="tag">…</span><span class="tag">64</span>
+      </div>
+    </div>` },
+
+  "A-04": { t:"项目与内容审核", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:16px"><button class="tab on">待审 (12)</button><button class="tab">已通过</button><button class="tab">已驳回</button></div>
+      <div class="row" style="margin-bottom:16px">
+        <select class="inp" style="max-width:170px"><option>闸门：全部</option><option>生成级</option><option>合成级</option><option>导出版</option></select>
+        <select class="inp" style="max-width:170px"><option>类型：全部</option></select>
+        <button class="btn sm" style="margin-left:auto">刷新</button>
+      </div>
+      <div style="display:grid;grid-template-columns:320px minmax(0,1fr);gap:18px">
+        <div class="card pad0">
+          ${[["深夜便利店的相遇","合成级 · 视频 #12 画面疑似暴力"],["便利店宣传片","生成级 · 图片 #07 命中：武器特写"],["街道雨夜","导出版 · 成片待终审"]].map(function(q){
+            return '<div style="padding:14px 16px;border-bottom:1px solid var(--border)"><div>'+q[0]+'</div><div class="muted" style="margin-top:4px">'+q[1]+'</div></div>';}).join("")}
+        </div>
+        <div class="card">
+          <b>待审详情</b>
+          <div class="stack" style="margin-top:14px;font-size:14px">
+            <div class="row"><span class="muted" style="width:80px">项目</span><span>深夜便利店的相遇</span></div>
+            <div class="row"><span class="muted" style="width:80px">闸门</span><span class="tag w">合成级 · 视频片段 #12</span></div>
+            <div class="row"><span class="muted" style="width:80px">命中原因</span><span style="color:var(--danger)">疑似暴力</span></div>
+            <div class="row"><span class="muted" style="width:80px">定位</span><span>第 12 镜（02:14 - 02:21）</span></div>
+          </div>
+          <div class="ph" style="aspect-ratio:16/9;margin-top:14px;background:linear-gradient(140deg,${G5},${A});color:#fff">视频片段预览</div>
+          <div class="sec-head" style="margin-top:20px"><h2>处置</h2></div>
+          <div class="row" style="gap:9px"><span class="chip">通过</span><span class="chip on">驳回</span></div>
+          <label class="lbl" style="margin-top:14px">驳回建议 *（将展示给用户，须具体）</label>
+          <textarea class="inp" rows="3">第 12 镜画面疑似暴力，建议调整提示词或替换该关键帧后重新生成。</textarea>
+          <div class="row" style="margin-top:14px"><button class="btn primary">提交处置</button>
+            <span class="muted" style="margin-left:auto">用户违规记录：本用户累计 1 次</span></div>
+          <div class="banner a" style="margin-top:14px">疑似内容仅锁定「导出」，用户仍可继续编辑其他部分</div>
+        </div>
+      </div>
+      <div class="empty" style="margin-top:18px">空状态：待审队列为空</div>
+    </div>` },
+
+  "A-05": { t:"模型配置管理", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:16px"><button class="tab on">渠道管理</button><button class="tab">逻辑模型</button><button class="tab">健康探测</button></div>
+      <div class="row" style="margin-bottom:16px"><span class="muted">上游渠道托管 · Key 以 AES-256 加密存储</span>
+        <button class="btn primary sm" style="margin-left:auto">+ 新增渠道</button></div>
+      <div class="card pad0" style="margin-bottom:20px">
+        <table class="tb">
+          <tr><th>渠道</th><th>协议</th><th>Base URL</th><th>健康</th><th>模型数</th><th>操作</th></tr>
+          <tr><td>甲厂</td><td>OpenAI</td><td>https://api.a.com</td><td><span class="tag o">● 健康</span></td><td>12</td><td><button class="btn sm">编辑</button></td></tr>
+          <tr><td>乙厂</td><td>OpenAI</td><td>https://api.b.com</td><td><span class="tag w">● 降级</span></td><td>8</td><td><button class="btn sm">编辑</button></td></tr>
+          <tr><td>丙厂</td><td>自定义</td><td>https://api.c.com</td><td><span class="tag d">○ 不可用</span></td><td>3</td><td><button class="btn sm">编辑</button></td></tr>
+        </table>
+      </div>
+      <div class="sec-head"><h2>逻辑模型配置</h2><span class="note">渠道优先级决定故障降级顺序</span></div>
+      <div class="card pad0" style="margin-bottom:18px">
+        <table class="tb">
+          <tr><th>能力</th><th>逻辑模型名</th><th>渠道优先级</th><th>是否默认</th><th>操作</th></tr>
+          <tr><td>文本</td><td>通用文本</td><td>甲厂 &gt; 乙厂 &gt; 丙厂</td><td><span class="tag o">✓ 默认</span></td><td><button class="btn sm">调整</button></td></tr>
+          <tr><td>图像</td><td>通用图像</td><td>甲厂 &gt; 乙厂</td><td>—</td><td><button class="btn sm">调整</button></td></tr>
+          <tr><td>视频</td><td>通用视频</td><td>乙厂 &gt; 甲厂</td><td><span class="tag o">✓ 默认</span></td><td><button class="btn sm">调整</button></td></tr>
+        </table>
+      </div>
+      <div class="row"><button class="btn sm">测试连通性</button><button class="btn sm">立即健康探测</button>
+        <span class="muted" style="margin-left:14px">探测异常的渠道会自动降级，并在用户端明确提示（不静默替换）</span></div>
+      <div class="banner w" style="margin-top:16px">连通性测试失败：丙厂返回 401，请检查 Key 配置</div>
+    </div>` },
+
+  "A-06": { t:"订单与计费管理", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:16px"><button class="tab on">订单</button><button class="tab">积分规则</button><button class="tab">支付渠道</button><button class="tab">财务流水</button><button class="tab">对账</button></div>
+      <div class="row" style="margin-bottom:16px">
+        <input class="inp" style="max-width:260px" placeholder="搜索订单号 / 用户">
+        <select class="inp" style="max-width:150px"><option>状态：全部</option></select>
+        <select class="inp" style="max-width:150px"><option>时间：近 7 天</option></select>
+        <button class="btn sm" style="margin-left:auto">导出</button>
+      </div>
+      <div class="card pad0" style="margin-bottom:18px">
+        <table class="tb">
+          <tr><th>订单号</th><th>用户</th><th>类型</th><th>金额</th><th>状态</th><th>时间</th><th>操作</th></tr>
+          <tr><td>MF20261008</td><td>小漫</td><td>积分</td><td>¥199</td><td><span class="tag o">已支付</span></td><td>10-08 14:02</td><td><button class="btn sm">详情</button></td></tr>
+          <tr><td>MF20261007</td><td>老白</td><td>订阅</td><td>¥99</td><td><span class="tag">待支付</span></td><td>10-07 20:11</td><td><button class="btn sm">完成</button> <button class="btn sm">关闭</button></td></tr>
+          <tr><td>MF20261006</td><td>老王</td><td>积分</td><td>¥49</td><td><span class="tag w">已退款</span></td><td>10-06 09:30</td><td><button class="btn sm">详情</button></td></tr>
+        </table>
+      </div>
+      <div class="banner w" style="margin-bottom:20px">高危操作：退款 / 人工完成订单需二次确认并填写原因，写入财务流水</div>
+      <div class="sec-head"><h2>对账视图</h2><span class="note">资金三件套之一，差异标红可下钻</span></div>
+      <div class="card pad0" style="margin-bottom:16px">
+        <table class="tb">
+          <tr><th>日期</th><th>平台流水</th><th>渠道对账</th><th>差异</th><th>状态</th><th></th></tr>
+          <tr><td>10-08</td><td>¥12,340</td><td>¥12,340</td><td>0</td><td><span class="tag o">正常</span></td><td></td></tr>
+          <tr><td>10-07</td><td>¥9,820</td><td>¥9,760</td><td style="color:var(--danger)">-60</td><td><span class="tag d">差异</span></td><td><button class="btn sm">差异明细</button></td></tr>
+        </table>
+      </div>
+      <div class="banner d">退款失败示例：渠道返回超时，可重试；重试仍失败将进入人工处理队列</div>
+    </div>` },
+
+  "A-07": { t:"内容运营", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:16px"><button class="tab on">公告管理</button><button class="tab">公共提示词</button></div>
+      <div class="row" style="margin-bottom:16px"><span class="muted">置顶公告将即时展示在用户工作台顶部</span>
+        <button class="btn primary sm" style="margin-left:auto">+ 新建公告</button></div>
+      <div class="card pad0" style="margin-bottom:22px">
+        <table class="tb">
+          <tr><th>标题</th><th>置顶</th><th>状态</th><th>发布时间</th><th>操作</th></tr>
+          <tr><td>模型维护通知</td><td>✓</td><td><span class="tag o">已发布</span></td><td>10-08 09:00</td><td><button class="btn sm">编辑</button> <button class="btn sm">下线</button></td></tr>
+          <tr><td>新功能：AI 画布上线</td><td>—</td><td><span class="tag">草稿</span></td><td>—</td><td><button class="btn sm">编辑</button> <button class="btn sm">发布</button></td></tr>
+        </table>
+      </div>
+      <div class="sec-head"><h2>公共提示词管理</h2>
+        <button class="btn sm" style="margin-left:auto">+ 新建</button></div>
+      <div class="row" style="margin-bottom:12px">
+        <select class="inp" style="max-width:150px"><option>分类：全部</option></select>
+        <select class="inp" style="max-width:150px"><option>标签：全部</option></select>
+        <input class="inp" style="max-width:220px" placeholder="搜索">
+      </div>
+      <div class="card pad0">
+        <table class="tb">
+          <tr><th>标题</th><th>能力</th><th>状态</th><th>使用次数</th><th>操作</th></tr>
+          <tr><td>角色定妆 · 清冷</td><td>角色</td><td><span class="tag o">已上架</span></td><td>1,240</td><td><button class="btn sm">编辑</button> <button class="btn sm">下架</button></td></tr>
+          <tr><td>分镜画面 · 电影感</td><td>分镜</td><td><span class="tag">已下架</span></td><td>890</td><td><button class="btn sm">编辑</button> <button class="btn sm">上架</button></td></tr>
+        </table>
+      </div>
+      <div class="empty" style="margin-top:16px">空状态：无公告 / 提示词 → 给出创建引导</div>
+    </div>` },
+
+  "A-08": { t:"系统设置与存储备份", h:`
+    <div class="pad">
+      <div class="tabs" style="padding:0;margin-bottom:18px"><button class="tab on">站点资料</button><button class="tab">基础设置</button><button class="tab">存储配置</button><button class="tab">数据备份</button><button class="tab">监控告警</button><button class="tab">注销申请</button></div>
+      <div class="grid g2">
+        <div class="card">
+          <b>站点资料</b>
+          <label class="lbl" style="margin-top:14px">站点名称</label><input class="inp" value="漫序 MangaFlow">
+          <div style="height:12px"></div>
+          <label class="lbl">Logo</label><div class="row"><div class="ph" style="width:44px;height:44px">Logo</div><button class="btn sm">上传</button></div>
+          <div style="height:12px"></div>
+          <label class="lbl">SEO 标题</label><input class="inp" placeholder="有序创作，漫无止境">
+          <div style="height:12px"></div>
+          <label class="lbl">SEO 描述</label><textarea class="inp" rows="2"></textarea>
+        </div>
+        <div class="card">
+          <b>基础设置</b>
+          <div class="grid g2" style="gap:12px;margin-top:14px">
+            <div><label class="lbl">注册策略</label><select class="inp"><option>开放</option><option>邀请制</option></select></div>
+            <div><label class="lbl">SMTP</label><select class="inp"><option>已配置</option></select></div>
+            <div><label class="lbl">并发上限</label><input class="inp" value="20"></div>
+            <div><label class="lbl">时区</label><select class="inp"><option>Asia/Shanghai</option></select></div>
+          </div>
+          <div class="stack" style="margin-top:14px;font-size:14px">
+            <label class="row"><input type="checkbox" checked style="width:16px;height:16px"> 异地登录提醒</label>
+            <label class="row"><input type="checkbox" checked style="width:16px;height:16px"> 登录失败锁定</label>
+            <label class="row"><input type="checkbox" style="width:16px;height:16px"> 强制二次验证</label>
+          </div>
+        </div>
+      </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card">
+          <b>存储配置</b>
+          <div class="row" style="gap:9px;margin-top:14px"><span class="chip on">本地存储</span><span class="chip">S3 兼容对象存储</span></div>
+          <div class="row" style="margin-top:14px"><input class="inp" placeholder="Endpoint"><input class="inp" placeholder="Bucket"><button class="btn sm">测试连通性</button></div>
+          <div class="row" style="margin-top:10px;color:var(--ok)">✓ 连通正常</div>
+          <div class="banner w" style="margin-top:12px">切换存储不会删除已有文件；建议先测试连通性再保存</div>
+        </div>
+        <div class="card">
+          <b>数据备份</b>
+          <div class="row" style="margin-top:14px"><button class="btn primary sm">立即备份</button>
+            <span class="muted">最近备份：2026-10-08 03:00（自动）</span>
+            <button class="btn sm" style="margin-left:auto">下载</button><button class="btn sm">恢复</button></div>
+          <div class="row" style="margin-top:16px"><label class="row" style="font-size:14px"><input type="checkbox" checked style="width:16px;height:16px"> 每日自动备份</label>
+            <span class="muted" style="margin-left:14px">保留</span><input class="inp" style="width:70px" value="7"><span class="muted">天</span></div>
+          <div class="banner d" style="margin-top:14px">备份失败：可重试；配置保存失败将回滚到原值</div>
+        </div>
+      </div>
+    </div>` }
+};
+function render(id){
+  var p = P[id]; if(!p) return;
+  var host = document.getElementById('host');
+  host.innerHTML = p.h;
+  document.getElementById('anav').style.display = (id === 'A-01') ? 'none' : '';
+  document.getElementById('swBtn').style.display = (id === 'A-01') ? '' : 'none';
+  document.querySelectorAll('.sw-i').forEach(function(b){ b.classList.toggle('on', b.dataset.id === id); });
+  document.querySelectorAll('.anav-item[data-nav]').forEach(function(b){ b.classList.toggle('on', b.dataset.nav === id); });
+  host.scrollTop = 0;
+}
+function buildSwitcher(){
+  var html = '<div class="sw-g">运营管理端</div>';
+  ["A-01","A-02","A-03","A-04","A-05","A-06","A-07","A-08"].forEach(function(id){
+    html += '<button class="sw-i" data-id="'+id+'"><span class="sw-id">'+id+'</span>'+P[id].t+'</button>';
+  });
+  html += '<div class="sw-g">其他</div><div class="muted" style="padding:6px 10px;font-size:13px">官网与 Studio →『全站原型（一）』<br>画布与平台页 →『全站原型（二）』</div>';
+  document.getElementById('swPanel').innerHTML = html;
+  document.querySelectorAll('.sw-i').forEach(function(b){ b.addEventListener('click', function(){ render(b.dataset.id); }); });
+}
+function toggleSw(){ document.getElementById('swPanel').classList.toggle('show'); }
+document.getElementById('swBtn').addEventListener('click', toggleSw);
+var _st=document.getElementById('swTopBtn'); if(_st) _st.addEventListener('click', toggleSw);
+document.addEventListener('click', function(e){
+  var pn=document.getElementById('swPanel'); if(!pn.classList.contains('show')) return;
+  if(pn.contains(e.target) || e.target.closest('#swBtn') || e.target.closest('#swTopBtn')) return;
+  pn.classList.remove('show');
+});
+document.getElementById('themeBtn').addEventListener('click', function(){
+  var c = document.documentElement.getAttribute('data-theme');
+  document.documentElement.setAttribute('data-theme', c === 'dark' ? 'light' : 'dark');
+});
+document.querySelectorAll('.anav-item[data-nav]').forEach(function(b){
+  b.addEventListener('click', function(){ render(b.dataset.nav); });
+});
+buildSwitcher();
+render("A-01");
+</script>
+</body>
+</html>
