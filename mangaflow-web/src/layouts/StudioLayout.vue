@@ -1,0 +1,166 @@
+<!--
+  创作工作区布局（文件级注释）。
+  结构：顶部条（返回 + 项目名 + 五阶段步骤条）+ 路由出口。
+  五阶段：①剧本 ②资产 ③分镜 ④生成 ⑤发布，当前路由高亮、可点击互跳。
+  进入时拉取项目详情写入 project store，供各阶段页共享。
+-->
+<script setup lang="ts">
+import { computed, onMounted } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { useProjectStore } from '@/stores/project'
+import * as projectsApi from '@/api/projects'
+import { ElMessage } from 'element-plus'
+
+const route = useRoute()
+const router = useRouter()
+const projectStore = useProjectStore()
+
+/** 当前项目 ID（取路由参数） */
+const projectId = computed(() => Number(route.params.id))
+
+/** 五阶段步骤定义（key 对应工作区子路由片段） */
+const steps = [
+  { key: 'script', label: '① 剧本', to: '/script' },
+  { key: 'assets', label: '② 资产', to: '/assets' },
+  { key: 'storyboard', label: '③ 分镜', to: '/storyboard' },
+  { key: 'production', label: '④ 生成', to: '/production' },
+  { key: 'publish', label: '⑤ 发布', to: '/publish' },
+] as const
+
+/** 当前激活阶段（取路径第二段：/projects/:id/<stage>[...]） */
+const activeStep = computed(() => {
+  const seg = route.path.split('/')[3] ?? ''
+  // 实体抽取子页归属"剧本"阶段
+  if (seg === 'script') return 'script'
+  return seg
+})
+
+/**
+ * 跳转阶段路由。
+ * @param to 阶段子路径
+ */
+function goto(to: string): void {
+  router.push(`/projects/${projectId.value}${to}`)
+}
+
+// 进入工作区：拉取项目详情写入共享 store
+onMounted(async () => {
+  try {
+    projectStore.setProject(await projectsApi.get(projectId.value))
+  } catch {
+    ElMessage.error('项目加载失败')
+    router.replace('/projects')
+  }
+})
+</script>
+
+<template>
+  <div class="studio-layout">
+    <header class="studio-layout__header">
+      <button type="button" class="back-btn" title="返回项目列表" @click="router.push('/projects')">
+        ←
+      </button>
+      <span class="project-name">{{ projectStore.currentProject?.title ?? '加载中…' }}</span>
+
+      <!-- 五阶段步骤条 -->
+      <nav class="stage-bar" aria-label="创作阶段">
+        <button
+          v-for="s in steps"
+          :key="s.key"
+          type="button"
+          class="stage-item"
+          :class="{ 'stage-item--active': activeStep === s.key }"
+          @click="goto(s.to)"
+        >
+          {{ s.label }}
+        </button>
+      </nav>
+    </header>
+
+    <main class="studio-layout__main">
+      <router-view />
+    </main>
+  </div>
+</template>
+
+<style scoped>
+.studio-layout {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--mf-bg);
+  color: var(--mf-text);
+}
+.studio-layout__header {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-4);
+  height: var(--mf-topbar-h);
+  padding: 0 var(--mf-sp-5);
+  background: var(--mf-surface);
+  border-bottom: 1px solid var(--mf-border);
+  flex-shrink: 0;
+}
+.back-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  border-radius: var(--mf-r-ctl);
+  background: transparent;
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-lg);
+  cursor: pointer;
+  transition: background var(--mf-dur) var(--mf-ease), color var(--mf-dur) var(--mf-ease);
+}
+.back-btn:hover {
+  background: var(--mf-surface-2);
+  color: var(--mf-text);
+}
+.project-name {
+  font-size: var(--mf-fs-lg);
+  font-weight: var(--mf-fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 280px;
+}
+
+/* 步骤条 */
+.stage-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+  margin-left: auto;
+}
+.stage-item {
+  height: 32px;
+  padding: 0 var(--mf-sp-4);
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-pill);
+  background: transparent;
+  color: var(--mf-text-2);
+  font-family: var(--mf-font);
+  font-size: var(--mf-fs-sm);
+  cursor: pointer;
+  transition: all var(--mf-dur) var(--mf-ease);
+}
+.stage-item:hover {
+  border-color: var(--mf-brand);
+  color: var(--mf-brand);
+}
+.stage-item--active {
+  background: var(--mf-brand-soft);
+  border-color: transparent;
+  color: var(--mf-brand);
+  font-weight: var(--mf-fw-semibold);
+}
+
+.studio-layout__main {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+</style>

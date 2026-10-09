@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="432" cy="520" r="42" fill="#12B3A6" opacity="0.18"/><polygon points="426,347 396,407 456,407" fill="#12B3A6" opacity="0.23"/><circle cx="172" cy="801" r="38" fill="#12B3A6" opacity="0.11"/><polygon points="339,799 276,925 402,925" fill="#12B3A6" opacity="0.14"/><circle cx="594" cy="766" r="34" fill="#12B3A6" opacity="0.08"/><polygon points="427,638 403,686 451,686" fill="#12B3A6" opacity="0.09"/><polygon points="93,863 72,905 114,905" fill="#12B3A6" opacity="0.27"/><polygon points="553,108 480,254 626,254" fill="#12B3A6" opacity="0.08"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨竖版构图，少年侠客拔</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">剑特写 夕阳逆光 国风水墨</text>
+</svg>

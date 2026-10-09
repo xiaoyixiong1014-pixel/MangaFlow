@@ -1,0 +1,72 @@
+﻿# Tasks
+
+- [x] Task 1: 后端基础设施与数据层（backend 骨架）
+  - [x] 1.1 创建 `backend/` 目录结构（app/core、models、schemas、api、services、agents、providers、tasks、tests）与 requirements.txt（fastapi、uvicorn、sqlalchemy[asyncio]、asyncpg、pydantic-settings、pyjwt、bcrypt/argon2、langgraph、langchain-openai、psycopg[binary]、cryptography、httpx、pytest、pytest-asyncio 等）
+  - [x] 1.2 core/config.py（DB/JWT/DeepSeek/存储路径配置，环境变量可覆盖）、core/database.py（async engine + session）、core/security.py（密码哈希、JWT 签发校验、get_current_user / require_operator 依赖）
+  - [x] 1.3 models/ 全部 ORM 模型：按架构文档 §5.3 的 31 张表逐一实现（含索引、CHECK 约束、幂等键唯一、软删除 deleted_at；向量列用 JSONB 并注明 pgvector 升级点）
+  - [x] 1.4 core/init_db.py：mangaflow 库不存在自动创建（连 postgres 库执行 CREATE DATABASE）、metadata.create_all、幂等种子数据（admin/admin123 operator、demo 用户、DeepSeek 渠道 base_url=https://api.deepseek.com + key + 逻辑模型 deepseek-flash/占位图像模型、公共提示词、公告、积分套餐）
+  - [x] 1.5 app/main.py：FastAPI 工厂、lifespan 中调用 init_db、CORS、全局异常处理、/api 路由聚合、/docs；providers/llm.py 封装 DeepSeek OpenAI 兼容客户端（含连通性自检接口）
+- [x] Task 2: 后端用户侧基础 API
+  - [x] 2.1 api/auth.py（注册/登录/刷新/登出）、api/users.py（资料/密码/用量统计/操作日志/版本快照列表）
+  - [x] 2.2 api/projects.py（CRUD+软删除+复制+状态机推进+导入导出占位）
+  - [x] 2.3 services/billing_service.py + api/billing.py：钱包查询、冻结/扣费/退款（幂等键+bear）、充值下单（模拟支付成功回调）、积分流水、低额预警
+  - [x] 2.4 api/prompts.py、api/media.py（来源标记、引用保护软删除）、api/models_config.py（用户自有 Key AES-256 加密、连通性测试）、api/announcements.py（已发布公告）
+- [x] Task 3: Studio 流程 API（剧本/资产/分镜）
+  - [x] 3.1 api/script.py + services/script_service.py：原始输入保存、SSE 流式生成（LangGraph 剧本 Agent → DeepSeek 流式）、剧本保存/编辑/体检、实体提取（别名/冲突/低置信）与人工裁决提交
+  - [x] 3.2 api/assets.py + services/asset_service.py：characters/scenes/props/styles/asset_variants CRUD、生成任务（主照→确认→锁定→派生）、两层提示词、一致性校验（占位比对）、跨项目角色总览查询
+  - [x] 3.3 api/storyboards.py + services/storyboard_service.py：AI 拆解（LangGraph 分镜 Agent，storyboard_characters 强绑 + link_confidence）、提示词生成（locked/editable 两层）、拖拽重排/拆分合并、时长与连续性预警、投递画布
+- [x] Task 4: 生成任务/合成/发布 API + 异步执行器
+  - [x] 4.1 tasks/runner.py：进程内 asyncio 任务执行器（从 tasks 表领取 queued 任务、执行 provider、更新进度/状态、失败重试≤3、幂等键防重、结果落盘 backend/storage）
+  - [x] 4.2 providers/：image_mock（生成占位 PNG/SVG）、video_mock（静态视频或占位文件）、tts_mock（静音 wav/占位）；统一 Provider 接口便于接真实渠道
+  - [x] 4.3 api/generation.py：关键帧打样/全量（trial/full phase）、视频片段、TTS、任务列表/详情/重试/取消、SSE 进度端点、配音时长回写 actual_duration
+  - [x] 4.4 api/publish.py：合成任务（ffmpeg 优先、缺 ffmpeg 占位降级）、film_outputs 版本管理、三级审核记录（规则机审+人工队列）、分享链接（token/有效期/访问密码/撤回）、导出
+- [x] Task 5: 画布 API
+  - [x] 5.1 api/canvases.py：CRUD、JSON 导入导出、节点/连线批量保存、自环 CHECK+应用层成环检测、模板创建
+  - [x] 5.2 services/canvas_service.py：DAG 增量执行（脏节点标记→拓扑排序→上游缓存复用→生成类转 tasks）、节点状态更新、画布助手 Agent（LangGraph）对话接口
+- [x] Task 6: LangGraph 多智能体骨架
+  - [x] 6.1 agents/state.py（共享 State Schema）、agents/supervisor.py（意图路由：剧本/资产/分镜/生成/画布/闲聊）
+  - [x] 6.2 域智能体：script_agent（含流式）、asset_agent、storyboard_agent、generation_agent、compose_agent、consistency_agent、canvas_agent、review_agent、cost_agent、deep_research_agent（长文本解析），全部基于 DeepSeek ChatOpenAI
+  - [x] 6.3 agents/graph.py：StateGraph 组装 + AsyncPostgresSaver 检查点（失败时降级 MemorySaver）+ agent_threads 落库；api/agent_chat.py：/agent/chat SSE 对话 + 工作台意图承接
+- [x] Task 7: 管理端 API
+  - [x] 7.1 api/admin/auth.py（复用 JWT+operator 校验）、admin/dashboard.py（用户/收入/订单/生成量/积分负债统计与趋势、资损告警列表）
+  - [x] 7.2 admin/users.py（列表/详情/积分调整/禁用，reason 必填+operation_logs 留痕）、admin/review.py（队列/处置+suggestion）
+  - [x] 7.3 admin/models.py（渠道 CRUD+Key 加密+健康探测+优先级）、admin/orders.py（查询/人工完成/退款留痕）、admin/content.py（公告 CRUD/置顶、公共提示词上下架）、admin/settings.py（站点设置 KV）
+- [x] Task 8: 后端测试
+  - [x] 8.1 tests/conftest.py（测试库/事务回滚隔离、测试 client、注册登录 fixture）
+  - [x] 8.2 用例：test_auth（注册/登录/刷新/越权）、test_billing（冻结-扣费-幂等退款）、test_projects（CRUD/状态机）、test_script（提取裁决）、test_assets（锁定/变体）、test_storyboard（强绑/重排）、test_tasks（打样全量/失败退款）、test_canvas（环检测/增量）、test_admin（门禁/积分调整留痕）、test_agents（剧本 Agent mock 调用）
+  - [x] 8.3 运行 pytest 全绿并修复
+- [x] Task 9: 前端基础框架接入（mangaflow-web）
+  - [x] 9.1 安装 @mangaflow/design（file:../mangaflow-design）+ element-plus/axios/pinia 装配、styles 引入、主题切换工具（深色创作端/浅色官网+localStorage）
+  - [x] 9.2 api/ 模块（axios 实例、拦截器、refresh 无感刷新、SSE 工具）、stores/（auth/ui/project）
+  - [x] 9.3 router 全量路由表（含守卫：未登录→登录弹窗/页、collab 禁用路由、403/404）
+  - [x] 9.4 layouts：DefaultLayout（侧栏 11 项+顶栏：积分余额/通知/主题/头像菜单）、BlankLayout、StudioLayout（五阶段步骤条）
+- [x] Task 10: 用户端官网/认证/工作台/项目页
+  - [x] 10.1 L-01 官网首页（智能体对话框+四步流程+双引擎卡片+作品 Tab+CTA）+ L-02 登录注册弹窗（双 Tab/倒计时/协议门控/意图承接）+ L-03 找回
+  - [x] 10.2 W-01 工作台（意图承接条、Agent 输入框+技能选择+快捷 chips、最近生成、项目/任务列表）
+  - [x] 10.3 W-02 项目列表（统计卡、公告条、搜索筛选排序、卡片/列表视图、hover 操作、分页）+ S-01 新建项目弹窗（三输入 Tab+元信息+预估积分）
+- [x] Task 11: 用户端 Studio 五阶段页面
+  - [x] 11.1 S-02 剧本创作（双栏：原始输入+流式生成、大纲导航、结构化面板、富文本编辑、AI 助手、体检面板）+ S-03 实体提取（进度、三 Tab、勾选范围、别名归并、冲突必选裁决、低置信标黄）
+  - [x] 11.2 S-04 资产管理（四 Tab、进度、主照→确认→锁定→派生流、重生成/改提示词两层抽屉/上传替换、一致性并排对比）+ S-05 变体抽屉（继承声明）
+  - [x] 11.3 S-06 分镜设计（原文/卡片三区、拖拽排序、单镜编辑、成本预估、实体强绑标黄、节奏预警、投递画布）
+  - [x] 11.4 S-07 内容生成（关键帧/视频 Tab、打样确认后全量、总览状态角标、全局任务面板、积分消耗条）+ S-08 配音合成（配音/BGM/字幕/转场四 Tab、音色映射、超限三选一、增量合成）
+  - [x] 11.5 S-09 审核发布（播放器+分镜条联动、三级审核结果、版本对比回退、导出参数、分享设置）
+- [x] Task 12: 用户端画布与平台页
+  - [x] 12.1 C-01 画布列表（模板区、我的画布卡、导入 JSON）+ C-02 画布编辑器（左侧节点面板、SVG 连线画布、拖拽节点、连线校验+成环提示、三种运行模式、右侧检查器+助手、小地图、自动保存、增量执行状态）
+  - [x] 12.2 /characters 跨项目总览、/media 素材库（类型+来源筛选、批量发送、引用保护）、/prompts 提示词库（公共/我的、应用直达）
+  - [x] 12.3 /models 模型配置（能力 Tab、默认/项目覆盖、自有 Key 管理+测试）、/billing 计费中心（概览+充值/订阅/订单三 Tab）、/profile 个人中心（四 Tab）、/share/:token 分享预览、/help、错误页
+- [x] Task 13: 管理端前端（mangaflow-admin-web）
+  - [x] 13.1 基础框架：design 包接入（浅色）、axios/api 模块、router 守卫（operator 门禁）、AdminLayout 横向导航
+  - [x] 13.2 A-01 登录页（非管理员提示拒绝）+ A-02 看板（时间范围、指标卡、ECharts 趋势图、资损告警区）
+  - [x] 13.3 A-03 用户管理（筛选/导出、详情抽屉、积分调整/禁用二次确认+原因）+ A-04 审核队列（三 Tab、双栏详情、驳回建议必填）
+  - [x] 13.4 A-05 模型配置（三 Tab、Key 加密录入、优先级）+ A-06 订单计费（五 Tab、退款二次确认）+ A-07 内容运营 + A-08 系统设置（六 Tab）
+- [x] Task 14: 一键脚本与全链路集成验证
+  - [x] 14.1 mangaflow.ps1：start/stop/status（检查 PostgreSQL 服务→执行 init_db→venv/依赖检测→启动 uvicorn:8000、vite:5173、vite:5174→PID 文件管理→status 检测端口与进程）
+  - [x] 14.2 全链路冒烟：start→注册登录→新建项目→生成剧本→实体提取→资产生成→分镜→打样关键帧→合成→发布分享→admin 登录与公告发布→stop 无残留；修复发现的问题
+  - [x] 14.3 backend README（API 概览/启动方式/环境配置）与最终验证（pytest、前端 type-check/build）
+
+# Task Dependencies
+- Task 1 → Task 2/3/4/5/6/7（后端各模块依赖基础设施，1 完成后可并行）
+- Task 2/3/4/5/6/7 → Task 8（测试依赖全部后端接口）
+- Task 9 → Task 10/11/12（前端页面依赖框架）；Task 13 依赖 Task 9 的 api/stores 模式（可先做 13.1）
+- Task 10/11/12/13 → Task 14（集成验证依赖前后端完成）
+- Task 8 与 Task 9-13 可并行（分别验证后端与前端）

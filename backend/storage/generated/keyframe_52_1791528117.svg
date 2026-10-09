@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="254" cy="827" r="88" fill="#12B3A6" opacity="0.22"/><circle cx="431" cy="183" r="23" fill="#12B3A6" opacity="0.16"/><circle cx="275" cy="601" r="25" fill="#12B3A6" opacity="0.22"/><polygon points="159,936 138,978 180,978" fill="#12B3A6" opacity="0.18"/><polygon points="373,468 348,518 398,518" fill="#12B3A6" opacity="0.13"/><circle cx="129" cy="416" r="23" fill="#12B3A6" opacity="0.29"/><circle cx="469" cy="416" r="30" fill="#12B3A6" opacity="0.3"/><polygon points="365,648 276,826 454,826" fill="#12B3A6" opacity="0.16"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：地</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">下数据港；角色：无；画面：金</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">属闸门在刺耳的气压声中逐</text>
+</svg>

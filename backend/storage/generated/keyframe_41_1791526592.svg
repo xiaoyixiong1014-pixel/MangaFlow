@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="457" cy="655" r="31" fill="#12B3A6" opacity="0.2"/><circle cx="155" cy="418" r="42" fill="#12B3A6" opacity="0.26"/><circle cx="214" cy="459" r="44" fill="#12B3A6" opacity="0.19"/><circle cx="375" cy="765" r="77" fill="#12B3A6" opacity="0.28"/><polygon points="94,94 18,246 170,246" fill="#12B3A6" opacity="0.13"/><polygon points="308,647 241,781 375,781" fill="#12B3A6" opacity="0.22"/><polygon points="457,682 431,734 483,734" fill="#12B3A6" opacity="0.27"/><circle cx="398" cy="166" r="74" fill="#12B3A6" opacity="0.21"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：旧</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">书店；角色：林小雨；画面：暴</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">雨敲打旧书店木窗，暖黄灯</text>
+</svg>

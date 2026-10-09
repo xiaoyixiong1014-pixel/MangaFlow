@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="494" cy="168" r="79" fill="#12B3A6" opacity="0.21"/><circle cx="197" cy="430" r="53" fill="#12B3A6" opacity="0.29"/><polygon points="262,710 233,768 291,768" fill="#12B3A6" opacity="0.24"/><circle cx="167" cy="272" r="43" fill="#12B3A6" opacity="0.23"/><circle cx="309" cy="163" r="41" fill="#12B3A6" opacity="0.25"/><polygon points="520,106 439,268 601,268" fill="#12B3A6" opacity="0.16"/><circle cx="540" cy="762" r="86" fill="#12B3A6" opacity="0.24"/><polygon points="231,742 170,864 292,864" fill="#12B3A6" opacity="0.15"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：方</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">舟塔顶；角色：林霄；画面：晨</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">光从城市天际线漫入塔顶，</text>
+</svg>

@@ -1,0 +1,998 @@
+<!--
+  内容生成页（文件级注释）。
+
+  对应原型 S-07（内容生成）+ S-08（配音与合成），路由 /projects/:id/production。
+  功能：
+  - 顶部积分消耗条：billing.wallet 的可用 / 冻结积分；
+  - 三个 Tab（el-tabs）：
+    ① 关键帧：分镜网格卡（keyframe_url 图或占位 + 状态角标）；「打样第一镜」
+      keyframes(phase=trial)；「全量生成」确认框（将生成 N 张、预计 N×10 积分）后
+      keyframes(phase=full)；任务提交后不阻塞，由任务面板跟踪；
+    ② 视频：每镜行（首帧缩略 + video_url 播放器或占位 + 「生成视频片段」video()）；
+    ③ 配音与合成（S-08）：角色音色映射表（音色 Select + 试听按钮 disabled 占位）、
+      每镜「生成配音」tts()；时长差异处理三选一（缩短台词 / 延长镜头 / 重新配音）——
+      仅「重新配音」真实调用 tts，其余为前端演示提示（说明见注释）；
+      BGM / 字幕 / 转场 Select + 保存（演示：配置暂存前端，不落库）；
+  - 全局任务面板：右侧常驻抽屉；初始 taskList 拉取最近任务，taskStream（GET SSE）
+    实时更新类型/状态/进度/结果链接，支持单任务重试（taskRetry）/取消（taskCancel）；
+  - 底部「全部完成，进入合成」：compose() 提交合成任务并轮询 taskDetail，
+    完成后确认跳转发布页。
+-->
+<script setup lang="ts">
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import * as productionApi from '@/api/production'
+import * as billingApi from '@/api/billing'
+import * as studioApi from '@/api/studio'
+import type { GenTask, Storyboard, Wallet, CharacterAsset } from '@/types'
+
+const route = useRoute()
+const router = useRouter()
+
+/** 当前项目 ID（取路由参数） */
+const projectId = computed(() => Number(route.params.id))
+
+// ============================================================
+// 基础数据
+// ============================================================
+
+/** 首屏加载中 */
+const loading = ref(true)
+/** 分镜列表 */
+const boards = ref<Storyboard[]>([])
+/** 角色资产（音色映射表用） */
+const characters = ref<CharacterAsset[]>([])
+/** 当前 Tab */
+const activeTab = ref('keyframes')
+
+/**
+ * 拉取分镜与角色资产。
+ * @returns 无
+ */
+async function loadBase(): Promise<void> {
+  loading.value = true
+  try {
+    const [sb, assets, walletRes] = await Promise.all([
+      studioApi.listStoryboard(projectId.value),
+      studioApi.listAssets(projectId.value),
+      billingApi.wallet().catch(() => null),
+    ])
+    boards.value = sb
+    characters.value = assets.characters
+    if (walletRes) {
+      wallet.balance = walletRes.points_balance
+      wallet.frozen = walletRes.frozen_points
+    }
+  } finally {
+    loading.value = false
+  }
+}
+
+// ============================================================
+// 积分消耗条
+// ============================================================
+
+/** 钱包展示状态 */
+const wallet = reactive({ balance: 0, frozen: 0 })
+
+/**
+ * 刷新钱包（任务状态变化后调用）。
+ * @returns 无
+ */
+async function refreshWallet(): Promise<void> {
+  try {
+    const w = await billingApi.wallet()
+    wallet.balance = w.points_balance
+    wallet.frozen = w.frozen_points
+  } catch {
+    /* 静默失败：积分条非关键路径 */
+  }
+}
+
+// ============================================================
+// 全局任务面板（右侧常驻抽屉 + SSE 进度流）
+// ============================================================
+
+/** 任务面板可见性 */
+const panelVisible = ref(false)
+/** 任务列表（taskList 详情 + SSE 摘要合并） */
+const tasks = ref<GenTask[]>([])
+/** 非终态任务数（SSE progress 摘要） */
+const runningCount = ref(0)
+/** SSE 中止控制器 */
+let taskAbort: AbortController | null = null
+
+/**
+ * 拉取最近任务列表（面板初始与 SSE done 后刷新）。
+ * @returns 无
+ */
+async function refreshTasks(): Promise<void> {
+  try {
+    const page = await productionApi.taskList(projectId.value, { page: 1, page_size: 20 })
+    tasks.value = page.items
+  } catch {
+    /* 拉取失败不打断主流程 */
+  }
+}
+
+/**
+ * 建立 SSE 进度流：progress 事件合并进任务列表；done 后刷新任务与分镜（回写结果）。
+ * @returns 无
+ */
+function startTaskStream(): void {
+  stopTaskStream()
+  taskAbort = new AbortController()
+  void productionApi
+    .taskStream(
+      projectId.value,
+      (event, data) => {
+        if (event === 'progress') {
+          const d = (data ?? {}) as { tasks?: { id: number; type: string; status: string; progress: number }[]; running?: number }
+          runningCount.value = d.running ?? 0
+          for (const t of d.tasks ?? []) {
+            const exist = tasks.value.find((x) => x.id === t.id)
+            if (exist) {
+              exist.status = t.status
+              exist.progress = t.progress
+              exist.type = t.type
+            } else {
+              // 新任务先以摘要行插入，详情在 done 后刷新补齐
+              tasks.value.unshift({
+                id: t.id,
+                type: t.type,
+                status: t.status,
+                progress: t.progress,
+              } as GenTask)
+            }
+          }
+        } else if (event === 'done') {
+          runningCount.value = 0
+          void refreshTasks()
+          void studioApi.listStoryboard(projectId.value).then((sb) => {
+            boards.value = sb
+          })
+          void refreshWallet()
+        }
+      },
+      taskAbort.signal,
+    )
+    .catch(() => {
+      /* SSE 断开静默：任务状态以手动刷新兜底 */
+    })
+}
+
+/**
+ * 关闭 SSE 流。
+ * @returns 无
+ */
+function stopTaskStream(): void {
+  taskAbort?.abort()
+  taskAbort = null
+}
+
+/**
+ * 打开任务面板（同时刷新任务列表）。
+ * @returns 无
+ */
+function openPanel(): void {
+  panelVisible.value = true
+  void refreshTasks()
+}
+
+/**
+ * 重试失败任务（创建新任务，重新冻结积分）。
+ * @param t 失败任务
+ * @returns 无
+ */
+async function retryTask(t: GenTask): Promise<void> {
+  const newTask = await productionApi.taskRetry(t.id)
+  ElMessage.success(`已创建重试任务 #${newTask.id}`)
+  startTaskStream()
+  void refreshTasks()
+}
+
+/**
+ * 取消任务（queued/running 可取消，退还冻结积分）。
+ * @param t 目标任务
+ * @returns 无
+ */
+async function cancelTask(t: GenTask): Promise<void> {
+  const res = await productionApi.taskCancel(t.id)
+  ElMessage.success(res.message ?? '任务已取消')
+  void refreshTasks()
+  void refreshWallet()
+}
+
+/** 任务状态 → Tag 类型 */
+const taskStatusType: Record<string, 'info' | 'warning' | 'success' | 'danger'> = {
+  queued: 'info',
+  running: 'warning',
+  done: 'success',
+  failed: 'danger',
+  canceled: 'info',
+}
+/** 任务类型 → 中文 */
+const taskTypeLabel: Record<string, string> = {
+  image: '关键帧',
+  video: '视频',
+  tts: '配音',
+  compose: '合成',
+  llm: '文本',
+  extract: '抽取',
+}
+
+// ============================================================
+// 关键帧 Tab（S-07）
+// ============================================================
+
+/** 提交关键帧任务进行中（防重复点击） */
+const kfBusy = ref(false)
+
+/**
+ * 打样第一镜（trial：单分镜 1 张，确认风格后再放开全量，RD-27）。
+ * @returns 无
+ */
+async function trialKeyframe(): Promise<void> {
+  const first = boards.value[0]
+  if (!first) {
+    ElMessage.warning('暂无分镜，请先完成分镜拆解')
+    return
+  }
+  if (kfBusy.value) return
+  kfBusy.value = true
+  try {
+    const res = await productionApi.keyframes(projectId.value, first.id, { phase: 'trial' })
+    ElMessage.success(`打样任务已提交，冻结 ${res.total_cost} 积分`)
+    panelVisible.value = true
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+  } finally {
+    kfBusy.value = false
+  }
+}
+
+/**
+ * 全量生成关键帧（full：项目全部分镜；确认框提示张数与积分）。
+ * @returns 无
+ */
+async function fullKeyframes(): Promise<void> {
+  if (!boards.value.length) {
+    ElMessage.warning('暂无分镜，请先完成分镜拆解')
+    return
+  }
+  const n = boards.value.length
+  try {
+    await ElMessageBox.confirm(
+      `将生成 ${n} 张关键帧，预计消耗 ${n * 10} 积分。是否继续？`,
+      '全量生成',
+      { type: 'info', confirmButtonText: '开始生成' },
+    )
+  } catch {
+    return
+  }
+  if (kfBusy.value) return
+  kfBusy.value = true
+  try {
+    const res = await productionApi.keyframes(projectId.value, boards.value[0]!.id, {
+      phase: 'full',
+    })
+    ElMessage.success(`全量任务已提交（${res.tasks.length} 个任务，冻结 ${res.total_cost} 积分）`)
+    panelVisible.value = true
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+  } finally {
+    kfBusy.value = false
+  }
+}
+
+// ============================================================
+// 视频 Tab
+// ============================================================
+
+/** 视频任务提交中的分镜 ID 集合（防重复点击） */
+const videoBusyIds = ref<number[]>([])
+
+/**
+ * 生成单镜视频片段。
+ * @param b 目标分镜
+ * @returns 无
+ */
+async function genVideo(b: Storyboard): Promise<void> {
+  if (videoBusyIds.value.includes(b.id)) return
+  videoBusyIds.value = [...videoBusyIds.value, b.id]
+  try {
+    const task = await productionApi.video(projectId.value, b.id, {})
+    ElMessage.success(`视频任务 #${task.id} 已提交`)
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+  } finally {
+    videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
+  }
+}
+
+// ============================================================
+// 配音与合成 Tab（S-08）
+// ============================================================
+
+/** 角色音色映射（角色 ID → 音色） */
+const voiceMap = reactive<Record<number, 'male_01' | 'female_01'>>({})
+
+/**
+ * 取某镜使用的音色：取该镜第一个绑定角色的映射，缺省 female_01。
+ * @param b 目标分镜
+ * @returns 音色标识
+ */
+function voiceOf(b: Storyboard): 'male_01' | 'female_01' {
+  const first = b.characters[0]
+  if (first) return voiceMap[first.character_id] ?? 'female_01'
+  return 'female_01'
+}
+
+/** 配音任务提交中的分镜 ID 集合（防重复点击） */
+const ttsBusyIds = ref<number[]>([])
+/** 已完成配音的分镜 ID 集合（本地跟踪，用于展示时长差异处理区） */
+const ttsDoneIds = ref<number[]>([])
+
+/**
+ * 生成单镜配音（TTS）。
+ * @param b 目标分镜
+ * @returns 无
+ */
+async function genTts(b: Storyboard): Promise<void> {
+  if (ttsBusyIds.value.includes(b.id)) return
+  ttsBusyIds.value = [...ttsBusyIds.value, b.id]
+  try {
+    const task = await productionApi.tts(projectId.value, b.id, { voice: voiceOf(b) })
+    ElMessage.success(`配音任务 #${task.id} 已提交`)
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+    // 轮询该任务直到终态，完成后标记并给出处理提示
+    const timer = setInterval(async () => {
+      try {
+        const t = await productionApi.taskDetail(task.id)
+        if (t.status === 'done') {
+          clearInterval(timer)
+          if (!ttsDoneIds.value.includes(b.id)) ttsDoneIds.value = [...ttsDoneIds.value, b.id]
+          ElMessage.success(`#${b.sequence} 镜配音完成`)
+        } else if (t.status === 'failed' || t.status === 'canceled') {
+          clearInterval(timer)
+        }
+      } catch {
+        clearInterval(timer)
+      }
+    }, 2000)
+  } finally {
+    ttsBusyIds.value = ttsBusyIds.value.filter((i) => i !== b.id)
+  }
+}
+
+/**
+ * 时长差异处理（RD-31 演示范围说明）：
+ * 后端 TTS 完成后会把实际时长回写分镜 actual_duration，但列表接口（StoryboardOut）
+ * 未暴露该字段，前端无法读取真实差异；因此本区块以「预计时长」展示，三选一中
+ * 仅「重新配音」做真实调用（重发 tts 任务），其余两项为前端演示提示。
+ */
+const overHandle = ref<'shorten' | 'extend' | 'retts'>('retts')
+/** 正在应用时长处理的目标镜 */
+const overBoard = ref<Storyboard | null>(null)
+
+/**
+ * 应用时长差异处理方式。
+ * @returns 无
+ */
+async function applyOverHandle(): Promise<void> {
+  if (!overBoard.value) return
+  if (overHandle.value === 'retts') {
+    await genTts(overBoard.value)
+  } else if (overHandle.value === 'extend') {
+    // 演示范围：延长镜头需改分镜时长并重合成，此处仅前端提示
+    ElMessage.info('演示范围：延长镜头将在合成阶段按实际音频时长自动适配')
+  } else {
+    ElMessage.info('演示范围：缩短台词请到分镜页编辑对白后重新配音')
+  }
+}
+
+// BGM / 字幕 / 转场配置（演示：配置暂存前端，不落库后端）
+const mixConfig = reactive({
+  bgm: 'platform_lib',
+  subtitleFont: '思源黑体',
+  subtitlePos: 'bottom',
+  transition: 'fade',
+})
+
+/**
+ * 保存 BGM/字幕/转场配置（前端暂存演示）。
+ * @returns 无
+ */
+function saveMixConfig(): void {
+  ElMessage.success('配置已保存（演示：配置暂存前端）')
+}
+
+// ============================================================
+// 合成（进入发布）
+// ============================================================
+
+/** 合成进行中 */
+const composing = ref(false)
+/** 合成任务进度（轮询 taskDetail） */
+const composeProgress = ref(0)
+
+/**
+ * 发起成片合成并轮询任务直到终态，完成后确认跳转发布页。
+ * @returns 无
+ */
+async function composeFilm(): Promise<void> {
+  if (composing.value) return
+  composing.value = true
+  composeProgress.value = 0
+  try {
+    const task = await productionApi.compose(projectId.value, { mode: 'full' })
+    ElMessage.success(`合成任务 #${task.id} 已提交`)
+    panelVisible.value = true
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+    // 轮询合成任务详情（进度条展示），终态后引导跳转
+    for (;;) {
+      await new Promise((r) => setTimeout(r, 2000))
+      const t = await productionApi.taskDetail(task.id)
+      composeProgress.value = t.progress
+      if (t.status === 'done') {
+        ElMessage.success('合成完成')
+        try {
+          await ElMessageBox.confirm('成片已生成，是否前往发布页查看与分享？', '合成完成', {
+            type: 'success',
+            confirmButtonText: '前往发布',
+            cancelButtonText: '留在本页',
+          })
+          await router.push(`/projects/${projectId.value}/publish`)
+        } catch {
+          /* 留在本页 */
+        }
+        break
+      }
+      if (t.status === 'failed' || t.status === 'canceled') {
+        ElMessage.error(t.error || '合成失败，可在任务面板重试')
+        break
+      }
+    }
+  } finally {
+    composing.value = false
+  }
+}
+
+onMounted(async () => {
+  await loadBase()
+  void refreshTasks()
+  // 进入页面即建立一次 SSE 流：无任务时服务端立即 done 结束，有任务时实时跟踪
+  startTaskStream()
+})
+
+onBeforeUnmount(() => {
+  stopTaskStream()
+})
+</script>
+
+<template>
+  <div class="page-container prod-view">
+    <!-- 顶部：积分消耗条 + 任务面板入口 -->
+    <div class="top-bar">
+      <el-tabs v-model="activeTab" class="prod-tabs">
+        <el-tab-pane label="关键帧" name="keyframes" />
+        <el-tab-pane label="视频" name="videos" />
+        <el-tab-pane label="配音与合成" name="audio" />
+      </el-tabs>
+      <div class="top-right">
+        <div class="wallet-line">
+          <span>可用积分 <b>{{ wallet.balance }}</b></span>
+          <el-divider direction="vertical" />
+          <span>冻结 <b>{{ wallet.frozen }}</b></span>
+        </div>
+        <el-badge :value="runningCount" :hidden="!runningCount">
+          <el-button @click="openPanel">任务面板</el-button>
+        </el-badge>
+      </div>
+    </div>
+
+    <!-- 首屏骨架 -->
+    <el-skeleton v-if="loading" :rows="7" animated />
+
+    <el-empty
+      v-else-if="!boards.length"
+      description="暂无分镜，请先回分镜页完成拆解"
+    >
+      <el-button type="primary" @click="$router.push(`/projects/${projectId}/storyboard`)">
+        去分镜设计
+      </el-button>
+    </el-empty>
+
+    <template v-else>
+      <!-- ============ 关键帧 Tab ============ -->
+      <template v-if="activeTab === 'keyframes'">
+        <div class="kf-ops">
+          <el-button type="primary" plain :loading="kfBusy" @click="trialKeyframe">
+            打样第一镜
+          </el-button>
+          <el-button type="primary" :loading="kfBusy" @click="fullKeyframes">
+            全量生成（{{ boards.length }} 张 ≈ {{ boards.length * 10 }} 积分）
+          </el-button>
+          <span class="kf-tip">提示：先打样确认风格，再放开全量批量（打样任务在右侧任务面板跟踪）</span>
+        </div>
+        <div class="kf-grid">
+          <el-card v-for="b in boards" :key="b.id" shadow="hover" class="kf-card">
+            <div class="kf-img-wrap">
+              <el-image
+                v-if="b.keyframe_url"
+                :src="b.keyframe_url"
+                :preview-src-list="[b.keyframe_url]"
+                fit="cover"
+                class="kf-img"
+                preview-teleported
+              />
+              <div v-else class="kf-img kf-img--empty">
+                <span>#{{ String(b.sequence).padStart(2, '0') }}</span>
+              </div>
+              <!-- 状态角标 -->
+              <el-tag
+                class="kf-badge"
+                size="small"
+                effect="dark"
+                :type="b.keyframe_url ? 'success' : b.status === 'failed' ? 'danger' : 'info'"
+              >
+                {{ b.keyframe_url ? '已完成' : b.status === 'failed' ? '失败' : '待生成' }}
+              </el-tag>
+            </div>
+            <div class="kf-caption">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
+          </el-card>
+        </div>
+      </template>
+
+      <!-- ============ 视频 Tab ============ -->
+      <template v-else-if="activeTab === 'videos'">
+        <div class="video-rows">
+          <el-card v-for="b in boards" :key="b.id" shadow="never" class="video-row">
+            <div class="video-row-body">
+              <el-image
+                v-if="b.keyframe_url"
+                :src="b.keyframe_url"
+                fit="cover"
+                class="video-thumb"
+                :preview-src-list="[b.keyframe_url]"
+                preview-teleported
+              />
+              <div v-else class="video-thumb video-thumb--empty">无首帧</div>
+              <div class="video-play">
+                <video
+                  v-if="b.video_url && !b.video_url.endsWith('.svg')"
+                  :src="b.video_url"
+                  controls
+                  class="video-player"
+                />
+                <div v-else class="video-player video-player--empty">
+                  <span>视频片段{{ b.video_url ? '为占位图（合成后可播）' : '待生成' }}</span>
+                </div>
+              </div>
+              <div class="video-side">
+                <div class="video-title">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
+                <div class="video-desc">{{ b.visual_description || '（无画面描述）' }}</div>
+                <el-button
+                  type="primary"
+                  plain
+                  size="small"
+                  :loading="videoBusyIds.includes(b.id)"
+                  @click="genVideo(b)"
+                >
+                  {{ b.video_url ? '重新生成视频片段' : '生成视频片段' }}
+                </el-button>
+              </div>
+            </div>
+          </el-card>
+        </div>
+      </template>
+
+      <!-- ============ 配音与合成 Tab（S-08） ============ -->
+      <template v-else>
+        <!-- 角色音色映射 -->
+        <el-card shadow="never" class="block-card">
+          <template #header><span>角色音色映射</span></template>
+          <el-empty
+            v-if="!characters.length"
+            description="暂无角色资产"
+            :image-size="60"
+          />
+          <el-table v-else :data="characters" size="small">
+            <el-table-column prop="name" label="角色" width="160" />
+            <el-table-column label="音色" width="220">
+              <template #default="{ row }">
+                <el-select v-model="voiceMap[row.id]" placeholder="female_01（默认）" style="width: 180px">
+                  <el-option label="男声 male_01" value="male_01" />
+                  <el-option label="女声 female_01" value="female_01" />
+                </el-select>
+              </template>
+            </el-table-column>
+            <el-table-column label="试听">
+              <template #default>
+                <!-- 试听占位：TTS 试听接口未提供 -->
+                <el-button size="small" disabled>试听 ▶（暂未开放）</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+        </el-card>
+
+        <!-- 每镜配音 -->
+        <el-card shadow="never" class="block-card">
+          <template #header><span>分镜配音</span></template>
+          <el-table :data="boards" size="small">
+            <el-table-column label="镜号" width="80">
+              <template #default="{ row }">#{{ String(row.sequence).padStart(2, '0') }}</template>
+            </el-table-column>
+            <el-table-column prop="dialogue" label="对白" show-overflow-tooltip />
+            <el-table-column label="预计时长" width="90">
+              <template #default="{ row }">{{ row.duration }}s</template>
+            </el-table-column>
+            <el-table-column label="音色" width="110">
+              <template #default="{ row }">{{ voiceOf(row) === 'male_01' ? '男声' : '女声' }}</template>
+            </el-table-column>
+            <el-table-column label="操作" width="150">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="ttsBusyIds.includes(row.id)"
+                  @click="genTts(row)"
+                >
+                  {{ ttsDoneIds.includes(row.id) ? '重新配音' : '生成配音' }}
+                </el-button>
+                <el-tag v-if="ttsDoneIds.includes(row.id)" size="small" type="success" class="tts-done-tag">
+                  已配音
+                </el-tag>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 时长差异处理（三选一；演示范围见脚本注释） -->
+          <div v-if="ttsDoneIds.length" class="over-box">
+            <div class="over-title">
+              时长差异处理（已完成配音 {{ ttsDoneIds.length }} 镜；实际时长由后端在合成阶段自动对齐）
+            </div>
+            <el-select v-model="overBoard" value-key="id" placeholder="选择分镜" style="width: 200px" size="small">
+              <el-option
+                v-for="b in boards.filter((x) => ttsDoneIds.includes(x.id))"
+                :key="b.id"
+                :label="`#${String(b.sequence).padStart(2, '0')}（预计 ${b.duration}s）`"
+                :value="b"
+              />
+            </el-select>
+            <el-radio-group v-model="overHandle" class="over-radios">
+              <el-radio value="shorten">缩短台词</el-radio>
+              <el-radio value="extend">延长镜头</el-radio>
+              <el-radio value="retts">重新配音</el-radio>
+            </el-radio-group>
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="!overBoard"
+              :loading="overBoard ? ttsBusyIds.includes(overBoard.id) : false"
+              @click="applyOverHandle"
+            >
+              应用
+            </el-button>
+          </div>
+        </el-card>
+
+        <!-- BGM / 字幕 / 转场 -->
+        <el-card shadow="never" class="block-card">
+          <template #header><span>BGM / 字幕 / 转场</span></template>
+          <el-form label-width="90px" class="mix-form">
+            <el-form-item label="背景音乐">
+              <el-select v-model="mixConfig.bgm" style="width: 240px">
+                <el-option label="平台免版权曲库（自动 ducking）" value="platform_lib" />
+                <el-option label="不使用 BGM" value="none" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="字幕">
+              <el-select v-model="mixConfig.subtitleFont" style="width: 160px">
+                <el-option label="思源黑体" value="思源黑体" />
+                <el-option label="思源宋体" value="思源宋体" />
+              </el-select>
+              <el-select v-model="mixConfig.subtitlePos" style="width: 140px; margin-left: 12px">
+                <el-option label="底部" value="bottom" />
+                <el-option label="顶部" value="top" />
+              </el-select>
+            </el-form-item>
+            <el-form-item label="转场">
+              <el-select v-model="mixConfig.transition" style="width: 240px">
+                <el-option label="淡入淡出（自动适配场景切换）" value="fade" />
+                <el-option label="硬切" value="cut" />
+              </el-select>
+            </el-form-item>
+          </el-form>
+          <el-button type="primary" plain @click="saveMixConfig">保存配置</el-button>
+        </el-card>
+      </template>
+
+      <!-- 合成进度 + 底部按钮 -->
+      <div class="footer-bar">
+        <el-progress
+          v-if="composing"
+          :percentage="composeProgress"
+          class="compose-progress"
+        />
+        <span v-else class="footer-tip">全部镜头关键帧 / 视频 / 配音完成后即可合成成片</span>
+        <el-button size="large" type="primary" class="confirm-btn" :loading="composing" @click="composeFilm">
+          全部完成，进入合成
+        </el-button>
+      </div>
+    </template>
+
+    <!-- ============ 全局任务面板抽屉 ============ -->
+    <el-drawer v-model="panelVisible" title="全局任务面板" size="480px" append-to-body>
+      <el-empty v-if="!tasks.length" description="暂无生成任务" />
+      <div v-else class="task-list">
+        <div v-for="t in tasks" :key="t.id" class="task-item">
+          <div class="task-line">
+            <span class="task-id">#{{ t.id }}</span>
+            <el-tag size="small" effect="plain">{{ taskTypeLabel[t.type] ?? t.type }}</el-tag>
+            <el-tag size="small" :type="taskStatusType[t.status] ?? 'info'">
+              {{ { queued: '排队中', running: '生成中', done: '已完成', failed: '失败', canceled: '已取消' }[t.status] ?? t.status }}
+            </el-tag>
+            <span v-if="t.storyboard_id" class="task-sb">镜 #{{ t.storyboard_id }}</span>
+            <div class="task-ops">
+              <el-button v-if="t.status === 'failed'" size="small" text type="primary" @click="retryTask(t)">
+                重试
+              </el-button>
+              <el-button
+                v-if="t.status === 'queued' || t.status === 'running'"
+                size="small"
+                text
+                type="danger"
+                @click="cancelTask(t)"
+              >
+                取消
+              </el-button>
+            </div>
+          </div>
+          <el-progress
+            v-if="t.status === 'running' || t.status === 'queued'"
+            :percentage="t.progress"
+            :stroke-width="8"
+            class="task-progress"
+          />
+          <div v-if="t.result_url" class="task-result">
+            结果：
+            <a :href="t.result_url" target="_blank" rel="noopener">{{ t.result_url }}</a>
+          </div>
+          <div v-if="t.error" class="task-error">{{ t.error }}</div>
+        </div>
+      </div>
+    </el-drawer>
+  </div>
+</template>
+
+<style scoped>
+.prod-view {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mf-sp-4);
+}
+.top-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mf-sp-4);
+}
+.prod-tabs {
+  flex: 1;
+}
+.top-right {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-4);
+}
+.wallet-line {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  white-space: nowrap;
+}
+.wallet-line b {
+  color: var(--mf-brand);
+}
+.kf-ops {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-3);
+}
+.kf-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.kf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--mf-sp-4);
+}
+.kf-card :deep(.el-card__body) {
+  padding: 0;
+}
+.kf-img-wrap {
+  position: relative;
+  height: 220px;
+  border-radius: var(--mf-r-ctl) var(--mf-r-ctl) 0 0;
+  overflow: hidden;
+}
+.kf-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.kf-img--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: linear-gradient(135deg, var(--mf-surface-2), var(--mf-border));
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-2xl);
+}
+.kf-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+}
+.kf-caption {
+  padding: var(--mf-sp-2) var(--mf-sp-3);
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+}
+.video-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mf-sp-4);
+}
+.video-row-body {
+  display: grid;
+  grid-template-columns: 140px 1fr 240px;
+  gap: var(--mf-sp-4);
+  align-items: center;
+}
+.video-thumb {
+  width: 140px;
+  height: 100px;
+  border-radius: var(--mf-r-ctl);
+}
+.video-thumb--empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--mf-surface-2);
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.video-player {
+  width: 100%;
+  max-height: 220px;
+  border-radius: var(--mf-r-ctl);
+  background: #000;
+}
+.video-player--empty {
+  height: 120px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--mf-surface-2);
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.video-title {
+  font-weight: var(--mf-fw-semibold);
+  margin-bottom: 4px;
+}
+.video-desc {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  margin-bottom: var(--mf-sp-2);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.block-card {
+  margin-bottom: 0;
+}
+.tts-done-tag {
+  margin-left: 8px;
+}
+.over-box {
+  margin-top: var(--mf-sp-4);
+  padding: var(--mf-sp-3);
+  border: 1px dashed var(--mf-border-strong);
+  border-radius: var(--mf-r-ctl);
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-3);
+  flex-wrap: wrap;
+}
+.over-title {
+  width: 100%;
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+}
+.over-radios {
+  margin: 0 var(--mf-sp-2);
+}
+.mix-form {
+  max-width: 560px;
+}
+.footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mf-sp-4);
+  position: sticky;
+  bottom: 0;
+  padding: var(--mf-sp-3);
+  background: var(--mf-surface);
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-ctl);
+}
+.footer-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.compose-progress {
+  flex: 1;
+}
+.confirm-btn {
+  background: var(--mf-brand);
+  border-color: var(--mf-brand);
+  color: var(--mf-bg);
+}
+.task-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mf-sp-3);
+}
+.task-item {
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-ctl);
+  padding: var(--mf-sp-3);
+}
+.task-line {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+}
+.task-id {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.task-sb {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+.task-ops {
+  margin-left: auto;
+}
+.task-progress {
+  margin-top: var(--mf-sp-2);
+}
+.task-result {
+  margin-top: var(--mf-sp-2);
+  font-size: var(--mf-fs-sm);
+  color: var(--mf-text-2);
+  word-break: break-all;
+}
+.task-result a {
+  color: var(--mf-brand);
+}
+.task-error {
+  margin-top: var(--mf-sp-2);
+  font-size: var(--mf-fs-sm);
+  color: var(--el-color-danger);
+}
+</style>

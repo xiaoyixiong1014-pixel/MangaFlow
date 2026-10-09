@@ -1,0 +1,89 @@
+/* ============================================================
+   全局基础样式（文件级注释）
+   依赖 @mangaflow/design 的 --mf-* CSS 变量（不硬编码色值）：
+   - 深浅主题滚动条
+   - .page-container 通用内边距容器 / .page-title 页标题
+   - 骨架屏动画
+   ============================================================ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+}
+
+body {
+  font-family: var(--mf-font);
+  font-size: var(--mf-fs-md);
+  color: var(--mf-text);
+  background: var(--mf-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  height: 100%;
+}
+
+/* ---------- 滚动条（跟随主题） ---------- */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--mf-border-strong);
+  border-radius: var(--mf-r-pill);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--mf-text-3);
+}
+
+/* ---------- 通用页容器 ---------- */
+.page-container {
+  padding: var(--mf-sp-6) var(--mf-sp-8);
+  max-width: 1440px;
+  margin: 0 auto;
+}
+.page-title {
+  margin: 0 0 var(--mf-sp-6);
+  font-size: var(--mf-fs-2xl);
+  font-weight: var(--mf-fw-bold);
+  color: var(--mf-text);
+}
+
+/* ---------- 骨架屏动画 ---------- */
+@keyframes mf-skeleton-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+.mf-skeleton {
+  background: var(--mf-surface-2);
+  border-radius: var(--mf-r-ctl);
+  animation: mf-skeleton-pulse 1.4s ease-in-out infinite;
+}
+.mf-skeleton--text {
+  height: 14px;
+}
+.mf-skeleton--block {
+  height: 120px;
+}
+
+/* ---------- Element Plus 细节对齐设计包 ---------- */
+.el-button {
+  font-family: var(--mf-font);
+}
+.el-message {
+  z-index: var(--mf-z-toast);
+}

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="534" cy="530" r="49" fill="#12B3A6" opacity="0.14"/><polygon points="161,919 126,989 196,989" fill="#12B3A6" opacity="0.12"/><polygon points="176,625 156,665 196,665" fill="#12B3A6" opacity="0.15"/><circle cx="555" cy="743" r="37" fill="#12B3A6" opacity="0.21"/><circle cx="86" cy="323" r="72" fill="#12B3A6" opacity="0.16"/><circle cx="81" cy="335" r="65" fill="#12B3A6" opacity="0.19"/><polygon points="90,443 40,543 140,543" fill="#12B3A6" opacity="0.08"/><polygon points="97,490 41,602 153,602" fill="#12B3A6" opacity="0.13"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：深</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">夜便利店；角色：阿哲；画面：</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">凌晨三点的便利店，惨白的</text>
+</svg>

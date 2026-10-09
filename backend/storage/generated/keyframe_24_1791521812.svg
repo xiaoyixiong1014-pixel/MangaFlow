@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="437" cy="926" r="61" fill="#12B3A6" opacity="0.24"/><circle cx="585" cy="538" r="19" fill="#12B3A6" opacity="0.11"/><polygon points="216,581 140,733 292,733" fill="#12B3A6" opacity="0.18"/><circle cx="297" cy="166" r="43" fill="#12B3A6" opacity="0.17"/><polygon points="372,874 306,1006 438,1006" fill="#12B3A6" opacity="0.21"/><polygon points="224,865 176,961 272,961" fill="#12B3A6" opacity="0.11"/><polygon points="470,810 418,914 522,914" fill="#12B3A6" opacity="0.23"/><circle cx="432" cy="316" r="64" fill="#12B3A6" opacity="0.16"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格插画，小明，小明（确</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">认），全身立绘，纯色背景，高</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">细节</text>
+</svg>

@@ -1,0 +1,13 @@
+{
+  "created_at": "2026-10-09T04:42:54.893077+00:00",
+  "counts": {
+    "users": 6,
+    "orders": 4,
+    "projects": 5,
+    "wallets": 6
+  },
+  "points_total": {
+    "available": 1071275,
+    "frozen": 30
+  }
+}

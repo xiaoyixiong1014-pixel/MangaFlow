@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="325" cy="921" r="58" fill="#12B3A6" opacity="0.11"/><circle cx="184" cy="767" r="54" fill="#12B3A6" opacity="0.16"/><circle cx="330" cy="635" r="88" fill="#12B3A6" opacity="0.28"/><polygon points="117,649 28,827 206,827" fill="#12B3A6" opacity="0.14"/><polygon points="492,900 467,950 517,950" fill="#12B3A6" opacity="0.22"/><polygon points="635,406 548,580 722,580" fill="#12B3A6" opacity="0.14"/><circle cx="622" cy="440" r="32" fill="#12B3A6" opacity="0.12"/><polygon points="602,533 582,573 622,573" fill="#12B3A6" opacity="0.17"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：雨</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">夜·清仓；角色：林小雨；画面</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">：雨夜旧书店内，雨水敲打</text>
+</svg>

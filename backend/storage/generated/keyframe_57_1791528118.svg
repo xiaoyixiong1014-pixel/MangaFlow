@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="154" cy="363" r="53" fill="#12B3A6" opacity="0.19"/><polygon points="615,652 526,830 704,830" fill="#12B3A6" opacity="0.28"/><circle cx="93" cy="562" r="88" fill="#12B3A6" opacity="0.11"/><circle cx="419" cy="705" r="74" fill="#12B3A6" opacity="0.26"/><polygon points="563,696 475,872 651,872" fill="#12B3A6" opacity="0.14"/><circle cx="623" cy="396" r="49" fill="#12B3A6" opacity="0.1"/><circle cx="127" cy="166" r="24" fill="#12B3A6" opacity="0.15"/><polygon points="517,441 439,597 595,597" fill="#12B3A6" opacity="0.17"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：全</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">息围捕·被迫联手；角色：苏离</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">；画面：霓虹天台被无人机</text>
+</svg>

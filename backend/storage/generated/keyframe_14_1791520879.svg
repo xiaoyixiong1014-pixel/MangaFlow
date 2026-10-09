@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="229" cy="565" r="34" fill="#12B3A6" opacity="0.29"/><polygon points="217,806 181,878 253,878" fill="#12B3A6" opacity="0.2"/><circle cx="170" cy="429" r="86" fill="#12B3A6" opacity="0.11"/><polygon points="612,647 538,795 686,795" fill="#12B3A6" opacity="0.2"/><circle cx="305" cy="525" r="55" fill="#12B3A6" opacity="0.1"/><polygon points="151,434 64,608 238,608" fill="#12B3A6" opacity="0.13"/><polygon points="622,773 583,851 661,851" fill="#12B3A6" opacity="0.26"/><polygon points="169,481 133,553 205,553" fill="#12B3A6" opacity="0.2"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨，竹林追逐全景 青绿</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">色调 国风水墨</text>
+</svg>

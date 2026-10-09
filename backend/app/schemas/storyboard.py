@@ -1,0 +1,196 @@
+"""分镜域 Pydantic Schema 模块（文件级说明）。
+
+定义分镜拆解 / 列表 / 更新 / 重排 / 拆分 / 合并 / 告警 / 重生成 /
+投递画布的出入参模型。
+"""
+
+from typing import List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class StoryboardCharacterLinkOut(BaseModel):
+    """分镜-角色关联输出。
+
+    Attributes:
+        character_id: 角色资产 ID。
+        name: 角色名（联查回显）。
+        variant_id: 该镜头使用的造型变体 ID。
+        link_confidence: 实体链接置信度（0~1）。
+    """
+
+    character_id: int
+    name: str
+    variant_id: Optional[int] = None
+    link_confidence: Optional[float] = None
+
+
+class StoryboardOut(BaseModel):
+    """分镜输出模型。
+
+    Attributes:
+        id: 分镜 ID。
+        sequence: 镜头序号（项目内 1..n）。
+        shot_type: 景别。
+        camera_movement: 运镜。
+        duration: 预计时长（秒）。
+        visual_description: 画面描述。
+        dialogue: 对白/旁白（多行为 "角色名：台词"）。
+        scene_id: 强绑场景资产 ID。
+        scene_name: 场景名（联查回显）。
+        prompt_locked: 提示词系统锁定层（RD-04）。
+        prompt_editable: 提示词用户可编辑层。
+        keyframe_url: 关键帧 URL。
+        video_url: 视频片段 URL。
+        status: 状态 pending/generating/done/failed。
+        regen_count: 重生成次数。
+        characters: 关联角色列表。
+    """
+
+    id: int
+    sequence: int
+    shot_type: Optional[str] = None
+    camera_movement: Optional[str] = None
+    duration: int = 5
+    visual_description: Optional[str] = None
+    dialogue: Optional[str] = None
+    scene_id: Optional[int] = None
+    scene_name: Optional[str] = None
+    prompt_locked: Optional[str] = None
+    prompt_editable: Optional[str] = None
+    keyframe_url: Optional[str] = None
+    video_url: Optional[str] = None
+    status: str = "pending"
+    regen_count: int = 0
+    characters: List[StoryboardCharacterLinkOut] = Field(default_factory=list)
+
+
+class StoryboardCharacterLinkIn(BaseModel):
+    """分镜-角色关联更新条目（PUT 时整体替换）。
+
+    Attributes:
+        character_id: 角色资产 ID（必须属于本项目）。
+        variant_id: 造型变体 ID（可空）。
+        link_confidence: 实体链接置信度（可空）。
+    """
+
+    character_id: int
+    variant_id: Optional[int] = None
+    link_confidence: Optional[float] = Field(default=None, ge=0, le=1)
+
+
+class StoryboardUpdateRequest(BaseModel):
+    """分镜更新请求（全部字段可空，None 表示不修改）。
+
+    Attributes:
+        shot_type: 景别。
+        camera_movement: 运镜。
+        duration: 预计时长（秒）。
+        visual_description: 画面描述。
+        dialogue: 对白/旁白。
+        prompt_editable: 提示词可编辑层。
+        scene_id: 强绑场景资产 ID（须属于本项目）。
+        character_links: 角色关联列表（提供则整体替换既有关联）。
+    """
+
+    shot_type: Optional[str] = Field(default=None, max_length=20)
+    camera_movement: Optional[str] = Field(default=None, max_length=20)
+    duration: Optional[int] = Field(default=None, ge=1, le=600)
+    visual_description: Optional[str] = None
+    dialogue: Optional[str] = None
+    prompt_editable: Optional[str] = None
+    scene_id: Optional[int] = None
+    character_links: Optional[List[StoryboardCharacterLinkIn]] = None
+
+
+class ReorderRequest(BaseModel):
+    """分镜重排请求。
+
+    Attributes:
+        ordered_ids: 按目标顺序排列的分镜 ID 列表（须恰好覆盖项目全部分镜）。
+    """
+
+    ordered_ids: List[int] = Field(min_length=1)
+
+
+class SplitRequest(BaseModel):
+    """分镜拆分请求。
+
+    Attributes:
+        at_line: 对白拆分行号（1 起；前 at_line 行留在本镜，其余进新镜）。
+    """
+
+    at_line: int = Field(ge=1)
+
+
+class MergeRequest(BaseModel):
+    """分镜合并请求。
+
+    Attributes:
+        other_id: 被合并（删除）的另一分镜 ID，须与本镜相邻语义上可合并
+            （本接口按同项目校验，不强制相邻）。
+    """
+
+    other_id: int
+
+
+class StoryboardWarning(BaseModel):
+    """单条分镜告警。
+
+    Attributes:
+        storyboard_id: 关联分镜 ID（全局性告警为空）。
+        level: 告警级别 warning / error。
+        message: 告警内容。
+    """
+
+    storyboard_id: Optional[int] = None
+    level: str
+    message: str
+
+
+class StoryboardWarningsOut(BaseModel):
+    """分镜告警汇总输出。
+
+    Attributes:
+        total_duration: 全部分镜预计时长合计（秒）。
+        target_duration: 项目目标时长（秒，未设置为 None）。
+        over_ratio: 总时长相对目标时长的偏差比例（无目标时为 None）。
+        warnings: 告警列表。
+    """
+
+    total_duration: int
+    target_duration: Optional[int] = None
+    over_ratio: Optional[float] = None
+    warnings: List[StoryboardWarning] = Field(default_factory=list)
+
+
+class StoryboardRegenOut(BaseModel):
+    """分镜重生成响应。
+
+    Attributes:
+        regen_count: 累计重生成次数。
+        suggest_canvas: 重生成次数 >= 3 时建议进入画布精修（RD-25）。
+    """
+
+    regen_count: int
+    suggest_canvas: bool
+
+
+class DeliverCanvasRequest(BaseModel):
+    """分镜投递画布请求。
+
+    Attributes:
+        storyboard_id: 来源分镜 ID（缺省取项目第一镜）。
+    """
+
+    storyboard_id: Optional[int] = None
+
+
+class DeliverCanvasOut(BaseModel):
+    """分镜投递画布响应。
+
+    Attributes:
+        canvas_id: 新建画布 ID。
+    """
+
+    canvas_id: int

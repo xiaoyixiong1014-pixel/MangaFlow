@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="114" cy="792" r="27" fill="#12B3A6" opacity="0.23"/><polygon points="604,558 546,674 662,674" fill="#12B3A6" opacity="0.1"/><circle cx="563" cy="568" r="75" fill="#12B3A6" opacity="0.26"/><polygon points="321,487 278,573 364,573" fill="#12B3A6" opacity="0.29"/><circle cx="592" cy="949" r="57" fill="#12B3A6" opacity="0.13"/><polygon points="206,727 118,903 294,903" fill="#12B3A6" opacity="0.26"/><polygon points="280,281 190,461 370,461" fill="#12B3A6" opacity="0.24"/><polygon points="163,220 86,374 240,374" fill="#12B3A6" opacity="0.24"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：霓</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">虹天台·芯片信号；角色：苏离</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">、林霄；画面：追踪器屏幕</text>
+</svg>

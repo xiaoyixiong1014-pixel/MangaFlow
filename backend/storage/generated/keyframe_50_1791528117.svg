@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="174" cy="591" r="36" fill="#12B3A6" opacity="0.3"/><circle cx="570" cy="766" r="34" fill="#12B3A6" opacity="0.14"/><polygon points="591,108 515,260 667,260" fill="#12B3A6" opacity="0.27"/><polygon points="577,340 554,386 600,386" fill="#12B3A6" opacity="0.2"/><polygon points="185,514 113,658 257,658" fill="#12B3A6" opacity="0.21"/><circle cx="169" cy="492" r="74" fill="#12B3A6" opacity="0.1"/><polygon points="337,167 297,247 377,247" fill="#12B3A6" opacity="0.24"/><circle cx="306" cy="767" r="22" fill="#12B3A6" opacity="0.18"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：天</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">台枪战·背叛代价；角色：林霄</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">；画面：林霄侧身挡在苏离</text>
+</svg>

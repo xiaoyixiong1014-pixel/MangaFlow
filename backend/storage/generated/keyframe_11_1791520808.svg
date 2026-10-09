@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="572,805 550,849 594,849" fill="#12B3A6" opacity="0.1"/><polygon points="537,223 500,297 574,297" fill="#12B3A6" opacity="0.13"/><circle cx="273" cy="959" r="74" fill="#12B3A6" opacity="0.19"/><circle cx="548" cy="800" r="63" fill="#12B3A6" opacity="0.18"/><polygon points="206,197 160,289 252,289" fill="#12B3A6" opacity="0.3"/><polygon points="203,783 137,915 269,915" fill="#12B3A6" opacity="0.14"/><polygon points="492,339 473,377 511,377" fill="#12B3A6" opacity="0.1"/><circle cx="216" cy="612" r="79" fill="#12B3A6" opacity="0.24"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨竖版构图，少年侠客拔</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">剑特写 dusk light</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif"> gun shootin</text>
+</svg>

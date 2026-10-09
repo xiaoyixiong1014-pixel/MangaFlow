@@ -1,0 +1,27 @@
+INFO:     Started server process [40656]
+INFO:     Waiting for application startup.
+2026-10-09 15:18:18,983 INFO mangaflow.init_db 数据库 mangaflow 已存在，跳过创建
+2026-10-09 15:18:19,140 INFO mangaflow.init_db 用户 admin 已存在，跳过
+2026-10-09 15:18:19,141 INFO mangaflow.init_db 用户 demo 已存在，跳过
+2026-10-09 15:18:19,150 INFO mangaflow.init_db 模型渠道 id=1 已存在，跳过
+2026-10-09 15:18:19,158 INFO mangaflow.init_db 逻辑模型 llm/deepseek-flash 已存在，跳过
+2026-10-09 15:18:19,159 INFO mangaflow.init_db 逻辑模型 image/mock-image 已存在，跳过
+2026-10-09 15:18:19,160 INFO mangaflow.init_db 逻辑模型 video/mock-video 已存在，跳过
+2026-10-09 15:18:19,161 INFO mangaflow.init_db 逻辑模型 tts/mock-tts 已存在，跳过
+2026-10-09 15:18:19,170 INFO mangaflow.init_db 提示词 角色定妆 · 全身立绘 已存在，跳过
+2026-10-09 15:18:19,171 INFO mangaflow.init_db 提示词 角色定妆 · 表情差分 已存在，跳过
+2026-10-09 15:18:19,171 INFO mangaflow.init_db 提示词 分镜画面 · 关键帧构图 已存在，跳过
+2026-10-09 15:18:19,173 INFO mangaflow.init_db 提示词 运镜 · 镜头语言设计 已存在，跳过
+2026-10-09 15:18:19,174 INFO mangaflow.init_db 提示词 配音 · 台词情绪朗读 已存在，跳过
+2026-10-09 15:18:19,182 INFO mangaflow.init_db 公告 漫序 MangaFlow 平台正式上线 已存在，跳过
+2026-10-09 15:18:19,183 INFO mangaflow.init_db 公告 新用户注册即送 50,000 创作积分 已存在，跳过
+2026-10-09 15:18:19,191 INFO mangaflow.init_db 站点设置 KV 已存在，跳过
+2026-10-09 15:18:19,191 INFO mangaflow.init_db 种子数据写入完成
+2026-10-09 15:18:19,192 INFO mangaflow.main 数据库初始化完成（建库/建表/种子）
+2026-10-09 15:18:19,192 INFO mangaflow.tasks.runner 任务执行器已启动（3 个 worker）
+2026-10-09 15:18:19,192 INFO mangaflow.main 任务执行器启动完成
+2026-10-09 15:18:19,192 INFO mangaflow.tasks.runner worker-0 启动
+2026-10-09 15:18:19,194 INFO mangaflow.tasks.runner worker-1 启动
+2026-10-09 15:18:19,197 INFO mangaflow.tasks.runner worker-2 启动
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8300 (Press CTRL+C to quit)

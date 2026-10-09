@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="365" cy="551" r="85" fill="#12B3A6" opacity="0.27"/><circle cx="100" cy="949" r="27" fill="#12B3A6" opacity="0.18"/><polygon points="130,162 110,202 150,202" fill="#12B3A6" opacity="0.25"/><polygon points="99,303 64,373 134,373" fill="#12B3A6" opacity="0.29"/><polygon points="494,670 439,780 549,780" fill="#12B3A6" opacity="0.15"/><polygon points="575,276 525,376 625,376" fill="#12B3A6" opacity="0.17"/><polygon points="142,823 102,903 182,903" fill="#12B3A6" opacity="0.25"/><circle cx="148" cy="633" r="46" fill="#12B3A6" opacity="0.09"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：地</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">下数据港；角色：苏离；画面：</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">昏暗的地下数据港内，冷蓝</text>
+</svg>

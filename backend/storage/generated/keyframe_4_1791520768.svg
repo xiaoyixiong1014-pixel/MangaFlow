@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="425,255 349,407 501,407" fill="#12B3A6" opacity="0.3"/><polygon points="184,221 117,355 251,355" fill="#12B3A6" opacity="0.2"/><polygon points="490,169 447,255 533,255" fill="#12B3A6" opacity="0.17"/><circle cx="466" cy="463" r="41" fill="#12B3A6" opacity="0.25"/><polygon points="330,153 292,229 368,229" fill="#12B3A6" opacity="0.13"/><circle cx="349" cy="751" r="56" fill="#12B3A6" opacity="0.25"/><polygon points="286,384 233,490 339,490" fill="#12B3A6" opacity="0.27"/><polygon points="320,423 258,547 382,547" fill="#12B3A6" opacity="0.1"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨竖版构图，少年侠客拔</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">剑特写 dusk light</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif"> 国风水墨</text>
+</svg>

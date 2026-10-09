@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="542" cy="643" r="50" fill="#12B3A6" opacity="0.29"/><circle cx="298" cy="781" r="39" fill="#12B3A6" opacity="0.13"/><polygon points="596,662 511,832 681,832" fill="#12B3A6" opacity="0.16"/><polygon points="368,134 294,282 442,282" fill="#12B3A6" opacity="0.27"/><polygon points="470,90 380,270 560,270" fill="#12B3A6" opacity="0.29"/><polygon points="241,584 158,750 324,750" fill="#12B3A6" opacity="0.18"/><polygon points="189,375 138,477 240,477" fill="#12B3A6" opacity="0.18"/><polygon points="88,803 61,857 115,857" fill="#12B3A6" opacity="0.23"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨竖版构图，少年侠客拔</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">剑特写 cancel me </text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">国风水墨</text>
+</svg>

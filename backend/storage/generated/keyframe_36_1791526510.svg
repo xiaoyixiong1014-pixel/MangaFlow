@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="126" cy="286" r="38" fill="#12B3A6" opacity="0.25"/><circle cx="246" cy="282" r="80" fill="#12B3A6" opacity="0.25"/><polygon points="235,296 193,380 277,380" fill="#12B3A6" opacity="0.13"/><circle cx="581" cy="589" r="60" fill="#12B3A6" opacity="0.25"/><circle cx="591" cy="202" r="32" fill="#12B3A6" opacity="0.18"/><polygon points="519,749 491,805 547,805" fill="#12B3A6" opacity="0.15"/><circle cx="492" cy="326" r="48" fill="#12B3A6" opacity="0.27"/><polygon points="291,779 218,925 364,925" fill="#12B3A6" opacity="0.28"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格插画，林小雨，在江南</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">小镇经营一家濒临倒闭的旧书店</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">的人；某个雨夜因一本书里</text>
+</svg>

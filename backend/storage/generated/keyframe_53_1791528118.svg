@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="283,839 252,901 314,901" fill="#12B3A6" opacity="0.29"/><circle cx="416" cy="368" r="60" fill="#12B3A6" opacity="0.22"/><circle cx="603" cy="317" r="37" fill="#12B3A6" opacity="0.24"/><polygon points="371,155 326,245 416,245" fill="#12B3A6" opacity="0.18"/><polygon points="584,632 496,808 672,808" fill="#12B3A6" opacity="0.14"/><polygon points="304,465 256,561 352,561" fill="#12B3A6" opacity="0.12"/><circle cx="622" cy="204" r="25" fill="#12B3A6" opacity="0.09"/><circle cx="240" cy="412" r="69" fill="#12B3A6" opacity="0.15"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：地</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">下数据港；角色：林霄、赵铭；</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">画面：屏幕前，林霄瞳孔骤</text>
+</svg>

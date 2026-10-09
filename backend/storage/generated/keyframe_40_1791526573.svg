@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="273,774 215,890 331,890" fill="#12B3A6" opacity="0.21"/><circle cx="451" cy="259" r="18" fill="#12B3A6" opacity="0.1"/><circle cx="546" cy="705" r="56" fill="#12B3A6" opacity="0.11"/><circle cx="567" cy="293" r="35" fill="#12B3A6" opacity="0.14"/><polygon points="240,197 155,367 325,367" fill="#12B3A6" opacity="0.08"/><polygon points="171,756 153,792 189,792" fill="#12B3A6" opacity="0.28"/><polygon points="166,243 127,321 205,321" fill="#12B3A6" opacity="0.08"/><polygon points="583,289 514,427 652,427" fill="#12B3A6" opacity="0.14"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格插画，林小雨，女性主</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">角，在江南小镇经营一家濒临倒</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">闭的旧书店；因书中掉出的</text>
+</svg>

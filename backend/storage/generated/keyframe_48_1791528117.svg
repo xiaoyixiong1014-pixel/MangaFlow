@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="156" cy="450" r="37" fill="#12B3A6" opacity="0.28"/><polygon points="450,790 427,836 473,836" fill="#12B3A6" opacity="0.1"/><circle cx="435" cy="692" r="19" fill="#12B3A6" opacity="0.19"/><circle cx="455" cy="221" r="71" fill="#12B3A6" opacity="0.23"/><circle cx="629" cy="883" r="60" fill="#12B3A6" opacity="0.21"/><circle cx="595" cy="828" r="31" fill="#12B3A6" opacity="0.26"/><polygon points="596,323 567,381 625,381" fill="#12B3A6" opacity="0.27"/><polygon points="535,656 455,816 615,816" fill="#12B3A6" opacity="0.25"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：默认风格；场景：方</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">舟塔顶；角色：林霄、赵铭；画</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">面：方舟塔顶控制室内，林</text>
+</svg>
