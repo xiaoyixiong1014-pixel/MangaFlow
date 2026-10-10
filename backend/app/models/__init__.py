@@ -16,6 +16,7 @@ from app.models.model_config import LogicalModel, ModelChannel
 from app.models.prompt import Announcement, Prompt
 from app.models.review import ReviewRecord
 from app.models.agent import AgentThread, AssetEmbedding, LanggraphStore
+from app.models.notification import Notification
 
 __all__ = [
     # 用户与账务域
@@ -61,4 +62,6 @@ __all__ = [
     "AgentThread",
     "LanggraphStore",
     "AssetEmbedding",
+    # 通知中心域
+    "Notification",
 ]

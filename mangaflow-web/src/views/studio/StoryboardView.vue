@@ -127,6 +127,35 @@ async function openWarnings(): Promise<void> {
 }
 
 // ============================================================
+// 分镜表导出（Task 10.4）
+// ============================================================
+
+/** 导出进行中（防重复点击） */
+const exporting = ref(false)
+/** 当前导出格式（按钮 loading 依据） */
+const exportFormat = ref<'xlsx' | 'csv' | null>(null)
+
+/**
+ * 导出分镜表（xlsx / csv，episode_id=0 表示项目全部分镜）。
+ * @param format 导出格式
+ * @returns 无
+ */
+async function exportSheet(format: 'xlsx' | 'csv'): Promise<void> {
+  if (exporting.value) return
+  exporting.value = true
+  exportFormat.value = format
+  try {
+    await studioApi.exportStoryboardSheet(projectId.value, format)
+    ElMessage.success('分镜表已开始下载')
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    exporting.value = false
+    exportFormat.value = null
+  }
+}
+
+// ============================================================
 // 重排（上移 / 下移按钮替代拖拽）
 // ============================================================
 
@@ -426,6 +455,23 @@ onMounted(loadBoards)
         <span>总时长 <b>{{ Math.floor(totalDuration / 60) }}分{{ totalDuration % 60 }}秒</b>（{{ totalDuration }}s）</span>
         <el-divider direction="vertical" />
         <span class="toolbar-cost">预估生成消耗：{{ boards.length }} 镜 ≈ {{ estimatedCost }} 积分</span>
+        <!-- 导出分镜表（Task 10.4：episode_id=0 全量导出） -->
+        <el-button
+          class="toolbar-btn"
+          :loading="exportFormat === 'xlsx'"
+          :disabled="exporting"
+          @click="exportSheet('xlsx')"
+        >
+          导出 Excel
+        </el-button>
+        <el-button
+          class="toolbar-btn"
+          :loading="exportFormat === 'csv'"
+          :disabled="exporting"
+          @click="exportSheet('csv')"
+        >
+          导出 CSV
+        </el-button>
         <el-button class="toolbar-btn" type="primary" plain @click="runDecompose" :loading="decomposing">
           重新拆解
         </el-button>

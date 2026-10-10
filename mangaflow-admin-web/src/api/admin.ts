@@ -1,6 +1,7 @@
 /**
  * 文件级注释：管理端后端 API 封装。
- * 按模块分区：认证 / 看板 / 用户 / 审核 / 模型 / 订单 / 内容 / 设置。
+ * 按模块分区：认证 / 看板 / 用户 / 审核 / 模型 / 订单 / 内容 / 设置 /
+ * 系统指标 / 死信队列 / 插件审查（Task 10.5）。
  * 列表接口统一 {items,total,page,page_size}；错误 {detail}（由 client 拦截器统一提示）。
  */
 import client from './client'
@@ -12,14 +13,18 @@ import type {
   BackupFile,
   ChannelTestResult,
   DashboardOverview,
+  DeadLetterItem,
   LogicalModel,
   LoginResult,
   ModelChannel,
   OrderItem,
   PageResult,
+  PluginReviewItem,
   PromptTemplate,
+  RequeueResult,
   ReviewItem,
   SettingsDict,
+  SystemMetrics,
 } from '@/types'
 
 /* ============================== 认证 ============================== */
@@ -360,4 +365,67 @@ export function getSettingsBackups() {
  */
 export function createSettingsBackup() {
   return client.post('/admin/settings/backups')
+}
+
+/* ============================== 系统指标 / 死信队列 / 插件审查（Task 10.5） ============================== */
+
+/**
+ * 获取系统运行指标（24h 任务成功率 / 死信数 / 队列积压 / 渠道健康快照）。
+ * @returns 系统指标对象
+ */
+export function getSystemMetrics() {
+  return client.get<SystemMetrics>('/admin/system-metrics').then((r) => r.data)
+}
+
+/**
+ * 分页获取死信任务列表（重试耗尽的终态失败任务）。
+ * @param params 页码 / 每页条数
+ */
+export function getDeadLetters(params: { page: number; page_size: number }) {
+  return client
+    .get<PageResult<DeadLetterItem>>('/admin/tasks/dead-letters', { params })
+    .then((r) => r.data)
+}
+
+/**
+ * 死信任务重新入队（高危操作：重新冻结积分，reason 必填并写入审计）。
+ * @param id 任务 ID
+ * @param data 原因（必填）
+ */
+export function requeueDeadLetter(id: number, data: { reason: string }) {
+  return client.post<RequeueResult>(`/admin/tasks/${id}/requeue`, data).then((r) => r.data)
+}
+
+/**
+ * 获取画布插件列表（all=true 查看全部，含未审核 / 停用）。
+ */
+export function getPlugins() {
+  return client
+    .get<PluginReviewItem[]>('/canvas-plugins', { params: { all: true } })
+    .then((r) => r.data)
+}
+
+/**
+ * 插件审查：通过（reviewed=true）/ 驳回（reviewed=false）。
+ * @param id 插件 ID
+ * @param approved 是否通过
+ */
+export function reviewPlugin(id: number, approved: boolean) {
+  return client.post(`/canvas-plugins/${id}/review`, { approved })
+}
+
+/**
+ * 启用插件。
+ * @param id 插件 ID
+ */
+export function enablePlugin(id: number) {
+  return client.post(`/canvas-plugins/${id}/enable`)
+}
+
+/**
+ * 停用插件。
+ * @param id 插件 ID
+ */
+export function disablePlugin(id: number) {
+  return client.post(`/canvas-plugins/${id}/disable`)
 }

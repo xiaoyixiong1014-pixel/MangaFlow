@@ -11,8 +11,8 @@ from typing import Dict
 
 from langchain_core.messages import AIMessage
 
+from app.agents.llm_adapter import llm
 from app.agents.state import AgentState, last_human_text
-from app.providers.llm import chat
 
 logger = logging.getLogger(__name__)
 
@@ -102,13 +102,15 @@ async def classify_intent(message: str) -> Dict:
     Raises:
         不抛出异常：LLM 调用失败或 JSON 解析失败时自动降级为规则分类。
     """
-    # 1) 优先走 LLM 分类（json_mode 强制 JSON 输出）
+    # 1) 优先走 LLM 分类（json_mode 强制 JSON 输出；经 AgentLLM 适配器统一用量观测）
     try:
-        raw = await chat(
+        raw = await llm.chat(
+            None,
             [
                 {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
                 {"role": "user", "content": message},
             ],
+            agent_name="supervisor",
             temperature=0,
             json_mode=True,
         )

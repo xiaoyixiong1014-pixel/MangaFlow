@@ -12,7 +12,8 @@
 - POST   /api/projects/{project_id}/assets/characters/{id}/variants   角色变体（RD-14）
 - GET    /api/projects/{project_id}/assets/characters/{id}/variants   变体列表
 - ...    /assets/scenes|props|styles 同构（scenes 变体为 lighting，RD-19）
-- POST   /api/projects/{project_id}/assets/consistency-check    一致性占位校验
+- POST   /api/projects/{project_id}/assets/consistency-check    一致性校验（embedding 余弦真实算法）
+- GET    /api/assets/search                                     资产语义搜索（跨自己项目 TopK）
 
 注意：路由需携带 {project_id} 路径参数，FastAPI router prefix 不支持路径参数，
 因此本路由不设 prefix，路由内部书写完整路径。
@@ -29,6 +30,8 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models import Character, Project, Prop, Scene, Style, User
 from app.schemas.asset import (
+    AssetSearchItem,
+    AssetSearchOut,
     AssetsGroupOut,
     CharacterCreateRequest,
     CharacterGenerateRequest,
@@ -60,8 +63,10 @@ from app.services.asset_service import (
     list_variants,
     lock_character,
     cross_project_assets,
+    semantic_search_assets,
     set_default_style,
     unlock_character,
+    upsert_asset_embedding,
 )
 from app.services.script_service import DEFAULT_VISUAL_TEMPLATE
 
@@ -233,6 +238,11 @@ async def create_character(
     db.add(character)
     await db.commit()
     await db.refresh(character)
+    # 向量化接线（Task 6.1）：创建资产后写入 asset_embeddings（内部吞异常，不影响主流程）
+    await upsert_asset_embedding(
+        db, "character", character.id,
+        " ".join(x for x in (character.name, character.description, character.visual_prompt) if x),
+    )
     return CharacterOut.model_validate(character)
 
 
@@ -273,6 +283,11 @@ async def update_character(
         character.aliases = req.aliases
     await db.commit()
     await db.refresh(character)
+    # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新资产向量（幂等 upsert）
+    await upsert_asset_embedding(
+        db, "character", character.id,
+        " ".join(x for x in (character.name, character.description, character.visual_prompt) if x),
+    )
     return CharacterOut.model_validate(character)
 
 
@@ -481,6 +496,11 @@ async def create_scene(
     db.add(scene)
     await db.commit()
     await db.refresh(scene)
+    # 向量化接线（Task 6.1）：创建资产后写入 asset_embeddings
+    await upsert_asset_embedding(
+        db, "scene", scene.id,
+        " ".join(x for x in (scene.name, scene.description, scene.visual_prompt) if x),
+    )
     return SceneOut.model_validate(scene)
 
 
@@ -520,6 +540,11 @@ async def update_scene(
         scene.is_locked = req.is_locked
     await db.commit()
     await db.refresh(scene)
+    # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新场景向量
+    await upsert_asset_embedding(
+        db, "scene", scene.id,
+        " ".join(x for x in (scene.name, scene.description, scene.visual_prompt) if x),
+    )
     return SceneOut.model_validate(scene)
 
 
@@ -643,6 +668,11 @@ async def create_prop(
     db.add(prop)
     await db.commit()
     await db.refresh(prop)
+    # 向量化接线（Task 6.1）：创建资产后写入 asset_embeddings
+    await upsert_asset_embedding(
+        db, "prop", prop.id,
+        " ".join(x for x in (prop.name, prop.category, prop.description, prop.visual_prompt) if x),
+    )
     return PropOut.model_validate(prop)
 
 
@@ -679,6 +709,11 @@ async def update_prop(
         prop.is_locked = req.is_locked
     await db.commit()
     await db.refresh(prop)
+    # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新道具向量
+    await upsert_asset_embedding(
+        db, "prop", prop.id,
+        " ".join(x for x in (prop.name, prop.category, prop.description, prop.visual_prompt) if x),
+    )
     return PropOut.model_validate(prop)
 
 
@@ -806,6 +841,11 @@ async def create_style(
         await set_default_style(db, project.id, style)
     await db.commit()
     await db.refresh(style)
+    # 向量化接线（Task 6.1）：创建资产后写入 asset_embeddings
+    await upsert_asset_embedding(
+        db, "style", style.id,
+        " ".join(x for x in (style.name, style.visual_prompt) if x),
+    )
     return StyleOut.model_validate(style)
 
 
@@ -849,11 +889,16 @@ async def update_style(
         style.is_default = False
     await db.commit()
     await db.refresh(style)
+    # 向量化接线（Task 6.1）：visual_prompt 变更后刷新风格向量
+    await upsert_asset_embedding(
+        db, "style", style.id,
+        " ".join(x for x in (style.name, style.visual_prompt) if x),
+    )
     return StyleOut.model_validate(style)
 
 
 # ---------------------------------------------------------------------------
-# 一致性校验（占位）
+# 一致性校验（embedding 余弦真实算法）
 # ---------------------------------------------------------------------------
 
 @router.post("/api/projects/{project_id}/assets/consistency-check", response_model=ConsistencyCheckOut)
@@ -863,7 +908,11 @@ async def run_consistency_check(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ConsistencyCheckOut:
-    """角色一致性占位校验（mock 确定性伪相似度，非真实向量计算）。
+    """角色一致性校验（Task 6.2 真实化）：embedding 余弦相似度分项加权综合。
+
+    评分公式：score = round(0.5*visual_prompt_sim + 0.3*description_sim
+    + 0.2*locked_bonus, 4)，阈值 0.85；变体未填文本时按继承主形象语义计。
+    旧字段 similarity / report 保持兼容，新增 score / threshold / details / algorithm。
 
     Args:
         project_id: 项目 ID。
@@ -872,12 +921,48 @@ async def run_consistency_check(
         db: 请求级异步数据库会话。
 
     Returns:
-        ConsistencyCheckOut: {"similarity", "passed", "report"}。
+        ConsistencyCheckOut: {"similarity","passed","report","score","threshold","details","algorithm"}。
 
     Raises:
-        HTTPException: 404 —— 项目/角色不存在。
+        HTTPException: 404 —— 项目/角色/变体不存在。
     """
     project = await get_owned_project(db, project_id, user.id)
     await get_asset_or_404(db, project.id, "character", req.character_id)
-    result = consistency_check(req.character_id, req.variant_id)
+    result = await consistency_check(db, req.character_id, req.variant_id)
     return ConsistencyCheckOut.model_validate(result)
+
+
+# ---------------------------------------------------------------------------
+# 资产语义搜索（Task 6.3）
+# ---------------------------------------------------------------------------
+
+@router.get("/api/assets/search", response_model=AssetSearchOut)
+async def search_assets_semantic(
+    q: str = Query(min_length=1, max_length=200, description="查询文本"),
+    type: Optional[str] = Query(default=None, alias="type",
+                                description="可选类型过滤 character/scene/prop/style"),
+    limit: int = Query(default=10, ge=1, le=50),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> AssetSearchOut:
+    """资产语义搜索（登录用户，跨自己项目）：查询文本向量化后与 asset_embeddings 余弦 TopK。
+
+    数据量小的当前阶段为全量遍历 + Python 侧余弦计算，pgvector 升级点见
+    semantic_search_assets 注释；软删除资产与已删除项目行均被排除。
+
+    Args:
+        q: 查询文本。
+        type: 可选资产类型过滤（缺省搜索四类）。
+        limit: 返回条数上限（1~50，默认 10）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        AssetSearchOut: {"items": [{asset_type, asset_id, name, score, preview}], "total"}。
+
+    Raises:
+        HTTPException: 400 —— type 取值非法；401 —— 未认证。
+    """
+    rows = await semantic_search_assets(db, user.id, q, type, limit)
+    items = [AssetSearchItem.model_validate(r) for r in rows]
+    return AssetSearchOut(items=items, total=len(items))

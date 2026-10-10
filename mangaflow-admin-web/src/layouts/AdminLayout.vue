@@ -1,8 +1,8 @@
 <script setup lang="ts">
 /**
  * 文件级注释：管理端主布局。
- * 顶部横向导航：左侧 logo「漫序 MangaFlow · 运营管理」，中间 7 个模块 Tab
- * （el-menu horizontal），右侧管理员名 + 退出登录；下方为 router-view 内容区。
+ * 顶部横向导航：左侧 logo「漫序 MangaFlow · 运营管理」，中间 8 个模块 Tab
+ * （el-menu horizontal，含死信队列），右侧管理员名 + 退出登录；下方为 router-view 内容区。
  */
 import { computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
@@ -13,12 +13,13 @@ const route = useRoute()
 const router = useRouter()
 const auth = useAuthStore()
 
-/** 顶部导航 7 个模块 */
+/** 顶部导航 8 个模块 */
 const menus = [
   { path: '/dashboard', label: '经营看板' },
   { path: '/users', label: '用户管理' },
   { path: '/review', label: '内容审核' },
   { path: '/models', label: '模型配置' },
+  { path: '/dead-letters', label: '死信队列' },
   { path: '/orders', label: '订单计费' },
   { path: '/content', label: '内容运营' },
   { path: '/settings', label: '系统设置' },

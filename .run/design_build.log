@@ -1,0 +1,96 @@
+﻿
+> @mangaflow/design@0.1.0 build
+> vite build && node scripts/copy-bridge.mjs
+
+[36mvite v6.4.4 [32mbuilding for production...[36m[39m
+transforming...
+[32m✓[39m 24 modules transformed.
+rendering chunks...
+
+[vite:dts] Start generate declaration files...
+node.exe : [96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable
+ 'components' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components
+/MfButton.vue" but cannot be named.
+At line:1 char:1
++ & "D:\Dev_Soft\nodejs/node.exe" "D:\Dev_Soft\nodejs/node_modules/npm/ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: ([96msrc/compon...annot be named.:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfCard.vue
+" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfShell.vu
+e" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfSidebar.
+vue" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfTag.vue"
+ but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfTopbar.v
+ue" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfButton.v
+ue" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfCard.vue
+" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfShell.vu
+e" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfSidebar.
+vue" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfTag.vue"
+ but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+[96msrc/components/index.ts[0m:[93m12[0m:[93m14[0m - [91merror[0m[90m TS4023: [0mExported variable 'component
+s' has or is using name 'Props' from external module "D:/Code_Work/MangaFlow/mangaflow-design/src/components/MfTopbar.v
+ue" but cannot be named.
+
+[7m12[0m export const components = { MfButton, MfCard, MfShell, MfSidebar, MfTag, MfTopbar }
+[7m  [0m [91m             ~~~~~~~~~~[0m
+
+computing gzip size...
+[2mdist/[22m[35mmangaflow-design.css  [39m[1m[2m10.30 kB[22m[1m[22m[2m │ gzip: 2.65 kB[22m
+[2mdist/[22m[36mmangaflow-design.js   [39m[1m[2m10.01 kB[22m[1m[22m[2m │ gzip: 3.15 kB[22m
+[vite:dts] Declaration files built in 3277ms.
+
+[32m✓ built in 4.74s[39m
+[mangaflow-design] bridge & compat css copied to dist/

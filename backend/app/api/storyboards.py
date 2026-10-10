@@ -10,20 +10,29 @@
 - POST /api/projects/{project_id}/storyboards/warnings           告警检查
 - POST /api/projects/{project_id}/storyboards/{storyboard_id}/regen    重生成计数（RD-25）
 - POST /api/projects/{project_id}/storyboards/deliver-to-canvas  投递画布
+- GET  /api/projects/{project_id}/storyboards/episodes/{episode_id}/export
+                                                                分镜表导出（xlsx/csv）
 
 注意：路由需携带 {project_id} 路径参数，FastAPI router prefix 不支持路径参数，
 因此本路由不设 prefix，路由内部书写完整路径；静态路径段（reorder/warnings 等）
 注册在带 {storyboard_id} 的路径之前以避免误匹配。
 """
 
+import csv
+import io
 from typing import List, Optional
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font
+from openpyxl.utils import get_column_letter
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models import User
+from app.models import Episode, User
 from app.schemas.storyboard import (
     DeliverCanvasOut,
     DeliverCanvasRequest,
@@ -302,3 +311,153 @@ async def _owned(db: AsyncSession, project_id: int, user: User):
         HTTPException: 404 —— 项目不存在、已删除或不属于当前用户。
     """
     return await get_owned_project(db, project_id, user.id)
+
+
+# ---------------------------------------------------------------------------
+# 分镜表导出（Task 7.2）
+# ---------------------------------------------------------------------------
+# 导出表头（与列数据一一对应）
+_EXPORT_HEADERS = ["编号", "场景", "景别", "画面描述", "台词", "旁白/口播",
+                   "预估时长", "提示词", "状态", "关键帧 URL"]
+# xlsx 响应 MIME 类型
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+# 单列最大列宽（防止超长提示词把列撑到不可读）
+_MAX_COLUMN_WIDTH = 60
+
+
+def _split_dialogue(dialogue: Optional[str]) -> tuple:
+    """把分镜对白文本按"旁白"说话人拆为（台词, 旁白/口播）两列。
+
+    拆解落库的对白为多行 "角色名：台词" 文本；说话人为「旁白」的行归入
+    旁白/口播列，其余归入台词列；无说话人前缀的整行视为台词。
+
+    Args:
+        dialogue: 分镜 dialogue 字段文本（可空）。
+
+    Returns:
+        tuple: (台词多行文本, 旁白多行文本)，均为去掉首尾空白的字符串。
+
+    Raises:
+        无：纯字符串运算，不产生异常路径。
+    """
+    speech: List[str] = []
+    narration: List[str] = []
+    for line in (dialogue or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("旁白：") or line.startswith("旁白:"):
+            content = line.split("：", 1)[-1] if "：" in line else line.split(":", 1)[-1]
+            narration.append(content.strip())
+        else:
+            speech.append(line)
+    return "\n".join(speech), "\n".join(narration)
+
+
+def _build_export_rows(items: List[dict]) -> List[List]:
+    """把分镜输出 dict 列表转换为导出表格行（与 _EXPORT_HEADERS 对齐）。
+
+    Args:
+        items: list_storyboards 返回的分镜输出列表（含 scene_name）。
+
+    Returns:
+        List[List]: 每镜一行，共 10 列的单元格值列表。
+
+    Raises:
+        无：纯字典取值与字符串处理。
+    """
+    rows: List[List] = []
+    for it in items:
+        speech, narration = _split_dialogue(it.get("dialogue"))
+        prompt = (it.get("prompt_editable") or "").strip() or (it.get("prompt_locked") or "")
+        rows.append([
+            it.get("sequence"),
+            it.get("scene_name") or "",
+            it.get("shot_type") or "",
+            it.get("visual_description") or "",
+            speech,
+            narration,
+            it.get("duration"),
+            prompt,
+            it.get("status") or "",
+            it.get("keyframe_url") or "",
+        ])
+    return rows
+
+
+@router.get("/api/projects/{project_id}/storyboards/episodes/{episode_id}/export")
+async def export_storyboard_sheet(
+    project_id: int,
+    episode_id: int,
+    format: str = Query(default="xlsx", pattern="^(xlsx|csv)$"),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """导出指定剧集的分镜表（xlsx 或 csv，数据源与列表接口同构）。
+
+    归属校验链：episode → project → 当前用户（任一失败统一 404）。
+    特殊值 episode_id=0 表示「全部分镜」：不筛剧集导出项目全部镜头
+    （普通创作流拆解的分镜 episode_id 为空，无剧集可绑定，前端分镜页
+    导出按钮固定传 0）。
+
+    Args:
+        project_id: 项目 ID。
+        episode_id: 剧集 ID（必须属于该项目；0 表示导出全部）。
+        format: 导出格式，仅支持 xlsx / csv（默认 xlsx）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        StreamingResponse: xlsx（openpyxl，表头加粗、列宽自适应）或
+            csv（utf-8-sig BOM，便于 Excel 直接打开）字节流。
+
+    Raises:
+        HTTPException: 404 —— 项目或剧集不存在/非本人；422 —— format 非法。
+    """
+    project = await _owned(db, project_id, user)
+    if episode_id == 0:
+        # 全量导出：不校验剧集，直接取项目全部分镜
+        episode = None
+    else:
+        episode = await db.get(Episode, episode_id)
+        if episode is None or episode.project_id != project.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="剧集不存在")
+
+    # 与列表接口同构的数据源（含场景名联查）；0 表示全量（过滤条件传 None）
+    items = await list_storyboards(db, project, episode_id if episode_id != 0 else None)
+    rows = _build_export_rows(items)
+
+    name_stem = "storyboards_all" if episode_id == 0 else f"storyboards_ep{episode_id}"
+    ascii_name = f"{name_stem}.{format}"
+    utf8_name = quote(f"{name_stem}.{format}")
+    disposition = f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{utf8_name}"
+
+    if format == "csv":
+        # utf-8-sig：带 BOM，保证 Excel 打开中文不乱码
+        sio = io.StringIO()
+        writer = csv.writer(sio)
+        writer.writerow(_EXPORT_HEADERS)
+        writer.writerows(rows)
+        buf = io.BytesIO(sio.getvalue().encode("utf-8-sig"))
+        return StreamingResponse(buf, media_type="text/csv",
+                                 headers={"Content-Disposition": disposition})
+
+    # xlsx：表头加粗 + 简单列宽自适应（取各列最大字符宽度，钳位上限）
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "分镜表"
+    ws.append(_EXPORT_HEADERS)
+    for row in rows:
+        ws.append(row)
+    bold = Font(bold=True)
+    for cell in ws[1]:
+        cell.font = bold
+    for idx, column_cells in enumerate(ws.columns, start=1):
+        width = max((len(str(c.value)) if c.value is not None else 0 for c in column_cells),
+                    default=0) + 2
+        ws.column_dimensions[get_column_letter(idx)].width = min(width, _MAX_COLUMN_WIDTH)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type=_XLSX_MEDIA_TYPE,
+                             headers={"Content-Disposition": disposition})

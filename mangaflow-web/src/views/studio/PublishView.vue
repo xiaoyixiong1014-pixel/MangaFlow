@@ -184,11 +184,13 @@ const shareLink = computed(() =>
 
 /**
  * 生成分享链接（publish：指定当前版本 + 有效期 + 提取码）。
+ * 闸门拦截（400）时把后端 detail 展示为醒目错误条（Task 10.4 S-09）。
  * @returns 无
  */
 async function doPublish(): Promise<void> {
   if (!currentOutput.value || publishing.value) return
   publishing.value = true
+  gateError.value = ''
   try {
     const res = await productionApi.publish(projectId.value, {
       output_id: currentOutput.value.id,
@@ -197,10 +199,18 @@ async function doPublish(): Promise<void> {
     })
     ElMessage.success(`分享链接已生成，有效期至 ${res.expires_at}`)
     await loadAll()
+  } catch (e) {
+    // 拦截器已 toast；这里额外捕获后端 detail（闸门拦截原因）展示为错误条
+    gateError.value = (e as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail
+      ? String((e as { response: { data: { detail: unknown } } }).response.data.detail)
+      : '发布失败，请检查审核记录后重试'
   } finally {
     publishing.value = false
   }
 }
+
+/** 闸门拦截错误信息（非空时顶部展示醒目错误条） */
+const gateError = ref('')
 
 /**
  * 撤回分享（confirm 二次确认）。
@@ -239,18 +249,28 @@ async function copyLink(): Promise<void> {
 
 /** 导出分辨率 */
 const exportResolution = ref<'720P' | '1080P' | '2K'>('1080P')
-/** 导出比例 */
+/** 导出比例（展示参数；成片下载按当前版本画幅返回） */
 const exportRatio = ref<'9:16' | '16:9' | '1:1'>('9:16')
+/** MP4 导出进行中 */
+const exportingMp4 = ref(false)
 
 /**
- * 导出 MP4（演示提示：演示环境已含成片与隐形水印，给出下载链接）。
+ * 导出 MP4（Task 10.4）：按所选分辨率调 GET /publish/outputs/{id}/download
+ * 下载 blob（本机无 ffmpeg 时后端自动降级返回原片）。
  * @returns 无
  */
-function exportMp4(): void {
-  const wm = currentOutput.value?.watermark_id
-  ElMessage.info(
-    `演示环境已含成片（分辨率选择 ${exportResolution.value} / 比例 ${exportRatio.value} 仅作参数演示），隐形水印标识：${wm ?? '—'}，可点击下方链接下载`,
-  )
+async function exportMp4(): Promise<void> {
+  if (!currentOutput.value || exportingMp4.value) return
+  exportingMp4.value = true
+  try {
+    const res = exportResolution.value.toLowerCase() as '720p' | '1080p' | '2k'
+    await productionApi.downloadOutput(currentOutput.value.id, res, currentOutput.value.version_no)
+    ElMessage.success(`MP4 导出已开始（${exportResolution.value}，含隐形水印标识 ${currentOutput.value.watermark_id ?? '—'}）`)
+  } catch {
+    // 错误已由拦截器提示（400 分辨率非法 / 404 成片不可下载）
+  } finally {
+    exportingMp4.value = false
+  }
 }
 
 onMounted(loadAll)
@@ -259,6 +279,18 @@ onMounted(loadAll)
 <template>
   <div class="page-container pub-view">
     <h2 class="page-title">审核与发布</h2>
+
+    <!-- 闸门拦截错误条（Task 10.4：发布 400 时展示后端 detail） -->
+    <el-alert
+      v-if="gateError"
+      type="error"
+      show-icon
+      :closable="true"
+      class="top-alert gate-error"
+      title="发布被审核闸门拦截"
+      :description="gateError"
+      @close="gateError = ''"
+    />
 
     <!-- 审核未通过顶部警示 -->
     <el-alert
@@ -350,7 +382,7 @@ onMounted(loadAll)
               <el-option label="16:9" value="16:9" />
               <el-option label="1:1" value="1:1" />
             </el-select>
-            <el-button type="primary" @click="exportMp4">导出 MP4</el-button>
+            <el-button type="primary" :loading="exportingMp4" @click="exportMp4">导出 MP4</el-button>
             <a
               v-if="currentOutput"
               :href="currentOutput.url"
@@ -375,9 +407,19 @@ onMounted(loadAll)
                 <el-tag size="small" :type="resultMap[r.result]?.type ?? 'info'">
                   {{ resultMap[r.result]?.label ?? r.result }}
                 </el-tag>
+                <!-- 人工复核状态（Task 10.4 S-09：增强展示 manual_status） -->
+                <el-tag
+                  v-if="r.manual_status"
+                  size="small"
+                  :type="r.manual_status === 'approved' ? 'success' : r.manual_status === 'rejected' ? 'danger' : 'warning'"
+                  effect="light"
+                >
+                  人工·{{ { approved: '已通过', rejected: '已驳回', pending: '待复核' }[r.manual_status] ?? r.manual_status }}
+                </el-tag>
                 <span class="review-target">
                   {{ r.target_type === 'film' ? '成片' : `${r.target_type} #${r.target_id ?? '—'}` }}
                 </span>
+                <span class="review-time">{{ r.created_at?.slice(0, 16).replace('T', ' ') }}</span>
               </div>
               <div v-if="r.violation_type" class="review-violate">
                 违规类型：{{ r.violation_type }}
@@ -598,6 +640,14 @@ onMounted(loadAll)
 .review-target {
   color: var(--mf-text-3);
   font-size: var(--mf-fs-sm);
+}
+.review-time {
+  margin-left: auto;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
+.gate-error {
+  border: 1px solid var(--el-color-danger);
 }
 .review-violate {
   margin-top: 4px;

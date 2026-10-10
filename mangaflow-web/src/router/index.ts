@@ -110,6 +110,12 @@ const routes: RouteRecordRaw[] = [
         meta: { requiresAuth: true, title: '模型配置' },
       },
       {
+        path: 'models/compare',
+        name: 'models-compare',
+        component: () => import('@/views/misc/ModelCompareView.vue'),
+        meta: { requiresAuth: true, title: '模型效果对比' },
+      },
+      {
         path: 'billing',
         name: 'billing',
         component: () => import('@/views/misc/BillingView.vue'),

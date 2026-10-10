@@ -1,7 +1,7 @@
 /**
  * 项目管理 API（文件级注释）。
  *
- * 对应后端 /api/projects：CRUD / 软删除 / 复制 / 版本快照（均校验归属）。
+ * 对应后端 /api/projects：CRUD / 软删除 / 复制 / 版本快照（均校验归属）/ ZIP 导出。
  */
 import client from './client'
 import type {
@@ -14,6 +14,7 @@ import type {
   ProjectUpdatePayload,
   VersionSnapshot,
 } from '@/types'
+import { downloadBlob, filenameFromDisposition } from '@/utils/download'
 
 /** 项目列表查询参数 */
 export interface ProjectListQuery extends PageQuery {
@@ -104,4 +105,21 @@ export function createSnapshot(
   payload: { stage: string; summary?: unknown },
 ): Promise<VersionSnapshot> {
   return client.post(`/projects/${id}/snapshots`, payload).then((r) => r.data)
+}
+
+/**
+ * 导出项目 ZIP 包（含 manifest / 剧本 / 资产 / 分镜等全量数据）。
+ * 下载 Blob 并按 Content-Disposition 文件名触发浏览器保存。
+ * @param id 项目 ID
+ * @returns 触发下载（无返回数据）
+ * @throws 404 项目不存在/非本人
+ */
+export async function exportZip(id: number): Promise<void> {
+  const resp = await client.get(`/projects/${id}/export`, { responseType: 'blob' })
+  const fallback = `mangaflow_project_${id}.zip`
+  const filename = filenameFromDisposition(
+    resp.headers['content-disposition'] as string | undefined,
+    fallback,
+  )
+  downloadBlob(resp.data as Blob, filename)
 }

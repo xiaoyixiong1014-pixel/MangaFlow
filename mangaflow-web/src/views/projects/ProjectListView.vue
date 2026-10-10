@@ -1,8 +1,9 @@
 <!--
   漫剧项目列表 W-02（文件级注释）。
-  统计卡（今日/本月创建，前端统计）+ 置顶公告条 + 工具行
-  （防抖搜索 / 状态筛选 / 排序 / 视图切换）+ 卡片 / 列表双视图
-  + 悬浮操作（打开/复制/重命名/导出/删除）+ 分页 + 空态引导。
+  统计卡（今日/本月创建 + 总数，数据源 GET /users/me/creation-stats，D-04）
+  + 置顶公告条 + 工具行（防抖搜索 / 状态筛选 / 排序 / 视图切换）
+  + 卡片 / 列表双视图 + 悬浮操作（打开/复制/重命名/导出 ZIP/删除）
+  + 分页 + 空态引导。
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -10,6 +11,7 @@ import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MfButton, MfTag } from '@mangaflow/design'
 import * as projectsApi from '@/api/projects'
+import * as usersApi from '@/api/users'
 import * as announcementsApi from '@/api/announcements'
 import type { Announcement, Project } from '@/types'
 import NewProjectDialog from '@/components/NewProjectDialog.vue'
@@ -85,13 +87,15 @@ const COVER_GRADS = [
   'linear-gradient(135deg, #1F2937, #4FD8CA)',
 ]
 
-// ---------- 统计（今日 / 本月创建，前端统计） ----------
+// ---------- 统计（今日 / 本月创建，后端聚合 D-04） ----------
 /** 今日新建数 */
 const todayCount = ref(0)
 /** 本月创建数 */
 const monthCount = ref(0)
 /** 总项目数 */
 const totalProjects = ref(0)
+/** 导出 ZIP 进行中的项目 ID 集合（防重复点击） */
+const exportingIds = ref<number[]>([])
 
 // ---------- 公告 ----------
 /** 置顶公告（取第一条） */
@@ -126,13 +130,12 @@ function coverOf(p: Project): string {
 function onCardCommand(cmd: string, p: Project): void {
   if (cmd === 'duplicate') duplicateProject(p)
   else if (cmd === 'rename') renameProject(p)
-  else if (cmd === 'export') exportProject()
+  else if (cmd === 'export') exportProjectZip(p)
   else if (cmd === 'delete') deleteProject(p)
 }
 
 /**
  * 拉取项目列表（分页 + 搜索 + 筛选 + 排序）。
- * 同时用一次大页请求统计今日 / 本月创建数。
  */
 async function fetchList(): Promise<void> {
   loading.value = true
@@ -149,6 +152,7 @@ async function fetchList(): Promise<void> {
     if (seq !== requestSeq) return // 过期响应丢弃
     items.value = result.items
     total.value = result.total
+    totalProjects.value = result.total // 项目总数 = 未筛选总数口径的近似（搜索态会变小）
   } catch {
     // 错误已由拦截器提示 detail
   } finally {
@@ -157,24 +161,14 @@ async function fetchList(): Promise<void> {
 }
 
 /**
- * 统计今日 / 本月创建：取前 100 条按 created_at 前端汇总（简单实现）。
+ * 统计今日 / 本月创建（D-04）：调后端聚合接口 /users/me/creation-stats，
+ * 移除旧版「前 100 条前端本地汇总」逻辑。
  */
 async function fetchStats(): Promise<void> {
   try {
-    const result = await projectsApi.list({ page: 1, page_size: 100 })
-    const now = new Date()
-    totalProjects.value = result.total
-    todayCount.value = 0
-    monthCount.value = 0
-    for (const p of result.items) {
-      if (!p.created_at) continue
-      const d = new Date(p.created_at)
-      const sameMonth = d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth()
-      if (sameMonth) {
-        monthCount.value++
-        if (d.getDate() === now.getDate()) todayCount.value++
-      }
-    }
+    const stats = await usersApi.creationStats()
+    todayCount.value = stats.today.projects
+    monthCount.value = stats.month.projects
   } catch {
     // 统计失败局部降级（显示 0），不阻塞列表
   }
@@ -263,9 +257,21 @@ async function renameProject(p: Project): Promise<void> {
   }
 }
 
-/** 导出（暂未开放占位提示） */
-function exportProject(): void {
-  ElMessage.info('导出功能即将开放')
+/**
+ * 导出项目 ZIP（Task 10.4）：下载 blob 并触发浏览器保存。
+ * @param p 目标项目
+ * @returns 无
+ */
+async function exportProjectZip(p: Project): Promise<void> {
+  exportingIds.value = [...exportingIds.value, p.id]
+  try {
+    await projectsApi.exportZip(p.id)
+    ElMessage.success('项目导出包已开始下载')
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    exportingIds.value = exportingIds.value.filter((i) => i !== p.id)
+  }
 }
 
 /**
@@ -401,7 +407,7 @@ onBeforeUnmount(() => {
                     <el-dropdown-menu>
                       <el-dropdown-item command="duplicate">复制项目</el-dropdown-item>
                       <el-dropdown-item command="rename">重命名</el-dropdown-item>
-                      <el-dropdown-item command="export">导出（即将开放）</el-dropdown-item>
+                      <el-dropdown-item command="export">导出 ZIP</el-dropdown-item>
                       <el-dropdown-item command="delete" divided>删除项目</el-dropdown-item>
                     </el-dropdown-menu>
                   </template>
@@ -455,7 +461,14 @@ onBeforeUnmount(() => {
             <el-button link type="primary" size="small" @click.stop="openProject(row)">打开</el-button>
             <el-button link size="small" @click.stop="duplicateProject(row)">复制</el-button>
             <el-button link size="small" @click.stop="renameProject(row)">重命名</el-button>
-            <el-button link size="small" @click.stop="exportProject()">导出</el-button>
+            <el-button
+              link
+              size="small"
+              :loading="exportingIds.includes(row.id)"
+              @click.stop="exportProjectZip(row)"
+            >
+              导出 ZIP
+            </el-button>
             <el-button link type="danger" size="small" @click.stop="deleteProject(row)">删除</el-button>
           </template>
         </el-table-column>

@@ -2,12 +2,13 @@
 /**
  * 文件级注释：A-02 经营分析看板。
  * 顶部时间范围 Segmented（7d/30d/90d）；6 张指标卡；ECharts 双图
- * （收入趋势折线 + 生成健康度柱状三系列）；底部资损告警列表（high 级标红）。
+ * （收入趋势折线 + 生成健康度柱状三系列）；底部资损告警列表（high 级标红）；
+ * 系统指标区块（Task 10.5）：任务成功率 / 24h 任务数 / 死信数 / 渠道健康 Tag。
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import * as echarts from 'echarts'
-import { getDashboardAlerts, getDashboardOverview } from '@/api/admin'
-import type { AlertItem, DashboardOverview } from '@/types'
+import { getDashboardAlerts, getDashboardOverview, getSystemMetrics } from '@/api/admin'
+import type { AlertItem, DashboardOverview, SystemMetrics } from '@/types'
 
 /** 可选时间范围 */
 const ranges = [
@@ -148,6 +149,7 @@ function handleResize() {
 
 onMounted(() => {
   void fetchAll()
+  void fetchSystemMetrics()
   window.addEventListener('resize', handleResize)
 })
 
@@ -163,6 +165,53 @@ onBeforeUnmount(() => {
 watch(range, () => {
   void fetchAll()
 })
+
+// ============================ 系统指标（Task 10.5） ============================
+
+/** 系统运行指标 */
+const sysMetrics = ref<SystemMetrics | null>(null)
+
+/** 24h 成功率百分比文案 */
+const successRateText = computed(() => {
+  const rate = sysMetrics.value?.task_success_rate_24h
+  return rate == null ? '—' : `${(rate * 100).toFixed(1)}%`
+})
+
+/** 系统指标卡（由 sysMetrics 派生） */
+const sysCards = computed(() => {
+  const d = sysMetrics.value
+  return [
+    { label: '24h 任务成功率', value: successRateText.value, hint: `任务数 ${d ? fmt(d.task_total_24h) : '—'}` },
+    { label: '死信任务', value: d ? fmt(d.dead_letter_count) : '—', hint: '重试耗尽待人工处理' },
+    { label: '进行中 / 排队', value: d ? `${fmt(d.running_count)} / ${fmt(d.queued_count)}` : '—', hint: '当前队列积压' },
+    { label: '平均耗时', value: d ? `${d.avg_task_seconds_24h}s` : '—', hint: '近 24h 成功任务' },
+  ]
+})
+
+/** 渠道健康 → Tag 类型 */
+function healthTagType(s: string): 'success' | 'warning' | 'danger' | 'info' {
+  if (s === 'healthy') return 'success'
+  if (s === 'degraded') return 'warning'
+  if (s === 'down') return 'danger'
+  return 'info'
+}
+
+/** 渠道健康 → 中文 */
+function healthLabel(s: string): string {
+  return ({ healthy: '健康', degraded: '降级', down: '不可用', unknown: '未知' })[s] ?? s
+}
+
+/**
+ * 拉取系统运行指标（失败静默，保留旧数据）。
+ * @returns 无
+ */
+async function fetchSystemMetrics() {
+  try {
+    sysMetrics.value = await getSystemMetrics()
+  } catch {
+    /* 错误已由拦截器提示 */
+  }
+}
 
 /** 告警级别 → 提示类型映射 */
 function alertType(level: string): 'error' | 'warning' | 'info' {
@@ -203,6 +252,45 @@ function alertType(level: string): 'error' | 'warning' | 'info' {
         <div ref="genRef" class="panel__chart" />
       </section>
     </div>
+
+    <!-- 系统指标（Task 10.5） -->
+    <section class="panel">
+      <h3 class="panel__title">
+        系统指标
+        <el-tag
+          v-if="sysMetrics && sysMetrics.dead_letter_count > 0"
+          size="small"
+          type="danger"
+          effect="plain"
+          class="panel__tag"
+        >
+          死信 {{ sysMetrics.dead_letter_count }}
+        </el-tag>
+      </h3>
+      <div class="sys-grid">
+        <div v-for="c in sysCards" :key="c.label" class="sys-card">
+          <div class="sys-card__label">{{ c.label }}</div>
+          <div class="sys-card__value">{{ c.value }}</div>
+          <div class="sys-card__hint">{{ c.hint }}</div>
+        </div>
+      </div>
+      <div class="sys-channels">
+        <span class="sys-channels__label">渠道健康：</span>
+        <template v-if="sysMetrics && sysMetrics.channels.length">
+          <el-tag
+            v-for="ch in sysMetrics.channels"
+            :key="ch.id"
+            size="small"
+            :type="healthTagType(ch.health_status)"
+            effect="light"
+            class="sys-channel-tag"
+          >
+            #{{ ch.id }} {{ healthLabel(ch.health_status) }}
+          </el-tag>
+        </template>
+        <span v-else class="sys-channels__empty">暂无渠道数据</span>
+      </div>
+    </section>
 
     <!-- 资损与告警 -->
     <section class="panel">
@@ -315,5 +403,64 @@ function alertType(level: string): 'error' | 'warning' | 'info' {
 
 .alert-item {
   margin-bottom: var(--mf-sp-2);
+}
+
+/* 系统指标（Task 10.5） */
+.sys-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: var(--mf-sp-4);
+}
+
+@media (max-width: 1100px) {
+  .sys-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+.sys-card {
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-ctl);
+  padding: var(--mf-sp-3);
+}
+
+.sys-card__label {
+  font-size: var(--mf-fs-sm);
+  color: var(--mf-text-3);
+}
+
+.sys-card__value {
+  margin-top: var(--mf-sp-1);
+  font-size: var(--mf-fs-xl);
+  font-weight: var(--mf-fw-bold);
+  color: var(--mf-text);
+}
+
+.sys-card__hint {
+  margin-top: 2px;
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
+}
+
+.sys-channels {
+  margin-top: var(--mf-sp-4);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--mf-sp-2);
+}
+
+.sys-channels__label {
+  font-size: var(--mf-fs-sm);
+  color: var(--mf-text-3);
+}
+
+.sys-channels__empty {
+  font-size: var(--mf-fs-sm);
+  color: var(--mf-text-3);
+}
+
+.sys-channel-tag {
+  margin-right: var(--mf-sp-1);
 }
 </style>

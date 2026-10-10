@@ -14,17 +14,14 @@
 """
 
 import time
-from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from openai import AsyncOpenAI
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.crypto import decrypt_text, encrypt_text
 from app.core.database import get_db
-from app.core.config import settings
 from app.core.security import require_operator
 from app.models import LogicalModel, ModelChannel, User
 from app.schemas.admin import (
@@ -36,6 +33,7 @@ from app.schemas.admin import (
     LogicalModelOut,
     LogicalModelUpdateRequest,
 )
+from app.services.model_router import probe_channel
 
 router = APIRouter(
     prefix="/api/admin/models",
@@ -49,8 +47,6 @@ _ALLOWED_PROTOCOLS = ("openai",)
 _ALLOWED_HEALTH = ("unknown", "healthy", "degraded", "down")
 # 允许的能力取值
 _ALLOWED_CAPABILITIES = ("llm", "image", "video", "tts")
-# 渠道探测超时（秒）与最大重试次数
-_TEST_TIMEOUT_SECONDS = 10
 
 
 def _mask_key(plain_key: str) -> str:
@@ -284,11 +280,15 @@ async def test_channel(
     db: AsyncSession = Depends(get_db),
     _operator: User = Depends(require_operator),
 ) -> ChannelTestResponse:
-    """渠道连通性探测：用存储的 Key 发起 openai 兼容 chat 调用。
+    """渠道连通性探测（按协议与能力分派探测策略）。
 
-    复用 providers/llm.py 的实现逻辑（AsyncOpenAI 客户端 + 最短消息），
-    但参数化 base_url/key/model 以支持任意渠道。探测结果（healthy/down）
-    与探测时间回写渠道；探测失败也返回 200，由 ok=false 表达结果。
+    探测实现委托 model_router.probe_channel：
+    - mock 协议：本地占位渠道直接视为连通；
+    - openai 协议：models 目录含 chat 键走 LLM 最短消息探测；否则按
+      图像/视频/TTS 端点以极小主体试探（非 401/403 的 4xx 视为连通，
+      避免真实出图/出片产生计费）。
+    probe_channel 原地回写 health_status（healthy/down）与 last_check_at，
+    此处仅负责提交。
 
     Args:
         channel_id: 渠道 ID。
@@ -296,56 +296,16 @@ async def test_channel(
         _operator: 运营方身份（依赖注入校验）。
 
     Returns:
-        ChannelTestResponse: {"ok", "error", "latency_ms"}。
+        ChannelTestResponse: {"ok", "error", "latency_ms"}（探测失败也返回 200）。
 
     Raises:
-        HTTPException: 404 —— 渠道不存在；400 —— 渠道未配置 Key。
+        HTTPException: 404 —— 渠道不存在。
     """
     channel = await _get_channel_or_404(db, channel_id)
-    stored = channel.api_key_encrypted or ""
-    if not stored:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="渠道未配置 API Key")
-
-    # 解密 Key：解密失败按明文降级（兼容历史种子明文数据）
-    try:
-        plain_key = decrypt_text(stored)
-    except ValueError:
-        plain_key = stored
-
-    # 探测模型：优先取渠道 models 目录中 chat 能力的第一个模型
-    model_name: Optional[str] = None
-    if isinstance(channel.models, dict):
-        chat_models = channel.models.get("chat") or []
-        if chat_models:
-            model_name = chat_models[0]
-    model_name = model_name or settings.deepseek_model
-
     started = time.perf_counter()
-    ok = False
-    error: Optional[str] = None
-    try:
-        client = AsyncOpenAI(
-            base_url=channel.base_url,
-            api_key=plain_key,
-            timeout=_TEST_TIMEOUT_SECONDS,
-            max_retries=0,  # 运营探测不重试，尽快暴露问题
-        )
-        await client.chat.completions.create(
-            model=model_name,
-            messages=[{"role": "user", "content": "ping"}],
-            temperature=0,
-            max_tokens=8,
-        )
-        ok = True
-    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常并回传原因
-        error = str(exc)
+    ok, error = await probe_channel(channel)
     latency_ms = int((time.perf_counter() - started) * 1000)
-
-    # 回写健康状态与探测时间
-    channel.health_status = "healthy" if ok else "down"
-    channel.last_check_at = datetime.now(timezone.utc)
     await db.commit()
-
     return ChannelTestResponse(ok=ok, error=error, latency_ms=latency_ms)
 
 

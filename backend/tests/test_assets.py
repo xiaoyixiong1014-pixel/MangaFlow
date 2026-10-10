@@ -230,7 +230,10 @@ async def test_bianti_chuangjian_yu_liebiao(client, auth):
 
 
 async def test_yizhixing_jiaoyan_fanhui_similarity(client, auth):
-    """一致性校验：返回 similarity（0.88~0.99）、passed 与报告文本。
+    """一致性校验：返回 embedding 余弦真实分数（0~1）、details 分项与算法标识。
+
+    Task 6.2 真实化后返回 {"similarity","passed","report","score","threshold",
+    "details","algorithm"}；similarity 与 score 同值，passed = score >= 0.85。
 
     Args:
         client: 内存 HTTP 客户端。
@@ -250,6 +253,12 @@ async def test_yizhixing_jiaoyan_fanhui_similarity(client, auth):
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert 0.88 <= body["similarity"] <= 0.99
+    # 新结构断言：算法标识、阈值、分项明细、公式一致性
+    assert body["algorithm"] == "embedding-cosine-v1"
+    assert body["threshold"] == 0.85
+    assert 0 <= body["similarity"] <= 1
+    assert body["score"] == body["similarity"]
     assert isinstance(body["passed"], bool)
+    assert body["passed"] == (body["score"] >= body["threshold"])
     assert "一致性" in body["report"]
+    assert {"visual_prompt_sim", "description_sim", "locked_bonus"} <= set(body["details"])

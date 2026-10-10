@@ -18,7 +18,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import LogicalModel, Project, Storyboard, Task, Wallet
+from app.models import LogicalModel, Project, Storyboard, Task, User, Wallet
 from app.services.billing_service import freeze_points
 
 # 关键帧单价（积分/张）
@@ -30,8 +30,51 @@ DEFAULT_VIDEO_PER_SECOND = 20
 # 配音计费常量：每 100 字 5 积分
 TTS_COST_PER_100_CHARS = 5
 
+# 受限用户（account_status=restricted）每日生成任务数上限（C-04 分级处罚限流）
+RESTRICTED_DAILY_TASK_LIMIT = 10
+
 # 允许的任务创建状态集合（幂等防重检查用）
 _ACTIVE_STATUS = ("queued", "running")
+
+
+async def ensure_generation_allowed(db: AsyncSession, user_id: int) -> None:
+    """生成接口统一准入校验（C-04 分级处罚）。
+
+    - banned（禁用）：一律 403 拒绝；
+    - restricted（受限）：当日（自然日）已创建任务数达到上限时 429 限流；
+    - active：直接放行。
+
+    Args:
+        db: 异步数据库会话。
+        user_id: 提交用户 ID（用户不存在时静默放行，交由归属校验兜底）。
+
+    Returns:
+        None
+
+    Raises:
+        HTTPException: 403 —— 账号已被禁用；429 —— 受限用户当日生成次数已达上限。
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        return
+    if user.account_status == "banned":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="账号已被禁用，如有疑问请联系运营方申诉")
+    if user.account_status == "restricted":
+        cnt = await db.scalar(
+            select(func.count())
+            .select_from(Task)
+            .join(Project, Project.id == Task.project_id)
+            .where(
+                Project.user_id == user_id,
+                # 当日起点（数据库侧自然日截断，避免应用/数据库时区偏差）
+                Task.created_at >= func.date_trunc("day", func.now()),
+            )
+        )
+        if int(cnt or 0) >= RESTRICTED_DAILY_TASK_LIMIT:
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail=f"今日生成次数已达上限（{RESTRICTED_DAILY_TASK_LIMIT} 次），请明日再试或联系运营方",
+            )
 
 
 async def get_owned_project(db: AsyncSession, user_id: int, project_id: int) -> Project:
@@ -152,6 +195,10 @@ async def freeze_and_create_task(
 ) -> Task:
     """冻结积分并创建生成任务（同一事务提交，RD-28 预扣）。
 
+    任务创建统一准入口：先执行 C-04 分级处罚准入校验（banned 拒绝 /
+    restricted 日限流），再冻结积分落任务。关键帧/视频/配音/合成/重试等
+    全部任务创建路径均经由此函数，校验逻辑单点收敛。
+
     Args:
         db: 异步数据库会话（freeze_points 内部提交事务，任务随同落库）。
         project: 归属项目（取 user_id 与 project_id）。
@@ -166,8 +213,11 @@ async def freeze_and_create_task(
         Task: 已落库（含自增 ID）的新任务对象。
 
     Raises:
-        HTTPException: 409 —— 积分余额不足；400 —— 参数非法（透传自 billing_service）。
+        HTTPException: 403 —— 账号已被禁用；429 —— 受限用户当日次数达上限；
+            409 —— 积分余额不足；400 —— 参数非法（透传自 billing_service）。
     """
+    # C-04 分级处罚准入校验（banned 403 / restricted 日限流 429）
+    await ensure_generation_allowed(db, project.user_id)
     task = Task(
         project_id=project.id,
         storyboard_id=storyboard_id,
@@ -382,6 +432,11 @@ async def create_compose_task(
     resolution: str,
     aspect_ratio: str,
     mode: str,
+    storyboard_ids: Optional[List[int]] = None,
+    subtitles: bool = False,
+    subtitle_style: Optional[dict] = None,
+    bgm: Optional[dict] = None,
+    transition: Optional[dict] = None,
 ) -> Task:
     """创建成片合成任务（成本 200 积分/次）。
 
@@ -391,20 +446,30 @@ async def create_compose_task(
         resolution: 分辨率 720P/1080P/2K。
         aspect_ratio: 画幅比例 9:16/16:9/1:1（缺省沿用项目配置）。
         mode: 合成模式 incremental/full（映射为任务 phase）。
+        storyboard_ids: 增量合成指定分镜 ID 列表（Task 5.3；仅 incremental 且
+            非空时生效，空/None 回退项目全部分镜）。
+        subtitles: 是否烧录字幕（Task 5.1）。
+        subtitle_style: 字幕样式 {font_size, color, position}（可空用默认）。
+        bgm: 背景音乐 {url, volume}（Task 5.2，可空表示不加）。
+        transition: 转场 {type, duration}（Task 5.3，可空表示不加）。
 
     Returns:
-        Task: 已落库的新合成任务。
+        Task: 已落库的新合成任务（meta 携带合成增强参数与涉及分镜清单）。
 
     Raises:
-        HTTPException: 400 —— 项目暂无分镜；409 —— 积分余额不足。
+        HTTPException: 400 —— 项目暂无分镜或增量分镜清单为空；409 —— 积分余额不足。
     """
-    rows = await db.execute(
-        select(Storyboard)
-        .where(Storyboard.project_id == project.id)
-        .order_by(Storyboard.sequence)
-    )
-    storyboard_ids = [sb.id for sb in rows.scalars().all()]
-    if not storyboard_ids:
+    if mode == "incremental" and storyboard_ids:
+        # 增量合成（Task 5.3）：仅拼接指定分镜（调用方已完成归属与顺序校验）
+        targets: List[int] = list(storyboard_ids)
+    else:
+        rows = await db.execute(
+            select(Storyboard)
+            .where(Storyboard.project_id == project.id)
+            .order_by(Storyboard.sequence)
+        )
+        targets = [sb.id for sb in rows.scalars().all()]
+    if not targets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目暂无分镜，无法合成")
     await _precheck_balance(db, project.user_id, COMPOSE_COST)
     return await freeze_and_create_task(
@@ -418,7 +483,12 @@ async def create_compose_task(
             "resolution": resolution,
             "aspect_ratio": aspect_ratio or project.aspect_ratio,
             "mode": mode,
-            "storyboard_ids": storyboard_ids,
+            "storyboard_ids": targets,
+            # Task 5 合成增强参数（None 项由 compose_service 按缺省处理）
+            "subtitles": bool(subtitles),
+            "subtitle_style": subtitle_style,
+            "bgm": bgm,
+            "transition": transition,
         },
         idempotency_key=f"compose_{project.id}_{uuid4().hex[:8]}",
     )

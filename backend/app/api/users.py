@@ -5,6 +5,7 @@
 - PUT    /api/users/me           更新头像/邮箱
 - PUT    /api/users/me/password  校验旧密码后更新密码
 - GET    /api/users/me/usage     项目数 / 任务状态计数 / 本月消耗 / 持有积分
+- GET    /api/users/me/creation-stats 今日与本月创作统计（D-04）
 - GET    /api/users/me/logs      操作日志分页（倒序）
 - GET    /api/users/me/snapshots 指定项目的版本快照（校验项目归属）
 """
@@ -18,9 +19,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user, hash_password, verify_password
-from app.models import OperationLog, Project, Task, User, VersionSnapshot, Wallet, WalletTransaction
+from app.models import OperationLog, Project, Storyboard, Task, User, VersionSnapshot, Wallet, WalletTransaction
 from app.schemas.common import PageResult
 from app.schemas.user import (
+    CreationStatsOut,
+    CreationStatsPeriod,
     OperationLogOut,
     PasswordChangeRequest,
     SnapshotOut,
@@ -159,6 +162,100 @@ async def my_usage(
         task_count_by_status=task_count_by_status,
         points_used_this_month=int(used or 0),
         points_total=int(points_total),
+    )
+
+
+@router.get("/me/creation-stats", response_model=CreationStatsOut)
+async def my_creation_stats(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CreationStatsOut:
+    """查询当前用户今日与本月创作统计（D-04）。
+
+    统计口径：
+    - projects：按 projects.created_at 计入（不含软删除）；
+    - images / video_seconds：按 tasks 表 type=image/video 且 status=done 聚合，
+      任务经 project_id 关联归属用户；video_seconds 按任务关联分镜的
+      duration 合计（无关联分镜计 0）；
+    - points_spent：wallet_transactions 的 consume 流水合计绝对值。
+
+    Args:
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CreationStatsOut: {"today": {...}, "month": {...}} 两组统计。
+
+    Raises:
+        HTTPException: 401 —— 未认证（由依赖抛出）。
+    """
+    now = datetime.now(timezone.utc)
+    # 今日起点（UTC 自然日 0 点）与本月起点（对齐 my_usage 的口径）
+    today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    async def _period_stats(start: datetime) -> CreationStatsPeriod:
+        """统计单个周期（今日 / 本月）的四项指标（内部函数）。
+
+        Args:
+            start: 周期起点（UTC datetime）。
+
+        Returns:
+            CreationStatsPeriod: 该周期统计结果。
+
+        Raises:
+            无：聚合查询异常向上抛出由全局处理器兜底。
+        """
+        # 新建项目数（不含软删除）
+        projects = await db.scalar(
+            select(func.count()).select_from(Project).where(
+                Project.user_id == user.id,
+                Project.deleted_at.is_(None),
+                Project.created_at >= start,
+            )
+        ) or 0
+        # 完成的关键帧任务数
+        images = await db.scalar(
+            select(func.count()).select_from(Task)
+            .join(Project, Task.project_id == Project.id)
+            .where(
+                Project.user_id == user.id,
+                Task.type == "image",
+                Task.status == "done",
+                Task.created_at >= start,
+            )
+        ) or 0
+        # 完成的视频任务覆盖时长（按关联分镜 duration 合计）
+        video_seconds = await db.scalar(
+            select(func.coalesce(func.sum(Storyboard.duration), 0))
+            .select_from(Task)
+            .join(Project, Task.project_id == Project.id)
+            .join(Storyboard, Task.storyboard_id == Storyboard.id)
+            .where(
+                Project.user_id == user.id,
+                Task.type == "video",
+                Task.status == "done",
+                Task.created_at >= start,
+            )
+        ) or 0
+        # 消耗积分（consume 流水为负值，取反）
+        points = await db.scalar(
+            select(func.coalesce(func.sum(-WalletTransaction.amount), 0)).where(
+                WalletTransaction.user_id == user.id,
+                WalletTransaction.type == "consume",
+                WalletTransaction.created_at >= start,
+            )
+        ) or 0
+        return CreationStatsPeriod(
+            projects=int(projects),
+            images=int(images),
+            video_seconds=int(video_seconds),
+            points_spent=int(points),
+        )
+
+    return CreationStatsOut(
+        today=await _period_stats(today_start),
+        month=await _period_stats(month_start),
     )
 
 

@@ -1,0 +1,17 @@
+﻿============================= test session starts =============================
+platform win32 -- Python 3.13.14, pytest-9.1.1, pluggy-1.6.0 -- D:\Code_Work\MangaFlow\backend\.venv\Scripts\python.exe
+cachedir: .pytest_cache
+rootdir: D:\Code_Work\MangaFlow\backend
+configfile: pytest.ini
+plugins: anyio-4.15.1, langsmith-0.14.4, asyncio-1.4.0
+asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=session, asyncio_default_test_loop_scope=session
+collecting ... collected 6 items
+
+tests/test_export.py::test_zip_export_manifest_and_media PASSED          [ 16%]
+tests/test_export.py::test_zip_import_rebuild_and_media_remap PASSED     [ 33%]
+tests/test_export.py::test_zip_import_invalid_manifest_400 PASSED        [ 50%]
+tests/test_export.py::test_storyboard_export_csv_and_xlsx PASSED         [ 66%]
+tests/test_export.py::test_storyboard_export_denied_for_other_user PASSED [ 83%]
+tests/test_export.py::test_film_output_download_original_and_resolution PASSED [100%]
+
+======================== 6 passed in 182.96s (0:03:02) ========================

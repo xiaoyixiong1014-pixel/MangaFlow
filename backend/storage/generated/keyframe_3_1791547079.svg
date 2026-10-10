@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <circle cx="446" cy="249" r="28" fill="#12B3A6" opacity="0.27"/><circle cx="266" cy="208" r="63" fill="#12B3A6" opacity="0.23"/><polygon points="461,488 382,646 540,646" fill="#12B3A6" opacity="0.19"/><circle cx="225" cy="434" r="84" fill="#12B3A6" opacity="0.13"/><circle cx="390" cy="518" r="45" fill="#12B3A6" opacity="0.3"/><circle cx="593" cy="314" r="86" fill="#12B3A6" opacity="0.15"/><circle cx="215" cy="748" r="55" fill="#12B3A6" opacity="0.16"/><circle cx="248" cy="604" r="75" fill="#12B3A6" opacity="0.09"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：测试风格；画面：测</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">试画面 夕阳下的天台，少女远</text><text x="60" y="1172" fill="#E6F2F1" font-size="26" font-family="sans-serif">眺城市</text>
+</svg>

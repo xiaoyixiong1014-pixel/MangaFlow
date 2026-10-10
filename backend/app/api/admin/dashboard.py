@@ -1,8 +1,9 @@
 """管理端仪表盘路由模块（文件级说明）。
 
-实现平台运营数据概览与运营告警：
+实现平台运营数据概览、运营告警与系统运行指标：
 - GET /api/admin/dashboard/overview?range=7d|30d|90d  平台总览统计（用户/营收/积分负债/任务/逐日趋势）
 - GET /api/admin/dashboard/alerts                     运营告警（平台故障/大额订单/渠道不健康）
+- GET /api/admin/system-metrics                       系统运行指标（24h 任务成功率/死信/队列积压/渠道健康）
 
 全部接口要求运营方（operator）角色，普通用户访问返回 403。
 """
@@ -19,10 +20,12 @@ from app.core.security import require_operator
 from app.models import ModelChannel, Order, Task, User, Wallet
 from app.schemas.admin import AlertItem, DayGeneration, DayRevenue, OverviewOut
 
+# 路由级鉴权：仅运营方可访问，普通用户 403；
+# prefix 为 /api/admin（旧接口以 dashboard/ 前缀保持原路径不变，新接口 /system-metrics）
 router = APIRouter(
-    prefix="/api/admin/dashboard",
+    prefix="/api/admin",
     tags=["admin-dashboard"],
-    dependencies=[Depends(require_operator)],  # 路由级鉴权：仅运营方可访问，普通用户 403
+    dependencies=[Depends(require_operator)],
 )
 
 # 支持的统计范围取值
@@ -35,7 +38,7 @@ _PLATFORM_ERROR_CODE = "platform_error"
 _LARGE_ORDER_THRESHOLD = 1000
 
 
-@router.get("/overview", response_model=OverviewOut)
+@router.get("/dashboard/overview", response_model=OverviewOut)
 async def get_overview(
     range_preset: str = Query(default="7d", alias="range", description="统计范围：7d/30d/90d"),
     db: AsyncSession = Depends(get_db),
@@ -144,7 +147,7 @@ async def get_overview(
     )
 
 
-@router.get("/alerts", response_model=List[AlertItem])
+@router.get("/dashboard/alerts", response_model=List[AlertItem])
 async def get_alerts(
     db: AsyncSession = Depends(get_db),
     _operator: User = Depends(require_operator),
@@ -226,3 +229,97 @@ async def get_alerts(
 
     alerts.sort(key=lambda a: a.created_at or now, reverse=True)
     return alerts
+
+
+@router.get("/system-metrics")
+async def get_system_metrics(
+    db: AsyncSession = Depends(get_db),
+    _operator: User = Depends(require_operator),
+) -> dict:
+    """查询系统运行指标（管理端系统监控面板数据源）。
+
+    统计口径：
+    - task_success_rate_24h / task_total_24h：近 24h 任务总数与
+      成功率（done / (done + failed)，无终态任务时为 0）；
+    - avg_task_seconds_24h：近 24h 成功任务的平均耗时秒
+      （updated_at - created_at，按 FILTER 子句仅对 done 聚合）；
+    - dead_letter_count：死信任务数 —— 平台故障且重试耗尽后的终态失败
+      （status='failed' 且 error_code='platform_error'，RD-28 口径）；
+    - running_count / queued_count：当前进行中/排队中任务数（按状态分组聚合）；
+    - channels：全部模型渠道健康快照（id/protocol/health_status/last_check_at）。
+
+    Args:
+        db: 请求级异步数据库会话。
+        _operator: 运营方身份（依赖注入校验）。
+
+    Returns:
+        dict: 系统运行指标（字段见上，渠道 last_check_at 为 ISO 时间或 null）。
+
+    Raises:
+        无：查询异常向上抛出由全局处理器兜底。
+    """
+    now = datetime.now(timezone.utc)
+    day_ago = now - timedelta(hours=24)
+
+    # ---------- 近 24h 任务总量 / 成功 / 失败 / 平均耗时（单条 SELECT 多标量） ----------
+    task_row = (
+        await db.execute(
+            select(
+                func.count(Task.id).label("total"),
+                func.count(Task.id).filter(Task.status == "done").label("done"),
+                func.count(Task.id).filter(Task.status == "failed").label("failed"),
+                func.avg(func.extract("epoch", Task.updated_at - Task.created_at))
+                .filter(Task.status == "done")
+                .label("avg_seconds"),
+            ).where(Task.created_at >= day_ago)
+        )
+    ).one()
+    total_24h = int(task_row.total or 0)
+    done_24h = int(task_row.done or 0)
+    failed_24h = int(task_row.failed or 0)
+    terminal = done_24h + failed_24h
+    success_rate = (done_24h / terminal) if terminal > 0 else 0.0
+    avg_seconds = float(task_row.avg_seconds) if task_row.avg_seconds is not None else 0.0
+
+    # ---------- 死信：平台故障重试耗尽后的终态失败 ----------
+    dead_letter = await db.scalar(
+        select(func.count()).select_from(Task).where(
+            Task.status == "failed", Task.error_code == _PLATFORM_ERROR_CODE
+        )
+    ) or 0
+
+    # ---------- 当前队列积压：按任务状态分组计数 ----------
+    status_rows = (
+        await db.execute(select(Task.status, func.count()).group_by(Task.status))
+    ).all()
+    status_map = {s: int(c or 0) for s, c in status_rows}
+
+    # ---------- 渠道健康快照 ----------
+    channel_rows = (
+        await db.execute(
+            select(
+                ModelChannel.id,
+                ModelChannel.protocol,
+                ModelChannel.health_status,
+                ModelChannel.last_check_at,
+            ).order_by(ModelChannel.id)
+        )
+    ).all()
+
+    return {
+        "task_success_rate_24h": round(success_rate, 4),
+        "task_total_24h": total_24h,
+        "dead_letter_count": int(dead_letter),
+        "running_count": status_map.get("running", 0),
+        "queued_count": status_map.get("queued", 0),
+        "avg_task_seconds_24h": round(avg_seconds, 2),
+        "channels": [
+            {
+                "id": c.id,
+                "protocol": c.protocol,
+                "health_status": c.health_status,
+                "last_check_at": c.last_check_at,
+            }
+            for c in channel_rows
+        ],
+    }

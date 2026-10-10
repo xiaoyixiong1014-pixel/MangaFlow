@@ -168,7 +168,11 @@ onMounted(async () => {
 
 <template>
   <div class="page-container">
-    <h2 class="page-title">模型配置</h2>
+    <div class="page-head">
+      <h2 class="page-title">模型配置</h2>
+      <!-- 效果对比入口（PL-11，Task 10.3） -->
+      <el-button type="primary" plain @click="$router.push('/models/compare')">效果对比 →</el-button>
+    </div>
 
     <!-- 能力 Tab -->
     <el-tabs v-model="capability" class="cap-tabs">
@@ -299,6 +303,12 @@ onMounted(async () => {
 </template>
 
 <style scoped>
+.page-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mf-sp-3);
+}
 .cap-tabs :deep(.el-tabs__header) {
   margin-bottom: var(--mf-sp-4);
 }

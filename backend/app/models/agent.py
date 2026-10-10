@@ -24,7 +24,7 @@ from app.core.database import Base
 
 
 class AgentThread(Base):
-    """智能体会话表（§5.3.29 agent_threads，MA-04 / MA-05）。
+    """智能体会话表（§5.3.29 agent_threads，MA-04 / MA-05 / MA-06）。
 
     Attributes:
         thread_id: 会话标识（格式 project_id 或 project_id:stage，唯一）。
@@ -32,6 +32,9 @@ class AgentThread(Base):
         user_id: 用户 ID（外键 CASCADE）。
         stage: 当前阶段。
         state: 共享状态快照（State Schema，JSONB）。
+        rewind_checkpoint: MA-06 Time Travel 回溯目标检查点 ID（String 可空）；
+            rewind 端点写入，chat_stream 构建运行 config 时作为 checkpoint_id
+            注入实现「分叉续聊」，本次对话完成后由服务端清空（一次性生效）。
     """
 
     __tablename__ = "agent_threads"
@@ -49,6 +52,9 @@ class AgentThread(Base):
         BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, comment="用户 ID")
     stage: Mapped[Optional[str]] = mapped_column(String(20), nullable=True, comment="当前阶段")
     state: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="共享状态快照（State Schema）")
+    # MA-06 Time Travel：回溯检查点（create_all 不加列，存量库由 init_db 补列逻辑迁移）
+    rewind_checkpoint: Mapped[Optional[str]] = mapped_column(
+        String(80), nullable=True, comment="回溯目标检查点 ID（一次性，分叉续聊后清空）")
 
 
 class LanggraphStore(Base):

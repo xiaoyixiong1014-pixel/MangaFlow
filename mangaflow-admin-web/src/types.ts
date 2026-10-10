@@ -283,3 +283,96 @@ export interface BackupFile {
 
 /** 系统设置（字典结构） */
 export type SettingsDict = Record<string, string | number | boolean>
+
+// ============================================================
+// 系统指标 / 死信队列 / 插件审查（Task 10.5）
+// ============================================================
+
+/** 系统运行指标（GET /admin/system-metrics） */
+export interface SystemMetrics {
+  /** 近 24h 任务成功率（0~1） */
+  task_success_rate_24h: number
+  /** 近 24h 任务总数 */
+  task_total_24h: number
+  /** 死信任务数（平台故障重试耗尽） */
+  dead_letter_count: number
+  /** 当前进行中任务数 */
+  running_count: number
+  /** 当前排队中任务数 */
+  queued_count: number
+  /** 近 24h 成功任务平均耗时（秒） */
+  avg_task_seconds_24h: number
+  /** 渠道健康快照 */
+  channels: Array<{
+    /** 渠道 ID */
+    id: number
+    /** 协议 */
+    protocol: string
+    /** 健康状态：unknown/healthy/degraded/down */
+    health_status: string
+    /** 最近探测时间 */
+    last_check_at: string | null
+  }>
+}
+
+/** 死信任务列表项（GET /admin/tasks/dead-letters） */
+export interface DeadLetterItem {
+  /** 任务 ID */
+  id: number
+  /** 任务类型：image/video/tts/compose 等 */
+  type: string
+  /** 任务状态 */
+  status: string
+  /** 错误码 */
+  error_code: string | null
+  /** 错误信息 */
+  error: string | null
+  /** 已重试次数 */
+  retry_count: number
+  /** 冻结/消耗积分 */
+  cost_points: number
+  /** 创建时间 */
+  created_at: string
+  /** 归属项目 ID */
+  project_id: number | null
+  /** 归属用户 ID（项目已删除时为 null） */
+  user_id: number | null
+}
+
+/** 重新入队响应（POST /admin/tasks/{id}/requeue） */
+export interface RequeueResult {
+  /** 任务 ID */
+  id: number
+  /** 重置后的状态（queued） */
+  status: string
+  /** 提示信息 */
+  message: string
+}
+
+/** 画布插件列表项（GET /canvas-plugins?all=true，运营审查用） */
+export interface PluginReviewItem {
+  /** 插件 ID */
+  id: number
+  /** 安装者用户 ID */
+  user_id: number
+  /** 插件名 */
+  name: string
+  /** 版本号 */
+  version?: string | null
+  /** 描述 */
+  description?: string | null
+  /** 插件地址（"builtin:" 前缀 = 内置实现） */
+  endpoint_url: string
+  /** 输入端口定义 */
+  inputs: { name: string; type: string }[]
+  /** 输出端口定义 */
+  outputs: { name: string; type: string }[]
+  /** 权限清单 */
+  permissions: string[]
+  /** 用户是否已显式授权 */
+  granted: boolean
+  /** 是否启用 */
+  enabled: boolean
+  /** 是否通过市场审核 */
+  reviewed: boolean
+}

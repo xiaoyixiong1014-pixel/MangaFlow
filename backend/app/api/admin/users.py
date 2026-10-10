@@ -5,6 +5,7 @@
 - GET  /api/admin/users/{user_id}       用户详情（钱包 + 近 10 条操作日志 + 近 5 个项目）
 - POST /api/admin/users/{user_id}/points  积分调整（正数发放 / 负数扣减，高危审计）
 - POST /api/admin/users/{user_id}/status  启用/禁用用户（高危审计）
+- POST /api/admin/users/{user_id}/unban   解禁用户（C-04 分级处罚配套，高危留痕）
 
 说明：operation_logs.user_id 语义为"操作人"，管理端操作统一记录管理员 ID，
 目标用户等信息写入 detail（JSONB）。全部接口要求运营方角色，普通用户 403。
@@ -380,3 +381,54 @@ async def toggle_user_status(
 
     action_text = "启用" if req.status == 1 else "禁用"
     return MessageOut(message=f"用户 {user.username} 已{action_text}")
+
+
+@router.post("/{user_id}/unban", response_model=MessageOut)
+async def unban_user(
+    user_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    operator: User = Depends(require_operator),
+) -> MessageOut:
+    """解禁用户（C-04 分级处罚配套）：account_status 置回 active 并清零违规计数。
+
+    幂等操作：无论当前状态如何均可执行（重复调用结果一致）。
+    写 operation_logs（action='admin_unban_user'，risk_level='high'）留痕，
+    user_id 记操作管理员，目标用户/原状态/原违规次数记入 detail。
+
+    Args:
+        user_id: 目标用户 ID。
+        request: 当前请求（用于记录操作 IP）。
+        db: 请求级异步数据库会话。
+        operator: 当前运营方。
+
+    Returns:
+        MessageOut: 操作结果消息。
+
+    Raises:
+        HTTPException: 404 —— 目标用户不存在。
+    """
+    user = await db.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="用户不存在")
+
+    previous_status = user.account_status
+    previous_count = user.violation_count
+    user.account_status = "active"
+    user.violation_count = 0
+    # 高危操作审计：user_id = 操作管理员，目标用户与原状态写入 detail
+    db.add(OperationLog(
+        user_id=operator.id,
+        project_id=None,
+        action="admin_unban_user",
+        detail={
+            "target_user_id": user_id,
+            "target_username": user.username,
+            "previous_status": previous_status,
+            "previous_violation_count": previous_count,
+        },
+        ip=_get_client_ip(request),
+        risk_level="high",
+    ))
+    await db.commit()
+    return MessageOut(message=f"用户 {user.username} 已解禁")

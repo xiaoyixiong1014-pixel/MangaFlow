@@ -9,8 +9,8 @@ import logging
 
 from langchain_core.messages import AIMessage
 
+from app.agents.llm_adapter import llm
 from app.agents.state import AgentState, last_human_text
-from app.providers.llm import chat
 
 logger = logging.getLogger(__name__)
 
@@ -41,11 +41,13 @@ async def compose_node(state: AgentState) -> dict:
     sb = artifacts.get("storyboard") or {}
     basis = (sb.get("text") if isinstance(sb, dict) else None) or last_human_text(state) or "按既有分镜表合成"
     try:
-        raw = await chat(
+        raw = await llm.chat(
+            state,
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": f"分镜/素材内容：{basis}"},
             ],
+            agent_name="compose",
             temperature=0.6,
             json_mode=True,
         )
@@ -57,6 +59,7 @@ async def compose_node(state: AgentState) -> dict:
             f"【字幕建议】{data.get('subtitles', '待定')}"
         )
         artifacts["compose"] = {"plan": data, "text": content}
+        artifacts = llm.attach_usage(artifacts)
         return {"messages": [AIMessage(content=content)], "artifacts": artifacts, "error": ""}
     except Exception as exc:  # noqa: BLE001 —— LLM/解析异常必须降级
         logger.warning("compose_node LLM 调用失败，降级输出离线模板：%s", exc)

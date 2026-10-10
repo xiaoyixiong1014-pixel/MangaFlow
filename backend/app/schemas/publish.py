@@ -10,6 +10,46 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+class SubtitleStyle(BaseModel):
+    """字幕样式（Task 5.1，P-16）。
+
+    Attributes:
+        font_size: 字号（ASS FontSize，10~72）。
+        color: 主字幕颜色（ASS PrimaryColour，&HBBGGRR 格式，缺省白色）。
+        position: 字幕位置 bottom 底部 / middle 居中 / top 顶部。
+    """
+
+    font_size: int = Field(default=24, ge=10, le=72)
+    color: str = Field(default="&H00FFFFFF", max_length=16)
+    position: Literal["bottom", "middle", "top"] = "bottom"
+
+
+class BgmOption(BaseModel):
+    """背景音乐参数（Task 5.2，P-14）。
+
+    Attributes:
+        url: BGM 资源地址（/storage/bgm/... 曲库或 /storage/uploads/... 用户上传，
+            可空表示不加背景音乐）。
+        volume: 音量系数（0~1，原声音量保持不变，仅作用于 BGM 轨）。
+    """
+
+    url: Optional[str] = Field(default=None, max_length=255)
+    volume: float = Field(default=0.3, ge=0.0, le=1.0)
+
+
+class TransitionOption(BaseModel):
+    """转场参数（Task 5.3，P-15）。
+
+    Attributes:
+        type: 转场类型（xfade 滤镜名；本阶段实现按 fade 处理，其余取值接受
+            但同样应用 fade，注释与文档说明）。
+        duration: 转场时长（秒，0.1~3.0）。
+    """
+
+    type: str = Field(default="fade", max_length=30)
+    duration: float = Field(default=0.5, ge=0.1, le=3.0)
+
+
 class ComposeCreateRequest(BaseModel):
     """成片合成请求。
 
@@ -17,11 +57,21 @@ class ComposeCreateRequest(BaseModel):
         resolution: 输出分辨率 720P/1080P/2K。
         aspect_ratio: 画幅比例 9:16/16:9/1:1（缺省沿用项目配置）。
         mode: 合成模式 incremental（增量）/ full（全量），映射为任务 phase。
+        storyboard_ids: 增量合成指定分镜 ID 清单（仅 incremental 生效，Task 5.3）。
+        subtitles: 是否烧录字幕（Task 5.1，缺省关闭）。
+        subtitle_style: 字幕样式（可空用默认样式）。
+        bgm: 背景音乐参数（可空表示不加）。
+        transition: 转场参数（可空表示不加转场，直接拼接）。
     """
 
     resolution: Literal["720P", "1080P", "2K"] = "720P"
     aspect_ratio: Optional[Literal["9:16", "16:9", "1:1"]] = None
     mode: Literal["incremental", "full"] = "full"
+    storyboard_ids: Optional[List[int]] = Field(default=None, max_length=200)
+    subtitles: bool = False
+    subtitle_style: Optional[SubtitleStyle] = None
+    bgm: Optional[BgmOption] = None
+    transition: Optional[TransitionOption] = None
 
 
 class OutputOut(BaseModel):

@@ -67,7 +67,8 @@ class CanvasNode(Base):
 
     Attributes:
         canvas_id: 画布 ID（外键 CASCADE）。
-        node_type: 节点类型（text/image/video/audio/generate/asset_ref/shot/compose/logic/group）。
+        node_type: 节点类型（text/image/video/audio/generate/asset_ref/shot/compose/logic/
+            group/plugin/mcp_tool）。
         position_x: 画布 X 坐标（DOUBLE PRECISION）。
         position_y: 画布 Y 坐标。
         size_w: 宽。
@@ -86,7 +87,7 @@ class CanvasNode(Base):
     __table_args__ = (
         CheckConstraint(
             "node_type IN ('text', 'image', 'video', 'audio', 'generate', "
-            "'asset_ref', 'shot', 'compose', 'logic', 'group')",
+            "'asset_ref', 'shot', 'compose', 'logic', 'group', 'plugin', 'mcp_tool')",
             name="ck_cn_node_type"),
         CheckConstraint("status IN ('idle', 'queued', 'running', 'done', 'failed')", name="ck_cn_status"),
         Index("idx_cn_canvas", "canvas_id"),

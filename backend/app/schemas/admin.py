@@ -674,3 +674,60 @@ class BackupCreateResponse(BaseModel):
 
     message: str
     filename: str
+
+
+# ==========================================================================
+# 任务死信队列（dlq，Task 2.2）
+# ==========================================================================
+
+
+class DeadLetterItem(BaseModel):
+    """死信任务条目。
+
+    Attributes:
+        id: 任务 ID。
+        type: 任务类型 image/video/tts/compose/llm/extract。
+        status: 当前状态（终态 failed）。
+        error_code: 错误码（platform_error 等）。
+        error: 错误信息。
+        retry_count: 已重试次数。
+        cost_points: 关联积分（终态时已退款，requeue 时将重新冻结）。
+        created_at: 任务创建时间。
+        project_id: 归属项目 ID（可空：项目已删除）。
+        user_id: 归属用户 ID（经项目联查，可空）。
+    """
+
+    id: int
+    type: str
+    status: str
+    error_code: Optional[str] = None
+    error: Optional[str] = None
+    retry_count: int = 0
+    cost_points: int = 0
+    created_at: datetime
+    project_id: Optional[int] = None
+    user_id: Optional[int] = None
+
+
+class RequeueRequest(BaseModel):
+    """死信任务重新入队请求。
+
+    Attributes:
+        reason: 重新入队原因（必填，写入操作日志留痕）。
+    """
+
+    reason: str = Field(min_length=1, description="重新入队原因（必填，用于审计留痕）")
+
+
+class RequeueResponse(BaseModel):
+    """死信任务重新入队响应。
+
+    Attributes:
+        id: 任务 ID。
+        status: 重置后的任务状态（queued）。
+        message: 处理结果描述。
+    """
+
+    id: int
+    status: str
+    message: str

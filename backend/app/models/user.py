@@ -8,7 +8,7 @@ orders（订单）、operation_logs（操作日志）。
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Numeric, SmallInteger, String, TIMESTAMP, Text
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, Numeric, SmallInteger, String, TIMESTAMP, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -27,7 +27,11 @@ class User(Base):
         role: 角色，取值 'user'（普通用户）/'operator'（运营方）。
             注：架构文档原文写 user/admin，本系统统一用 operator 表示管理员。
         vip_level: 会员等级。
-        status: 状态，0 禁用 / 1 正常。
+        status: 状态，0 禁用 / 1 正常（账号启停开关，管理端手控）。
+        account_status: 账号状态（C-04 分级处罚）：active 正常 / restricted 受限 /
+            banned 禁用。注：与整型 status 列语义不同——status 为管理端手控启停，
+            account_status 由内容违规处罚自动驱动；命名避开既有 status 列。
+        violation_count: 内容违规累计次数（C-04，机审 violate 累加，≥3 次禁用）。
         last_login_at: 最近登录时间。
     """
 
@@ -35,6 +39,8 @@ class User(Base):
     __table_args__ = (
         CheckConstraint("role IN ('user', 'operator')", name="ck_users_role"),
         CheckConstraint("status IN (0, 1)", name="ck_users_status"),
+        CheckConstraint("account_status IN ('active', 'restricted', 'banned')",
+                        name="ck_users_account_status"),
         Index("uk_users_username", "username", unique=True),
         Index("uk_users_email", "email", unique=True),
         Index("uk_users_phone", "phone", unique=True),
@@ -52,6 +58,12 @@ class User(Base):
     vip_level: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0", comment="会员等级")
     status: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="1",
                                         comment="状态：0 禁用 / 1 正常")
+    account_status: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="active",
+        comment="账号状态（C-04 分级处罚）：active/restricted/banned")
+    violation_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0",
+        comment="内容违规累计次数（C-04：1-2 次受限、≥3 次禁用）")
     last_login_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="最近登录时间")
 

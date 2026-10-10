@@ -13,7 +13,11 @@ import type {
   CanvasExecuteResult,
   CanvasGraph,
   CanvasListItem,
+  CanvasPluginItem,
+  CloneSubtreeResult,
   GraphSyncPayload,
+  McpServersResult,
+  McpToolInfo,
   NodeExecuteResult,
   PageQuery,
   PageResult,
@@ -146,4 +150,85 @@ export async function stream(
  */
 export function assistantChat(id: number, message: string): Promise<AssistantChatResult> {
   return client.post(`/canvases/${id}/assistant/chat`, { message }).then((r) => r.data)
+}
+
+// ============================================================
+// 画布插件 / MCP 集成 / 子图克隆（Task 9 画布增强）
+// ============================================================
+
+/**
+ * 拉取画布插件列表（普通用户 = 已审核且启用；operator 传 all 查看全部）。
+ * @param all operator 置 true 查看全部
+ * @returns 插件清单列表
+ */
+export function listPlugins(all = false): Promise<CanvasPluginItem[]> {
+  return client.get('/canvas-plugins', { params: all ? { all: true } : undefined }).then((r) => r.data)
+}
+
+/**
+ * 手动调用插件（插件须已审核且启用）。
+ * @param id 插件 ID
+ * @param payload 调用负载（如 { text: string }）
+ * @returns 插件返回结果
+ */
+export function invokePlugin(id: number, payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+  return client.post(`/canvas-plugins/${id}/invoke`, { payload }).then((r) => r.data)
+}
+
+/**
+ * 子图克隆：克隆指定节点与内部连线到目标画布（缺省克隆到自身，坐标 +40/+40）。
+ * @param canvasId 源画布 ID
+ * @param payload 节点 ID 列表与可选目标画布 ID
+ * @returns 克隆出的节点与连线
+ */
+export function cloneSubtree(
+  canvasId: number,
+  payload: { node_ids: number[]; target_canvas_id?: number },
+): Promise<CloneSubtreeResult> {
+  return client.post(`/canvases/${canvasId}/clone-subtree`, payload).then((r) => r.data)
+}
+
+/**
+ * 读取 MCP server 配置列表（站点设置 KV）。
+ * @returns server 列表
+ */
+export function mcpServers(): Promise<McpServersResult> {
+  return client.get('/mcp/servers').then((r) => r.data)
+}
+
+/**
+ * 添加 MCP server（operator）。
+ * @param payload 名称/端点地址/附加请求头
+ * @returns 添加后的完整 server 列表
+ */
+export function addMcpServer(payload: { name: string; url: string; headers?: Record<string, string> }): Promise<McpServersResult> {
+  return client.post('/mcp/servers', payload).then((r) => r.data)
+}
+
+/**
+ * 删除 MCP server（operator）。
+ * @param sid server 标识
+ * @returns 删除后的完整 server 列表
+ */
+export function deleteMcpServer(sid: string): Promise<McpServersResult> {
+  return client.delete(`/mcp/servers/${sid}`).then((r) => r.data)
+}
+
+/**
+ * 现连列举 MCP server 的工具（tools/list）。
+ * @param sid server 标识
+ * @returns 工具描述列表
+ */
+export function mcpTools(sid: string): Promise<{ tools: McpToolInfo[] }> {
+  return client.post(`/mcp/servers/${sid}/tools`).then((r) => r.data)
+}
+
+/**
+ * 现连调用 MCP server 工具（tools/call）。
+ * @param sid server 标识
+ * @param payload 工具名与参数
+ * @returns tools/call 的 result（content/isError 等）
+ */
+export function mcpCall(sid: string, payload: { tool: string; arguments?: Record<string, unknown> }): Promise<Record<string, unknown>> {
+  return client.post(`/mcp/servers/${sid}/call`, payload).then((r) => r.data)
 }

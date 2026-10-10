@@ -47,6 +47,8 @@ from app.schemas.canvas import (
     CanvasNodeOut,
     CanvasOut,
     CanvasUpdateRequest,
+    CloneSubtreeRequest,
+    CloneSubtreeResult,
     GraphSyncRequest,
     NodeExecuteResult,
 )
@@ -356,6 +358,97 @@ async def import_canvas(
 
 
 # ---------------------------------------------------------------------------
+# 子图克隆（Task 9 画布增强）
+# ---------------------------------------------------------------------------
+@router.post("/{canvas_id}/clone-subtree", response_model=CloneSubtreeResult, status_code=201)
+async def clone_subtree(
+    canvas_id: int,
+    req: CloneSubtreeRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CloneSubtreeResult:
+    """子图克隆：收集指定节点 + 两端均在集合内的边，克隆到目标画布（默认自身）。
+
+    规则：
+    - 节点须全部属于源画布（缺失返回 400）；
+    - 仅克隆两端均在 node_ids 集合内的连线；
+    - 克隆节点坐标整体 +40/+40 偏移，data/config 深拷贝，置脏待执行；
+    - parent_group_id 不在克隆集合内时置 None（分组随原画布保留）；
+    - 目标画布须归属当前用户（默认 = 源画布）。
+
+    Args:
+        canvas_id: 源画布 ID。
+        req: 克隆请求（node_ids / target_canvas_id）。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CloneSubtreeResult: {nodes, edges} 克隆出的子图（带真实 id）。
+
+    Raises:
+        HTTPException: 400 —— 节点不属于源画布或目标画布无权限；
+            404 —— 源/目标画布不存在。
+    """
+    source = await get_owned_canvas(db, user.id, canvas_id)
+    target = source if req.target_canvas_id is None else await get_owned_canvas(
+        db, user.id, req.target_canvas_id
+    )
+
+    src_nodes, src_edges = await load_graph(db, source.id)
+    node_map = {n.id: n for n in src_nodes}
+    id_set = set(req.node_ids)
+    missing = id_set - set(node_map)
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"节点不存在或不属于该画布: {sorted(missing)[:5]}",
+        )
+
+    # 克隆节点：坐标 +40/+40，data/config 深拷贝，置脏待执行
+    cloned_nodes: List[CanvasNode] = []
+    for nid in req.node_ids:  # 保持请求顺序，输出顺序可预期
+        src = node_map[nid]
+        clone = CanvasNode(
+            canvas_id=target.id,
+            node_type=src.node_type,
+            position_x=src.position_x + 40,
+            position_y=src.position_y + 40,
+            size_w=src.size_w,
+            size_h=src.size_h,
+            z_index=src.z_index,
+            data=json.loads(json.dumps(src.data, ensure_ascii=False, default=str)) if src.data else None,
+            config=json.loads(json.dumps(src.config, ensure_ascii=False, default=str)) if src.config else None,
+            is_dirty=True,
+            status="idle",
+        )
+        db.add(clone)
+        cloned_nodes.append(clone)
+    await db.flush()  # 取克隆节点真实 id
+    # 源节点 id → 克隆节点 id 映射（连线端点重映射用）
+    id_mapping = {nid: clone.id for nid, clone in zip(req.node_ids, cloned_nodes)}
+
+    # 克隆连线：两端均在集合内
+    cloned_edges: List[CanvasEdge] = []
+    for edge in src_edges:
+        if edge.source_node_id in id_set and edge.target_node_id in id_set:
+            clone = CanvasEdge(
+                canvas_id=target.id,
+                source_node_id=id_mapping[edge.source_node_id],
+                target_node_id=id_mapping[edge.target_node_id],
+                source_port=edge.source_port,
+                target_port=edge.target_port,
+            )
+            db.add(clone)
+            cloned_edges.append(clone)
+    await db.flush()
+    await db.commit()
+    return CloneSubtreeResult(
+        nodes=[CanvasNodeOut.model_validate(n) for n in cloned_nodes],
+        edges=[CanvasEdgeOut.model_validate(e) for e in cloned_edges],
+    )
+
+
+# ---------------------------------------------------------------------------
 # 执行
 # ---------------------------------------------------------------------------
 @router.post("/{canvas_id}/nodes/{node_id}/execute", response_model=NodeExecuteResult)
@@ -388,7 +481,10 @@ async def execute_canvas_node(
     ).scalar_one_or_none()
     if node is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="节点不存在或不属于该画布")
-    outcome = await execute_node_once(db, canvas, node)
+    # 加载全画布节点映射（mcp_tool 节点的 {{node:<id>.output}} 占位替换用）
+    all_nodes, _all_edges = await load_graph(db, canvas.id)
+    node_map = {n.id: n for n in all_nodes}
+    outcome = await execute_node_once(db, canvas, node, node_map)
     await db.commit()
     return NodeExecuteResult(
         id=node.id,

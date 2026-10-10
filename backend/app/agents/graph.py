@@ -7,8 +7,20 @@
 图结构：
 START → supervisor --(intent 条件路由)→ script/asset/storyboard/generation/compose/
 consistency/review/research/canvas/cost(billing)/chat → END；
-其中 generation 节点之后固定接 cost 节点再 END——任何生成动作完成后都强制经过
-成本估算节点播报积分消耗，体现「生成 → 成本校验」链路。
+- script → script_confirm（MA-08 HITL：interrupt 确认实体后 END，拒绝则标记 rejected）；
+- generation --(批量拒绝)→ END；--(批量确认)→ Send 并行 generation_item →
+  generation_reduce → cost（MA-10 Send 并行）；--(非批量)→ cost（生成 → 成本校验）；
+- research → research_exec → research_reflect --(补充任务循环/汇总)→
+  research_finalize → END（MA-18 Deep Agents 规划-执行-反思链路）。
+
+MA-13 可观测性（LangSmith 可选接入，无需改代码）：
+LangChain/LangGraph 原生支持经环境变量自动上报 trace 到 LangSmith，部署时按需
+设置即可启用，不设置则完全无开销：
+- LANGSMITH_TRACING=true            # 开启追踪上报
+- LANGSMITH_API_KEY=lsv2_xxx        # LangSmith API Key
+- LANGSMITH_PROJECT=mangaflow       # 项目名（默认按仓库名上报）
+启用后本图全部节点执行、LLM 调用、子图运行均自动产出 trace，可在 LangSmith
+控制台按 thread_id / agent 名检索排障。
 
 检查点决策记录（重要）：
 1. langgraph-checkpoint-postgres 的 AsyncPostgresSaver.from_conn_string() 是 async
@@ -40,15 +52,20 @@ from app.agents.canvas_agent import canvas_node
 from app.agents.compose_agent import compose_node
 from app.agents.consistency_agent import consistency_node
 from app.agents.cost_agent import cost_node
-from app.agents.deep_research_agent import research_node
-from app.agents.generation_agent import generation_node
+from app.agents.deep_research_agent import (
+    research_exec_node,
+    research_finalize_node,
+    research_plan_node,
+    research_reflect_node,
+)
+from app.agents.generation_agent import generation_item, generation_node, generation_reduce
+from app.agents.llm_adapter import llm
 from app.agents.review_agent import review_node
-from app.agents.script_agent import script_node
+from app.agents.script_agent import script_confirm_node, script_node
 from app.agents.state import AgentState, last_human_text
 from app.agents.storyboard_agent import storyboard_node
 from app.agents.supervisor import supervisor_node
 from app.core.config import settings
-from app.providers.llm import chat
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +109,31 @@ def _route_by_intent(state: AgentState) -> str:
     return _ROUTER_MAP.get(state.get("intent") or "chat", "chat")
 
 
+def _route_after_generation(state: AgentState) -> str:
+    """generation 之后的条件路由函数（MA-08 / MA-10）。
+
+    说明：generation_node 批量确认后返回的是 Send 并行分发（LangGraph 直接
+    按 Send 目标路由，不经本函数）；本函数仅处理 dict 返回的两种情形：
+    - 批量被拒绝（artifacts["aborted"]=True）→ 直达 END（中止流程）；
+    - 其余（非批量生成完成）→ 进入 cost 成本校验节点。
+
+    Args:
+        state: 当前图状态（AgentState）。
+
+    Returns:
+        str: "__end__" 或 "cost"。
+
+    Raises:
+        不抛出异常：artifacts 结构异常按非中止处理。
+    """
+    try:
+        if (state.get("artifacts") or {}).get("aborted"):
+            return "__end__"
+    except Exception:  # noqa: BLE001 —— 路由兜底
+        pass
+    return "cost"
+
+
 async def chat_node(state: AgentState) -> dict:
     """通用闲聊节点：直接调用 LLM 回复用户最后一条消息（降级模板兜底）。
 
@@ -106,11 +148,13 @@ async def chat_node(state: AgentState) -> dict:
     """
     user_text = last_human_text(state)
     try:
-        content = await chat(
+        content = await llm.chat(
+            state,
             [
                 {"role": "system", "content": _CHAT_SYSTEM_PROMPT},
                 {"role": "user", "content": user_text or "你好"},
             ],
+            agent_name="chat",
             temperature=0.7,
         )
         return {"messages": [AIMessage(content=content)], "error": ""}
@@ -126,17 +170,24 @@ async def chat_node(state: AgentState) -> dict:
 def build_graph(checkpointer=None):
     """构建并编译多智能体编排图。
 
-    节点：supervisor/script/asset/storyboard/generation/compose/consistency/
-    review/cost/research/canvas/chat。
+    节点：supervisor/script/script_confirm/asset/storyboard/generation/
+    generation_item/generation_reduce/compose/consistency/review/cost/
+    research/research_exec/research_reflect/research_finalize/canvas/chat。
     边设计：
     - START→supervisor：所有请求先经意图识别；
     - supervisor 条件路由：intent→对应域节点（billing→cost，未知→chat）；
-    - generation→cost→END：生成动作后强制接入成本估算节点，体现成本校验链路；
+    - script→script_confirm→END：MA-08 HITL 确认点（interrupt 等待用户
+      确认/拒绝剧本实体）；
+    - generation 条件路由：批量拒绝→END；非批量→cost；批量确认经 Send
+      并行分发 generation_item（MA-10），全部完成后 generation_reduce→cost；
+    - research→research_exec（MA-18 plan 经 Send 并行分发 exec）→
+      research_reflect（反思循环：补充任务再派 exec，最多 2 轮）→
+      research_finalize→END；
     - 其余域节点→END；chat→END。
 
     Args:
         checkpointer: LangGraph 检查点实例（AsyncPostgresSaver / InMemorySaver）；
-        为 None 时编译为无检查点图（仅供测试）。
+        为 None 时编译为无检查点图（仅供测试，interrupt 节点将不可用）。
 
     Returns:
         CompiledStateGraph: 可执行的编译图。
@@ -148,25 +199,41 @@ def build_graph(checkpointer=None):
     # 注册全部节点
     builder.add_node("supervisor", supervisor_node)
     builder.add_node("script", script_node)
+    builder.add_node("script_confirm", script_confirm_node)
     builder.add_node("asset", asset_node)
     builder.add_node("storyboard", storyboard_node)
     builder.add_node("generation", generation_node)
+    builder.add_node("generation_item", generation_item)
+    builder.add_node("generation_reduce", generation_reduce)
     builder.add_node("compose", compose_node)
     builder.add_node("consistency", consistency_node)
     builder.add_node("review", review_node)
     builder.add_node("cost", cost_node)
-    builder.add_node("research", research_node)
+    builder.add_node("research", research_plan_node)
+    builder.add_node("research_exec", research_exec_node)
+    builder.add_node("research_reflect", research_reflect_node)
+    builder.add_node("research_finalize", research_finalize_node)
     builder.add_node("canvas", canvas_node)
     builder.add_node("chat", chat_node)
     # 入口与条件路由
     builder.add_edge(START, "supervisor")
     builder.add_conditional_edges("supervisor", _route_by_intent, list(set(_ROUTER_MAP.values())))
-    # 成本校验链路：generation → cost → END
-    builder.add_edge("generation", "cost")
+    # MA-08 HITL：script → script_confirm（interrupt 确认点）→ END
+    builder.add_edge("script", "script_confirm")
+    builder.add_edge("script_confirm", END)
+    # 成本校验链路：generation --(拒绝→END / 非批量→cost)；批量 Send 分发走
+    # generation_item → generation_reduce → cost（Send 目标路由不经条件边）
+    builder.add_conditional_edges("generation", _route_after_generation, ["cost", END])
+    builder.add_edge("generation_item", "generation_reduce")
+    builder.add_edge("generation_reduce", "cost")
     builder.add_edge("cost", END)
+    # MA-18 Deep Agents：research(plan) --Send--> research_exec --> research_reflect
+    # （反思循环经 Command(goto) 补充派发 exec 或转入 finalize）
+    builder.add_edge("research_exec", "research_reflect")
+    builder.add_edge("research_finalize", END)
     # 其余域节点直达终点
-    for node_name in ("script", "asset", "storyboard", "compose", "consistency",
-                      "review", "research", "canvas", "chat"):
+    for node_name in ("asset", "storyboard", "compose", "consistency",
+                      "review", "canvas", "chat"):
         builder.add_edge(node_name, END)
     return builder.compile(checkpointer=checkpointer)
 

@@ -39,12 +39,24 @@ async def sse_stream(generator: AsyncGenerator[Any, None]) -> StreamingResponse:
     """
 
     async def _iterator() -> AsyncGenerator[bytes, None]:
-        """内部迭代器：把生成器产出编码为 UTF-8 字节流。"""
-        async for chunk in generator:
-            if isinstance(chunk, bytes):
-                yield chunk
-            else:
-                yield str(chunk).encode("utf-8")
+        """内部迭代器：把生成器产出编码为 UTF-8 字节流。
+
+        结束/断连时显式关闭被包装的内部生成器，确保其 finally 清理逻辑
+        （如通知 SSE 的 unsubscribe 订阅注销）可靠执行，不依赖 GC 兜底。
+
+        Raises:
+            无：向上透传迭代异常；正常结束或客户端断连时关闭内部生成器。
+        """
+        try:
+            async for chunk in generator:
+                if isinstance(chunk, bytes):
+                    yield chunk
+                else:
+                    yield str(chunk).encode("utf-8")
+        finally:
+            aclose = getattr(generator, "aclose", None)
+            if aclose is not None:
+                await aclose()
 
     return StreamingResponse(
         _iterator(),

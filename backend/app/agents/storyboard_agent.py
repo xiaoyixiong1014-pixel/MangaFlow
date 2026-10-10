@@ -9,8 +9,8 @@ import logging
 
 from langchain_core.messages import AIMessage
 
+from app.agents.llm_adapter import llm
 from app.agents.state import AgentState, last_human_text
-from app.providers.llm import chat
 
 logger = logging.getLogger(__name__)
 
@@ -65,11 +65,13 @@ async def storyboard_node(state: AgentState) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     scene = artifacts.get("storyboard_input") or last_human_text(state) or "主角在校园天台发现秘密的场景"
     try:
-        raw = await chat(
+        raw = await llm.chat(
+            state,
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": f"场景描述：{scene}"},
             ],
+            agent_name="storyboard",
             temperature=0.7,
             json_mode=True,
         )
@@ -77,6 +79,7 @@ async def storyboard_node(state: AgentState) -> dict:
         shots = data.get("shots", []) if isinstance(data, dict) else []
         content = _format_shots(shots) or "（模型未返回有效镜头，请重试）"
         artifacts["storyboard"] = {"shots": shots, "text": content}
+        artifacts = llm.attach_usage(artifacts)
         return {"messages": [AIMessage(content=content)], "artifacts": artifacts, "error": ""}
     except Exception as exc:  # noqa: BLE001 —— LLM/解析异常必须降级
         logger.warning("storyboard_node LLM 调用失败，降级输出离线模板：%s", exc)

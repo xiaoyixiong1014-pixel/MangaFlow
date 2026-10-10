@@ -8,22 +8,29 @@
 - POST /api/projects/{project_id}/publish                          发布并生成分享链接（闸门三）
 - POST /api/projects/{project_id}/share/revoke                     撤销分享
 - GET  /api/share/{token}                                          公开分享页数据（免认证，L-04）
+- GET  /api/publish/outputs/{output_id}/download                   成片 MP4 下载（可选转码）
 
 注意：路由需携带 {project_id} 路径参数，FastAPI router prefix 不支持路径参数，
 因此本路由不设 prefix，路由内部书写完整路径。
 """
 
+import asyncio
 import secrets
+import shutil
+import subprocess
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models import FilmOutput, Project, ReviewRecord, User
+from app.models import FilmOutput, Project, ReviewRecord, Storyboard, User
 from app.schemas.common import PageResult
 from app.schemas.generation import TaskOut
 from app.schemas.publish import (
@@ -39,6 +46,135 @@ from app.services.generation_service import create_compose_task, get_owned_proje
 from app.services.review_service import create_review_record
 
 router = APIRouter(tags=["publish"])
+
+
+async def _resolve_involved_storyboard_ids(
+    db: AsyncSession, project_id: int, storyboard_ids: Optional[List[int]]
+) -> List[int]:
+    """解析本次合成涉及的分镜 ID 集合（增量模式按指定清单过滤，Task 5.3）。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project_id: 项目 ID。
+        storyboard_ids: 请求指定的分镜 ID 清单（None/空表示全量）。
+
+    Returns:
+        List[int]: 涉及分镜 ID（按镜头序号排序）。
+
+    Raises:
+        HTTPException: 400 —— 指定清单含不属于该项目的分镜。
+    """
+    rows = await db.execute(
+        select(Storyboard.id)
+        .where(Storyboard.project_id == project_id)
+        .order_by(Storyboard.sequence)
+    )
+    all_ids = list(rows.scalars().all())
+    if not storyboard_ids:
+        return all_ids
+    id_set = set(all_ids)
+    invalid = [sid for sid in storyboard_ids if sid not in id_set]
+    if invalid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"storyboard_ids 含不属于该项目的分镜：{invalid[:5]}",
+        )
+    # 保持镜头顺序输出（去重）
+    wanted = set(storyboard_ids)
+    return [sid for sid in all_ids if sid in wanted]
+
+
+async def _check_compose_gate(db: AsyncSession, project_id: int, involved_ids: List[int]) -> None:
+    """闸门二判定（RD-34，Task 4.2）：合成前审核记录真实校验。
+
+    汇总本次合成涉及分镜的 generate 闸门机审记录：
+    - 任一 violate 且未被人工 approved → 400 拦截（附原因）；
+    - 任一 suspect 且尚未人工处置（manual_status 为 NULL/pending）→ 400 拦截
+      （提示待人工审核；NULL 与 pending 同属"待人工"口径，与管理端审核队列一致）。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project_id: 项目 ID。
+        involved_ids: 本次合成涉及的分镜 ID 列表。
+
+    Returns:
+        None
+
+    Raises:
+        HTTPException: 400 —— 存在未放行的违规/待人工复核记录。
+    """
+    if not involved_ids:
+        return
+    rows = await db.execute(
+        select(ReviewRecord).where(
+            ReviewRecord.project_id == project_id,
+            ReviewRecord.gate == "generate",
+            ReviewRecord.target_id.in_(involved_ids),
+            ReviewRecord.result.in_(("suspect", "violate")),
+        )
+    )
+    records = rows.scalars().all()
+    blocked_violate = [r for r in records if r.result == "violate" and r.manual_status != "approved"]
+    blocked_suspect = [
+        r for r in records if r.result == "suspect" and r.manual_status in (None, "pending")
+    ]
+    if blocked_violate:
+        first = blocked_violate[0]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"存在未通过人工复核的违规内容（记录 #{first.id}："
+                    f"{first.suggestion or '内容违规已拦截'}），无法发起合成"),
+        )
+    if blocked_suspect:
+        first = blocked_suspect[0]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"存在待人工复核的可疑内容（记录 #{first.id}），"
+                    f"请等待审核通过后再发起合成"),
+        )
+
+
+async def _check_publish_gate(db: AsyncSession, project_id: int) -> None:
+    """闸门三判定（RD-34，Task 4.2）：发布前汇总项目全部闸门审核记录。
+
+    - 任一闸门存在 violate 且未被人工 approved → 400 拦截；
+    - 任一闸门存在 suspect 且未人工处置（NULL/pending）→ 400 拦截；
+    - 全部放行才允许 publish 推进。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project_id: 项目 ID。
+
+    Returns:
+        None
+
+    Raises:
+        HTTPException: 400 —— 项目存在未放行的违规/待人工复核记录。
+    """
+    rows = await db.execute(
+        select(ReviewRecord).where(
+            ReviewRecord.project_id == project_id,
+            ReviewRecord.result.in_(("suspect", "violate")),
+        )
+    )
+    records = rows.scalars().all()
+    blocked_violate = [r for r in records if r.result == "violate" and r.manual_status != "approved"]
+    blocked_suspect = [
+        r for r in records if r.result == "suspect" and r.manual_status in (None, "pending")
+    ]
+    if blocked_violate:
+        first = blocked_violate[0]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"项目存在未放行的违规审核记录（记录 #{first.id}，闸门 {first.gate}），无法发布"),
+        )
+    if blocked_suspect:
+        first = blocked_suspect[0]
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(f"项目存在待人工复核的可疑审核记录（记录 #{first.id}，闸门 {first.gate}），"
+                    f"请等待审核通过后再发布"),
+        )
 
 
 async def _get_owned_output(db: AsyncSession, project_id: int, output_id: int) -> FilmOutput:
@@ -70,9 +206,14 @@ async def create_compose(
 ) -> TaskOut:
     """发起成片合成任务（成本 200 积分；同时落一条闸门二 compose 通过记录）。
 
+    闸门二（RD-34，Task 4.2）：先汇总本次合成涉及分镜的 generate 机审记录，
+    存在未放行违规/待人工可疑内容时 400 拦截；全部放行才写 compose 通过记录
+    并创建合成任务。
+
     Args:
         project_id: 项目 ID。
-        req: 请求体（resolution / aspect_ratio / mode）。
+        req: 请求体（resolution / aspect_ratio / mode / storyboard_ids /
+            subtitles / subtitle_style / bgm / transition）。
         user: 当前登录用户。
         db: 请求级异步数据库会话。
 
@@ -80,12 +221,19 @@ async def create_compose(
         TaskOut: 新建的 compose 任务。
 
     Raises:
-        HTTPException: 400 —— 项目无分镜；403/404 —— 归属校验失败；409 —— 积分不足。
+        HTTPException: 400 —— 项目无分镜/增量清单非法/闸门二拦截；
+            403/404 —— 归属校验失败；409 —— 积分不足。
     """
     project = await get_owned_project(db, user.id, project_id)
-    # 闸门二（RD-34）：合成前机审记录（本阶段演示为直接通过）
+    # 解析本次合成涉及的分镜（增量模式按指定清单过滤，Task 5.3）
+    involved_ids = await _resolve_involved_storyboard_ids(
+        db, project.id, req.storyboard_ids if req.mode == "incremental" else None
+    )
+    # 闸门二（RD-34）：合成前审核记录真实判定，未放行即拦截
+    await _check_compose_gate(db, project.id, involved_ids)
+    # 判定通过：落闸门二 compose 通过记录（method=gate 标识闸门聚合判定）
     await create_review_record(
-        db, project_id=project.id, gate="compose", target_type="film", result="pass"
+        db, project_id=project.id, gate="compose", target_type="film", result="pass", method="gate"
     )
     task = await create_compose_task(
         db,
@@ -93,6 +241,11 @@ async def create_compose(
         resolution=req.resolution,
         aspect_ratio=req.aspect_ratio or project.aspect_ratio,
         mode=req.mode,
+        storyboard_ids=involved_ids if req.mode == "incremental" else None,
+        subtitles=req.subtitles,
+        subtitle_style=req.subtitle_style.model_dump() if req.subtitle_style else None,
+        bgm=req.bgm.model_dump() if req.bgm else None,
+        transition=req.transition.model_dump() if req.transition else None,
     )
     return TaskOut.from_task(task)
 
@@ -226,6 +379,9 @@ async def publish_project(
 ) -> PublishResponse:
     """发布成片：生成 share_token 分享链接（闸门三机审记录 + 项目置 published）。
 
+    闸门三（RD-34，Task 4.2）：发布前汇总项目全部闸门的审核记录，存在未放行
+    违规/待人工可疑内容时 400 拦截；全部放行才写 publish 通过记录并推进发布。
+
     Args:
         project_id: 项目 ID。
         req: 请求体（output_id / share_expires_days / share_password）。
@@ -236,13 +392,16 @@ async def publish_project(
         PublishResponse: 分享路径 /share/{token} 与过期时间。
 
     Raises:
-        HTTPException: 403/404 —— 归属校验失败；409 —— 积分/状态冲突（透传）。
+        HTTPException: 400 —— 闸门三拦截；403/404 —— 归属校验失败；
+            409 —— 积分/状态冲突（透传）。
     """
     project = await get_owned_project(db, user.id, project_id)
     film = await _get_owned_output(db, project_id, req.output_id)
-    # 闸门三（RD-34）：发布前机审记录（本阶段演示为直接通过）
+    # 闸门三（RD-34）：发布前全量审核记录真实判定，未放行即拦截
+    await _check_publish_gate(db, project.id)
+    # 判定通过：落闸门三 publish 通过记录（method=gate 标识闸门聚合判定）
     await create_review_record(
-        db, project_id=project.id, gate="publish", target_type="film", result="pass"
+        db, project_id=project.id, gate="publish", target_type="film", result="pass", method="gate"
     )
     now = datetime.now(timezone.utc)
     film.share_token = secrets.token_urlsafe(12)
@@ -331,3 +490,156 @@ async def get_shared_film(
         watermark_id=film.watermark_id,
         published_at=film.updated_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# 成片 MP4 下载（Task 7.3）
+# ---------------------------------------------------------------------------
+# 档位 → 约束边长映射（竖屏取高、横屏取宽；720p 竖屏 9:16 即 720x1280），
+# 说明：映射值统一取该档位的"长边"像素（720p→1280 / 1080p→1920 / 2k→2048），
+# 竖屏时作为 ffmpeg scale 的目标高度，横屏时作为目标宽度。
+_RESOLUTION_TARGETS = {"720p": 1280, "1080p": 1920, "2k": 2048}
+# ffmpeg 转码子进程超时（秒）
+_FFMPEG_TIMEOUT = 180
+
+
+def _build_scale_filter(aspect_ratio: str, target: int) -> str:
+    """按画幅比例构造 ffmpeg scale 滤镜表达式（等比缩放，另一边取偶数）。
+
+    规则（RD-37 前置约定）：解析 "W:H" 并比较宽高——
+    - 横屏（w >= h，如 16:9）：scale={target}:-2，以目标值约束宽度；
+    - 竖屏（w < h，如 9:16）：scale=-2:{target}，以目标值约束高度。
+    -2 表示保持宽高比并自动取偶数像素（libx264 编码要求）。
+
+    Args:
+        aspect_ratio: 项目画幅比例（如 "9:16" / "16:9" / "1:1"）。
+        target: 档位对应的约束边长像素（1280/1920/2048）。
+
+    Returns:
+        str: 形如 "scale=-2:1280" 的滤镜表达式。
+
+    Raises:
+        无：比例解析失败时按竖屏 9:16 处理，不产生异常路径。
+    """
+    try:
+        w_str, h_str = str(aspect_ratio).split(":", 1)
+        w, h = int(w_str.strip()), int(h_str.strip())
+    except (ValueError, AttributeError):
+        w, h = 9, 16
+    if w >= h:
+        return f"scale={target}:-2"
+    return f"scale=-2:{target}"
+
+
+async def _transcode_film(src: Path, output_id: int, res_key: str,
+                          aspect_ratio: str, ffmpeg: str) -> Optional[Path]:
+    """把原片转码为指定档位 MP4（子进程放线程池，超时/失败返回 None 降级）。
+
+    输出固定为 storage/exports/film_{output_id}_{res_key}.mp4：同参数产物
+    已存在时直接复用，不重复转码。
+
+    Args:
+        src: 原片本地物理路径。
+        output_id: 成片版本 ID（用于产物命名）。
+        res_key: 档位键（720p/1080p/2k）。
+        aspect_ratio: 项目画幅比例（决定横竖屏缩放方向）。
+        ffmpeg: ffmpeg 可执行文件绝对路径。
+
+    Returns:
+        Optional[Path]: 转码产物路径；失败/超时返回 None（调用方降级原片）。
+
+    Raises:
+        无：内部捕获全部异常返回 None。
+    """
+    target = _RESOLUTION_TARGETS[res_key]
+    out_dir = settings.storage_path() / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / f"film_{output_id}_{res_key}.mp4"
+    if out_path.exists():
+        return out_path
+    cmd = [
+        ffmpeg, "-y",
+        "-i", str(src),
+        "-vf", _build_scale_filter(aspect_ratio, target),
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+        "-c:a", "aac",
+        str(out_path),
+    ]
+    try:
+        proc = await asyncio.to_thread(
+            subprocess.run, cmd,
+            timeout=_FFMPEG_TIMEOUT,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception:
+        # 超时/异常：清理可能的半成品文件，避免下次误复用
+        out_path.unlink(missing_ok=True)
+        return None
+    if proc.returncode != 0 or not out_path.exists():
+        # 转码失败：清理残留输出（ffmpeg 失败时可能已创建空/半成品文件）
+        out_path.unlink(missing_ok=True)
+        return None
+    return out_path
+
+
+@router.get("/api/publish/outputs/{output_id}/download")
+async def download_film_output(
+    output_id: int,
+    resolution: Optional[str] = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> FileResponse:
+    """下载成片 MP4（归属链校验：output → project → owner）。
+
+    行为：
+    - resolution 传入且有效（720p/1080p/2k）且本机有 ffmpeg：先按项目画幅
+      比例转码（storage/exports/film_{id}_{res}.mp4，同参数复用），转码失败
+      降级返回原片；
+    - 未传 resolution 或本机无 ffmpeg：直接返回原片文件。
+
+    Args:
+        output_id: 成片版本 ID。
+        resolution: 目标档位（720p/1080p/2k，大小写不敏感；可空）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        FileResponse: video/mp4 文件流（filename 为下载文件名）。
+
+    Raises:
+        HTTPException: 400 —— resolution 取值非法；404 —— 成片不存在/
+            非本人项目/原片文件缺失或不可下载。
+    """
+    film = await db.get(FilmOutput, output_id)
+    if film is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成片版本不存在")
+    project = await db.get(Project, film.project_id)
+    # 归属校验：非本人项目或已软删除一律 404，不泄露存在性
+    if project is None or project.user_id != user.id or project.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成片版本不存在")
+
+    # 定位原片物理路径（compose 产物为 /storage/... 本地 URL）
+    url = film.url or ""
+    if not url.startswith("/storage/"):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成片文件不可下载")
+    src = settings.storage_path() / url.removeprefix("/storage/").lstrip("/")
+    if not src.is_file():
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="成片文件不存在")
+
+    res_key = resolution.strip().lower() if resolution else None
+    if res_key is not None and res_key not in _RESOLUTION_TARGETS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"resolution 仅支持 {'/'.join(_RESOLUTION_TARGETS)}",
+        )
+
+    final_path = src
+    if res_key is not None:
+        ffmpeg = shutil.which("ffmpeg")
+        if ffmpeg:
+            # 转码失败（返回 None）则降级返回原片
+            final_path = (await _transcode_film(
+                src, output_id, res_key, project.aspect_ratio, ffmpeg)) or src
+
+    download_name = f"film_{output_id}_{res_key}.mp4" if res_key else src.name
+    return FileResponse(final_path, media_type="video/mp4", filename=download_name)

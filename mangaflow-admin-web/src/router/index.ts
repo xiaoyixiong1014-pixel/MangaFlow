@@ -47,6 +47,12 @@ const router = createRouter({
           meta: { title: '模型配置' },
         },
         {
+          path: 'dead-letters',
+          name: 'dead-letters',
+          component: () => import('@/views/DeadLetterView.vue'),
+          meta: { title: '死信队列' },
+        },
+        {
           path: 'orders',
           name: 'orders',
           component: () => import('@/views/OrdersView.vue'),

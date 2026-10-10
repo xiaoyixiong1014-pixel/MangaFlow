@@ -77,6 +77,35 @@ class UsageOut(BaseModel):
     points_total: int
 
 
+class CreationStatsPeriod(BaseModel):
+    """单周期创作统计输出模型（D-04，GET /api/users/me/creation-stats 内嵌）。
+
+    Attributes:
+        projects: 该周期内新建的项目数（按 projects.created_at）。
+        images: 该周期内完成的关键帧图片任务数（tasks.type=image 且 done）。
+        video_seconds: 该周期内完成的视频任务覆盖的时长合计（秒，按分镜
+            duration 聚合；无关联分镜计 0）。
+        points_spent: 该周期内消耗积分（consume 流水合计的绝对值）。
+    """
+
+    projects: int = 0
+    images: int = 0
+    video_seconds: int = 0
+    points_spent: int = 0
+
+
+class CreationStatsOut(BaseModel):
+    """创作统计输出模型（D-04）。
+
+    Attributes:
+        today: 今日（UTC 自然日）创作统计。
+        month: 本月（UTC 自然月）创作统计。
+    """
+
+    today: CreationStatsPeriod
+    month: CreationStatsPeriod
+
+
 class OperationLogOut(BaseModel):
     """操作日志输出模型。
 

@@ -1,0 +1,63 @@
+# Tasks
+
+- [x] Task 1: 模型路由层与真实 Provider 接入（P0 核心）
+  - [x] 1.1 新建 `services/model_router.py`：`resolve_channel(capability, user_id=None, logical_model_id=None)` 解析 LogicalModel→channel_priority→ModelChannel（enabled/health_status 校验），返回解密后的渠道配置；`record_result()` 更新渠道健康
+  - [x] 1.2 重构 `providers/llm.py`：主 DeepSeek + 兜底 Agnes 双渠道，`chat/chat_stream/health_check` 保持签名兼容，内部故障切换并返回实际渠道信息（供 agent_threads 记录）
+  - [x] 1.3 新增 `providers/image_agnes.py`（POST images/generations，url/b64_json 双模式，落盘 /storage/generated）、`providers/video_agnes.py`（创建→轮询 status→下载 mp4，超时可配置，兼容同步返回 url）、`providers/tts_bailian.py`（audio/speech 端点 + 音色映射表 male_01/female_01→渠道音色名，回写实际时长）、`providers/embedding.py`（/embeddings 优先，哈希词袋降级）
+  - [x] 1.4 `tasks/runner.py` 的 `_run_image/_run_video/_run_tts` 改经 model_router 选渠道执行，失败降级下一渠道直至 mock 链尾，降级链写入 task.meta
+  - [x] 1.5 `core/init_db.py` 种子新增：Agnes 文本渠道（兜底）、Agnes 图像/视频渠道、百炼 TTS 渠道（Key Fernet 加密），逻辑模型更新 channel_priority 形成降级链（真实渠道→mock）；config.py 增加对应默认配置项
+  - [x] 1.6 `api/models_config.py` 与 `admin/models.py` 健康探测覆盖新渠道（llm/image/video/tts 各自探测方式）
+- [x] Task 2: 任务队列增强与通知中心（SYS-01、P-09）
+  - [x] 2.1 tasks 表新增 `priority`（默认 5）/`next_retry_at`/`dead_letter` 字段；runner 领取 SQL 改为 priority 优先 + next_retry_at 到期过滤；重试改指数退避（2^n 分钟，上限 3 次）；耗尽标记 dead_letter + 平台退款
+  - [x] 2.2 新增 `api/admin/` 死信队列端点：死信列表查看 + 重新入队（operator 门禁，留痕 operation_logs）
+  - [x] 2.3 新增 notifications 表 + `api/notifications.py`（列表/未读数/标记已读）+ `services/notification_service.py`：任务成功/失败/审核结果/配额预警时写入并 SSE 推送
+- [x] Task 3: 多智能体补全（MA-06/08/09/10/11/13/16/17/18）
+  - [x] 3.1 MA-08 HITL：实体提取确认与全量生成前确认两个 `interrupt()` 检查点；`api/agent_chat.py` SSE 输出 `pending_confirm` 事件 + 新增 `POST /api/agent/chat/resume`（Command(resume) 续跑）
+  - [x] 3.2 MA-10：批量生成节点改用 `Send` map-reduce 并行分发；MA-11：SSE 同时产出 updates + messages 双模事件
+  - [x] 3.3 MA-06 Time Travel：`GET /api/agent/threads/{id}/history`（get_state_history 分页）+ `POST /api/agent/threads/{id}/rewind`（按 checkpoint_id 回退续聊）
+  - [x] 3.4 MA-09：一致性检查、内容审核封装 Subgraph；MA-16/19：新增 `agents/llm_adapter.py` 统一封装，各 agent 改经适配器调用（多渠道降级 + 用量归因 MA-20）
+  - [x] 3.5 MA-17/18：deep_research_agent 升级 Deep Agents 模式（规划-执行-反思循环 + 虚拟文件系统笔记存 langgraph_store）；MA-13：LangSmith 环境变量可选接入（README 说明）
+- [x] Task 4: 审核真实化、分级处罚与水印（R-04/08/09、C-01/02/04）
+  - [x] 4.1 `services/review_service.py` 分级词表（严禁/敏感两级，可配置扩展）；图像任务增加提示词机审 + 生成后 LLM 文本审核（method 字段标注审核方式）
+  - [x] 4.2 闸门二真实化（`api/publish.py:86-89` 直通替换）：汇总成片片段审核记录，未处置 violate/suspect 拦截；闸门三真实化（`:243-246`）：全链路汇总判定 + 人工复核状态检查
+  - [x] 4.3 C-04 分级处罚：users 表新增 `status`（active/restricted/banned）+ `violation_count`；生成接口统一校验处罚状态；管理端用户列表可解禁
+  - [x] 4.4 R-09 水印真实化：`compose_service.py` ffmpeg drawtext 将 watermark_id 半透明写入画面角落；无 ffmpeg 降级标识写入（现状）
+- [x] Task 5: 合成增强（P-14/15/16/17）
+  - [x] 5.1 字幕：narration→SRT 生成 + ffmpeg subtitles filter 烧录（样式参数：字体大小/位置/颜色）；P-16 完成标记
+  - [x] 5.2 BGM 曲库：`storage/bgm` 曲库目录 + bgm 管理接口（列表/上传/下架）+ amix 混音（音量可调）+ 复用 /api/media/upload 自定义上传；P-14 完成标记
+  - [x] 5.3 转场：相邻片段 xfade（转场类型/时长可选）；增量合成：mode=incremental 按 storyboard_ids 局部拼接；P-15/17 完成标记
+- [x] Task 6: 语义检索与一致性真实化（A-08、MA-07）
+  - [x] 6.1 embedding 写入 asset_embeddings（JSONB + 余弦相似度计算函数，预留 pgvector 注释）；资产描述/视觉提示词生成时同步向量化
+  - [x] 6.2 `consistency_check()` 替换伪公式：描述向量相似度 + 锁定状态加权的可解释分项评分
+  - [x] 6.3 新增资产语义搜索接口（`GET /api/assets/search?q=`，文本→向量→余弦 TopK）；langgraph_store 记忆语义检索（MA-07）
+- [x] Task 7: 导出能力（U-04/U-05、SB-08、R-04）
+  - [x] 7.1 项目 ZIP 导出（`GET /api/projects/{id}/export`：剧本/分镜/资产元数据 JSON + 媒体文件打包）/ 导入还原（`POST /api/projects/import`）
+  - [x] 7.2 分镜表导出：`GET /api/storyboards/{episode_id}/export?format=xlsx|csv`（openpyxl）；requirements 增加 openpyxl
+  - [x] 7.3 成片 MP4 导出：`GET /api/publish/outputs/{id}/download?resolution=`（ffmpeg 转码 720P/1080P/2K，无 ffmpeg 返回原片）
+- [x] Task 8: 可观测性与越权回归（SYS-02/03）
+  - [x] 8.1 引入 prometheus-client：`/api/metrics`（HTTP 请求计数/延迟直方图/任务状态计数/渠道健康 gauge，中间件埋点）
+  - [x] 8.2 管理端看板新增系统指标区块（任务成功率/死信数/渠道健康，读内部统计接口）
+  - [x] 8.3 越权防护全量回归：编写脚本逐类资源接口验证 A 用户访问 B 用户资源返回 404/403
+- [x] Task 9: 画布增强（CV-12/13/19/20/21/22）
+  - [x] 9.1 前端画布编辑器：搜索面板（Ctrl+F 定位节点）、框选 marquee 多选、复制粘贴（Ctrl+C/V）、跨画布子树复制（后端子图复制接口）
+  - [x] 9.2 插件体系后端：`api/canvas_plugins.py`（列表/安装/启用/停用/审查 operator 门禁）+ 插件节点执行代理（HTTP 调用插件 endpoint，超时与错误处理）
+  - [x] 9.3 插件体系前端：画布插件面板（安装/启用）+ 插件节点类型接入执行流程；节点插件 SDK：mangaflow-design 内新增 TS 类型定义导出
+  - [x] 9.4 MCP 桥（CV-19）：后端 MCP streamable HTTP 客户端（连接/工具列表/调用）+ `mcp_tool` 节点类型 + 前端 MCP server 配置 UI
+- [x] Task 10: 前端体验补全（D-04/D-05/PL-11/PL-24 及配套 UI）
+  - [x] 10.1 D-04：后端聚合统计接口 `GET /api/users/me/creation-stats`（今日/本月项目数/图片数/视频时长/积分消耗）+ 工作台与项目列表页接入
+  - [x] 10.2 D-05 模型健康标红（工作台顶部条）+ PL-24 配额预警（<20% 通知）+ 通知铃铛中心组件（列表/未读/已读）
+  - [x] 10.3 PL-11 模型效果对比：提交同一提示词到多渠道并排展示结果（模型配置页入口）
+  - [x] 10.4 配套 UI：Time Travel 回退（工作台会话历史面板）、闸门审核状态展示（S-09）、ZIP/Excel/MP4 导出按钮（项目/分镜/发布页）、BGM/字幕/转场配置（S-08）、HITL 确认卡片（工作台 pending_confirm）
+  - [x] 10.5 管理端：死信队列入口、插件审查页、系统指标区块接入
+- [x] Task 11: 测试、文档与集成验证
+  - [x] 11.1 pytest 扩展：model_router 降级链、指数退避与死信、HITL interrupt/resume、闸门拦截、处罚限流、一致性评分、ZIP 导入导出、插件代理、通知（新增 ≥15 用例，mock 外部渠道）
+  - [x] 11.2 真实渠道连通性验证脚本（.run/llm_image_video_tts_probe.py）：逐一探测 5 个渠道并输出结果（Key 有效性以实际探测为准）
+  - [x] 11.3 全链路冒烟（复用 .run/smoke_final.py 扩展真实链路步骤）+ 双前端 vue-tsc/build + backend/README 更新（新渠道配置、LangSmith、MCP 说明）
+
+# Task Dependencies
+- Task 1 → Task 2（runner 改造基于路由层）、Task 3（LLM 适配器基于双渠道）、Task 6（embedding provider）
+- Task 2（通知服务）→ Task 10.2（前端通知 UI）
+- Task 3 → Task 10.4（HITL/Time Travel UI）
+- Task 4 → Task 10.4（闸门 UI）；Task 5 → Task 10.4（BGM/字幕/转场 UI）
+- Task 9.2/9.4 → Task 10.5（插件审查）、Task 9.3 依赖 9.2
+- Task 1-10 → Task 11（集成验证收尾）；Task 1-8 相互独立可并行（除上述依赖）

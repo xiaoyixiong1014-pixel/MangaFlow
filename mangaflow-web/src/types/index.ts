@@ -921,6 +921,16 @@ export interface ComposePayload {
   aspect_ratio?: '9:16' | '16:9' | '1:1'
   /** 合成模式：incremental/full */
   mode?: 'incremental' | 'full'
+  /** 增量合成指定分镜 ID 清单（仅 incremental 生效） */
+  storyboard_ids?: number[]
+  /** 是否烧录字幕（Task 5.1，缺省关闭） */
+  subtitles?: boolean
+  /** 字幕样式（可空用默认样式） */
+  subtitle_style?: SubtitleStylePayload
+  /** 背景音乐参数（可空表示不加） */
+  bgm?: BgmPayload
+  /** 转场参数（可空表示不加转场） */
+  transition?: TransitionPayload
 }
 
 /** 发布（生成分享链接）请求体 */
@@ -1158,6 +1168,74 @@ export interface AssistantChatResult {
 }
 
 // ============================================================
+// 画布插件 / MCP 集成（Task 9 画布增强，CV-19 ~ CV-22）
+// ============================================================
+
+/** 画布插件条目（对应后端 PluginOut；与 @mangaflow/design 的 PluginManifest 字段对齐） */
+export interface CanvasPluginItem {
+  /** 插件 ID */
+  id: number
+  /** 安装者用户 ID */
+  user_id: number
+  /** 插件名 */
+  name: string
+  /** 版本号 */
+  version?: string | null
+  /** 描述 */
+  description?: string | null
+  /** 插件地址（"builtin:" 前缀 = 内置实现） */
+  endpoint_url: string
+  /** 输入端口定义 */
+  inputs: { name: string; type: string }[]
+  /** 输出端口定义 */
+  outputs: { name: string; type: string }[]
+  /** 权限清单 */
+  permissions: string[]
+  /** 用户是否已显式授权 */
+  granted: boolean
+  /** 是否启用 */
+  enabled: boolean
+  /** 是否通过市场审核（true = approved / false = pending） */
+  reviewed: boolean
+}
+
+/** MCP server 配置（站点设置 KV，对应后端 McpServerOut） */
+export interface McpServer {
+  /** server 标识（KV 内短随机串） */
+  id: string
+  /** 展示名 */
+  name: string
+  /** MCP streamable HTTP 端点地址 */
+  url: string
+  /** 附加请求头（如鉴权头） */
+  headers?: Record<string, string> | null
+}
+
+/** MCP server 列表响应 */
+export interface McpServersResult {
+  /** 全部已配置 server */
+  servers: McpServer[]
+}
+
+/** MCP 工具描述（tools/list 条目） */
+export interface McpToolInfo {
+  /** 工具名 */
+  name: string
+  /** 工具描述 */
+  description?: string | null
+  /** 入参 JSON Schema */
+  inputSchema?: Record<string, unknown> | null
+}
+
+/** 子图克隆结果（对应后端 CloneSubtreeResult） */
+export interface CloneSubtreeResult {
+  /** 克隆出的节点列表（含真实 id，坐标 +40/+40） */
+  nodes: CanvasNode[]
+  /** 克隆出的连线列表（两端均在克隆集合内） */
+  edges: CanvasEdge[]
+}
+
+// ============================================================
 // 智能体
 // ============================================================
 
@@ -1261,4 +1339,222 @@ export interface PromptPayload {
   category?: string
   /** 标签 */
   tags?: unknown
+}
+
+// ============================================================
+// 通知中心 / 创作统计 / 渠道健康与效果对比 / Agent 检查点 / BGM（Task 10）
+// ============================================================
+
+/** 站内通知（对应后端 NotificationOut） */
+export interface NotificationItem {
+  /** 通知 ID */
+  id: number
+  /** 类型：task_done/task_failed/review_result/quota_warning/system */
+  type: string
+  /** 标题 */
+  title: string
+  /** 正文 */
+  content: string
+  /** 关联对象类型（可空） */
+  related_type?: string | null
+  /** 关联对象 ID（可空） */
+  related_id?: number | null
+  /** 已读时间（NULL 表示未读） */
+  read_at?: string | null
+  /** 创建时间 */
+  created_at?: string | null
+}
+
+/** 通知列表响应（GET /notifications，附带未读数） */
+export interface NotificationList {
+  /** 总记录数 */
+  total: number
+  /** 页码 */
+  page: number
+  /** 每页条数 */
+  page_size: number
+  /** 未读总数 */
+  unread_count: number
+  /** 通知列表 */
+  items: NotificationItem[]
+}
+
+/** 未读数响应（GET /notifications/unread-count） */
+export interface UnreadCount {
+  /** 未读通知数量 */
+  unread_count: number
+}
+
+/** 标记已读响应（POST /notifications/read） */
+export interface NotificationReadResult {
+  /** 本次实际标记已读条数 */
+  updated: number
+}
+
+/** 单周期创作统计（对应后端 CreationStatsPeriod） */
+export interface CreationStatsPeriod {
+  /** 新建项目数 */
+  projects: number
+  /** 完成关键帧数 */
+  images: number
+  /** 视频时长合计（秒） */
+  video_seconds: number
+  /** 消耗积分 */
+  points_spent: number
+}
+
+/** 创作统计响应（GET /users/me/creation-stats，D-04） */
+export interface CreationStats {
+  /** 今日统计 */
+  today: CreationStatsPeriod
+  /** 本月统计 */
+  month: CreationStatsPeriod
+}
+
+/** 渠道健康摘要条目（对应后端 HealthChannelItem） */
+export interface HealthChannelItem {
+  /** 渠道 ID */
+  id: number
+  /** 协议类型 */
+  protocol: string
+  /** 接口地址 */
+  base_url: string
+  /** 健康状态：unknown/healthy/degraded/down */
+  health_status: string
+  /** 是否启用 */
+  enabled: boolean
+  /** 最近探测时间 */
+  last_check_at?: string | null
+}
+
+/** 渠道健康摘要响应（GET /models/health-summary，D-05） */
+export interface HealthSummary {
+  /** 平台渠道健康列表 */
+  channels: HealthChannelItem[]
+  /** down 渠道数 */
+  down_count: number
+  /** degraded 渠道数 */
+  degraded_count: number
+}
+
+/** 模型效果对比请求体（POST /models/compare，PL-11） */
+export interface ComparePayload {
+  /** 对比能力：llm 文本 / image 图像 */
+  capability: 'llm' | 'image'
+  /** 对比用提示词 */
+  prompt: string
+  /** 参与对比的渠道 ID（1~4 个） */
+  channel_ids: number[]
+}
+
+/** 单渠道对比结果（对应后端 CompareItemOut） */
+export interface CompareItem {
+  /** 渠道 ID */
+  channel_id: number
+  /** 是否生成成功 */
+  ok: boolean
+  /** 文本结果（llm 成功时非空） */
+  text?: string | null
+  /** 图像结果地址（image 成功时非空） */
+  image_url?: string | null
+  /** 耗时（毫秒） */
+  elapsed_ms: number
+  /** 失败原因（成功时为空） */
+  error?: string | null
+}
+
+/** 模型效果对比响应（POST /models/compare） */
+export interface CompareResult {
+  /** 与请求顺序一致的逐渠道结果 */
+  results: CompareItem[]
+}
+
+/** 会话检查点历史项（MA-06 Time Travel） */
+export interface ThreadCheckpoint {
+  /** 检查点 ID（rewind 目标） */
+  checkpoint_id?: string | null
+  /** 检查点时间（ISO 字符串） */
+  ts?: string | null
+  /** 图执行步数 */
+  step?: number | null
+  /** 该时刻意图 */
+  intent?: string | null
+  /** 该时刻阶段 */
+  stage?: string | null
+  /** 消息总数 */
+  messages_count: number
+  /** 最后一条 AI 消息摘要（前 80 字） */
+  summary: string
+}
+
+/** 会话检查点历史响应（GET /agent/threads/{id}/history） */
+export interface ThreadHistory {
+  /** 会话线程 ID */
+  thread_id: string
+  /** 页码 */
+  page: number
+  /** 每页条数 */
+  page_size: number
+  /** 检查点总数 */
+  total: number
+  /** 历史项列表（按时间倒序） */
+  items: ThreadCheckpoint[]
+}
+
+/** 会话回溯响应（POST /agent/threads/{id}/rewind） */
+export interface RewindResult {
+  /** 是否成功写入回溯标记 */
+  ok: boolean
+  /** 会话线程 ID */
+  thread_id: string
+  /** 回溯目标检查点 ID */
+  checkpoint_id: string
+}
+
+/** BGM 曲库条目（GET /bgm，对应后端 BgmItem） */
+export interface BgmItem {
+  /** 文件名（删除接口定位键） */
+  name: string
+  /** 播放/引用地址（可直接用于 compose.bgm.url） */
+  url: string
+  /** 文件字节数 */
+  size: number
+  /** 时长（秒，ffprobe 探测，可空） */
+  duration?: number | null
+}
+
+/** BGM 上传响应（POST /bgm） */
+export interface BgmUploadResult {
+  /** 存储文件名 */
+  name: string
+  /** 引用地址 */
+  url: string
+  /** 文件字节数 */
+  size: number
+}
+
+/** 字幕样式（对应后端 SubtitleStyle） */
+export interface SubtitleStylePayload {
+  /** 字号（10~72） */
+  font_size?: number
+  /** 主字幕颜色（ASS &HBBGGRR 格式） */
+  color?: string
+  /** 位置：bottom/middle/top */
+  position?: 'bottom' | 'middle' | 'top'
+}
+
+/** BGM 参数（对应后端 BgmOption） */
+export interface BgmPayload {
+  /** BGM 资源地址（可空表示不加） */
+  url?: string | null
+  /** 音量系数（0~1） */
+  volume?: number
+}
+
+/** 转场参数（对应后端 TransitionOption） */
+export interface TransitionPayload {
+  /** 转场类型（xfade 滤镜名） */
+  type?: string
+  /** 转场时长（秒，0.1~3.0） */
+  duration?: number
 }

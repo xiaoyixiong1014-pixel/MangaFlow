@@ -23,6 +23,7 @@ class ReviewRecord(Base):
         target_id: 目标 ID（如 storyboard_id，多态引用不建外键）。
         gate: 审核闸门 generate/compose/publish（RD-34 三级闸门）。
         result: 机审结果 pass/suspect/violate。
+        method: 机审方式 keyword/llm-text/gate（Task 4.1 新增，可空）。
         violation_type: 违规类型。
         manual_status: 人工复核状态 pending/approved/rejected。
         handler_id: 处理人 ID（外键 SET NULL）。
@@ -50,6 +51,9 @@ class ReviewRecord(Base):
                                                      comment="目标 ID（如 storyboard_id，多态无外键）")
     gate: Mapped[str] = mapped_column(String(20), nullable=False, comment="审核闸门（RD-34 三级闸门）")
     result: Mapped[str] = mapped_column(String(20), nullable=False, comment="机审结果：pass/suspect/violate")
+    method: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True,
+        comment="机审方式：keyword 词表 / llm-text 大模型 / gate 闸门聚合（Task 4.1）")
     violation_type: Mapped[Optional[str]] = mapped_column(String(30), nullable=True, comment="违规类型")
     manual_status: Mapped[Optional[str]] = mapped_column(String(20), nullable=True,
                                                          comment="人工复核：pending/approved/rejected")

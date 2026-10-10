@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -339,7 +339,7 @@ class VariantOut(BaseModel):
 
 
 class ConsistencyCheckRequest(BaseModel):
-    """一致性校验请求（占位实现）。
+    """一致性校验请求。
 
     Attributes:
         character_id: 角色资产 ID。
@@ -351,17 +351,58 @@ class ConsistencyCheckRequest(BaseModel):
 
 
 class ConsistencyCheckOut(BaseModel):
-    """一致性校验结果。
+    """一致性校验结果（embedding 余弦 v1 真实算法）。
+
+    向后兼容：similarity / passed / report 为旧占位实现的既有字段，
+    score 与 similarity 同值；details / algorithm 为新增扩展字段。
 
     Attributes:
-        similarity: 伪相似度（0~1，mock 确定性计算）。
-        passed: 是否通过（similarity >= 0.85）。
+        similarity: 综合相似度（与 score 同值，旧字段兼容）。
+        passed: 是否通过（score >= threshold）。
         report: 校验报告文本。
+        score: 综合相似度 = round(0.5*visual + 0.3*desc + 0.2*locked, 4)。
+        threshold: 通过阈值（0.85）。
+        details: 各分项明细（visual_prompt_sim / description_sim / locked_bonus / target）。
+        algorithm: 算法标识（embedding-cosine-v1）。
     """
 
     similarity: float
     passed: bool
     report: str
+    score: Optional[float] = None
+    threshold: float = 0.85
+    details: Optional[Dict[str, Any]] = None
+    algorithm: Optional[str] = None
+
+
+class AssetSearchItem(BaseModel):
+    """资产语义搜索单条结果（GET /api/assets/search）。
+
+    Attributes:
+        asset_type: 资产类型 character / scene / prop / style。
+        asset_id: 资产 ID。
+        name: 资产名。
+        score: 与查询文本的余弦相似度（0~1，降序排列）。
+        preview: 向量化时的文本预览（前 200 字）。
+    """
+
+    asset_type: str
+    asset_id: int
+    name: str
+    score: float = 0.0
+    preview: Optional[str] = None
+
+
+class AssetSearchOut(BaseModel):
+    """资产语义搜索响应（GET /api/assets/search）。
+
+    Attributes:
+        items: TopK 结果列表（按 score 降序）。
+        total: 结果条数。
+    """
+
+    items: List[AssetSearchItem] = Field(default_factory=list)
+    total: int = 0
 
 
 class CrossProjectAssetOut(BaseModel):

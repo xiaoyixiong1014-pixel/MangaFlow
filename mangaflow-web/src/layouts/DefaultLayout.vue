@@ -1,20 +1,24 @@
 <!--
   默认布局（文件级注释）。
   结构：el-container 包裹 —— 左侧 MfSidebar（四组 11 项菜单 + 底部帮助），
-  右侧纵向：MfTopbar（折叠按钮/标题/积分余额/通知/主题切换/头像菜单）+ main 路由出口。
+  右侧纵向：MfTopbar（折叠按钮/标题/积分余额/通知铃铛/主题切换/头像菜单）
+  + 配额预警条 + main 路由出口。
   折叠态由 ui store 控制；meta.fullscreen 的页面隐藏侧栏以最大化画布区。
   响应式：≤1024px 时常驻侧栏不渲染，改为覆盖式抽屉（默认收起，顶栏按钮打开，
   路由切换后自动关闭），抽屉背景使用设计包变量以适配深浅主题。
+  通知（Task 10.2）：铃铛 el-badge 未读数 + Popover 列表（类型 icon/标题/时间，
+  点击标记已读 / 全部已读），挂载时拉 unread-count 并订阅 /notifications/stream
+  实时追加（断线静默 + 5s 延迟重连）；积分余额低于免费额度 20% 时展示配额预警条。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { MfSidebar, MfTopbar, type MfMenuGroup } from '@mangaflow/design'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
-import * as announcementsApi from '@/api/announcements'
-import type { Announcement } from '@/types'
+import * as notificationsApi from '@/api/notifications'
+import type { NotificationItem } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -49,6 +53,7 @@ const menu: MfMenuGroup[] = [
     title: '账户',
     items: [
       { key: '/models', label: '模型配置', icon: '⚙️' },
+      { key: '/models/compare', label: '模型效果对比', icon: '📊' },
       { key: '/billing', label: '计费与配额', icon: '💰' },
       { key: '/profile', label: '个人中心', icon: '👤' },
     ],
@@ -71,8 +76,121 @@ const pageTitle = computed(() => (route.meta.title as string | undefined) ?? '')
 /** 当前页面是否全屏（隐藏侧栏） */
 const isFullscreen = computed(() => route.meta.fullscreen === true)
 
-/** 通知公告（顶栏 Popover 展示前 3 条） */
-const notices = ref<Announcement[]>([])
+// ============================================================
+// 站内通知（Task 10.2 D-05 配套：通知铃铛）
+// ============================================================
+
+/** 通知列表（Popover 内展示最近 20 条） */
+const notifications = ref<NotificationItem[]>([])
+/** 未读通知数（铃铛角标） */
+const unreadCount = ref(0)
+/** SSE 订阅中止控制器 */
+let notifyAbort: AbortController | null = null
+/** 组件是否已卸载（卸载后不再重连通知流） */
+let notifyDisposed = false
+/** 重连定时器 */
+let notifyRetryTimer: ReturnType<typeof setTimeout> | null = null
+
+/** 通知类型 → 展示 icon 映射 */
+const NOTIFY_ICONS: Record<string, string> = {
+  task_done: '✅',
+  task_failed: '❌',
+  review_result: '🛡️',
+  quota_warning: '⚠️',
+  system: '📢',
+}
+
+/**
+ * 拉取通知列表与未读数（挂载时一次）。
+ * @returns 无
+ */
+async function fetchNotifications(): Promise<void> {
+  try {
+    const [listResp, countResp] = await Promise.all([
+      notificationsApi.list({ page: 1, page_size: 20 }),
+      notificationsApi.unreadCount(),
+    ])
+    notifications.value = listResp.items
+    unreadCount.value = countResp.unread_count
+  } catch {
+    // 通知为辅助功能，失败静默（拦截器已提示 4xx detail）
+  }
+}
+
+/**
+ * 订阅通知 SSE 实时流：message 事件头部追加通知并角标 +1。
+ * 流结束（服务端 600s 超时）或断开后 5s 自动重连，直到页面卸载。
+ * @returns 无
+ */
+function subscribeNotifications(): void {
+  notifyAbort = new AbortController()
+  void notificationsApi
+    .stream((event, data) => {
+      if (event !== 'message') return // heartbeat/done 忽略
+      const item = data as NotificationItem
+      if (!item?.id) return
+      // 去重：SSE 重连补推时避免同一条重复展示
+      if (notifications.value.some((n) => n.id === item.id)) return
+      notifications.value.unshift(item)
+      if (notifications.value.length > 30) notifications.value.pop()
+      if (!item.read_at) unreadCount.value += 1
+    }, notifyAbort.signal)
+    .catch(() => {
+      // 断线容错：静默后延迟重连（页面隐藏/网络抖动等场景）
+    })
+    .finally(() => {
+      if (notifyDisposed) return
+      notifyRetryTimer = setTimeout(() => subscribeNotifications(), 5000)
+    })
+}
+
+/**
+ * 点击单条通知：未读则标记已读（本地同步更新，角标 -1）。
+ * @param n 目标通知
+ * @returns 无
+ */
+async function onNotificationClick(n: NotificationItem): Promise<void> {
+  if (n.read_at) return
+  n.read_at = new Date().toISOString()
+  unreadCount.value = Math.max(0, unreadCount.value - 1)
+  try {
+    await notificationsApi.markRead({ ids: [n.id] })
+  } catch {
+    // 已读失败静默：下次打开列表会以服务端状态为准
+  }
+}
+
+/**
+ * 全部已读：本地全部置已读并调批量接口。
+ * @returns 无
+ */
+async function markAllRead(): Promise<void> {
+  if (unreadCount.value === 0) return
+  notifications.value.forEach((n) => {
+    if (!n.read_at) n.read_at = new Date().toISOString()
+  })
+  unreadCount.value = 0
+  try {
+    await notificationsApi.markRead({ all: true })
+  } catch {
+    // 失败静默
+  }
+}
+
+// ============================================================
+// 配额预警（PL-24）：余额低于免费额度（5000）的 20% 时提示
+// ============================================================
+
+/** 注册赠送的免费积分额度（与后端 auth._REGISTER_GRANT_POINTS 一致） */
+const FREE_QUOTA_POINTS = 5000
+/** 预警阈值：免费额度 20% */
+const QUOTA_WARN_THRESHOLD = FREE_QUOTA_POINTS * 0.2
+/** 余额是否已拉取完成（避免初始 0 误报） */
+const balanceLoaded = ref(false)
+/** 是否展示配额预警条 */
+const showQuotaAlert = computed(
+  () => balanceLoaded.value && auth.isLoggedIn && auth.balance < QUOTA_WARN_THRESHOLD,
+)
 
 /**
  * 菜单点击：跳转对应路由。
@@ -95,16 +213,25 @@ watch(
   () => ui.closeMobileSidebar(),
 )
 
-// 首次进入：拉取用户信息（余额）与前 3 条公告
+// 首次进入：拉取用户信息（余额）；登录态下拉取通知并启动实时流
 onMounted(async () => {
   if (auth.isLoggedIn) {
-    auth.fetchMe().catch(() => {/* 401 已由拦截器统一处理 */})
+    try {
+      await auth.fetchMe()
+    } catch {
+      /* 401 已由拦截器统一处理 */
+    }
+    balanceLoaded.value = true
+    void fetchNotifications()
+    subscribeNotifications()
   }
-  try {
-    notices.value = (await announcementsApi.list()).slice(0, 3)
-  } catch {
-    // 公告为公开接口，失败不影响主流程
-  }
+})
+
+// 页面卸载：断开通知流并取消重连定时器
+onBeforeUnmount(() => {
+  notifyDisposed = true
+  if (notifyRetryTimer) clearTimeout(notifyRetryTimer)
+  notifyAbort?.abort()
 })
 </script>
 
@@ -169,18 +296,39 @@ onMounted(async () => {
             <span>{{ auth.balance }}</span>
           </button>
 
-          <!-- 通知：前 3 条公告 -->
-          <el-popover placement="bottom-end" :width="300" trigger="click">
+          <!-- 通知铃铛：未读角标 + 通知列表（Task 10.2） -->
+          <el-popover placement="bottom-end" :width="340" trigger="click" @show="fetchNotifications">
             <template #reference>
-              <button type="button" class="icon-btn" title="通知">
-                <span aria-hidden="true">🔔</span>
-              </button>
+              <el-badge :value="unreadCount" :hidden="unreadCount === 0" :max="99" class="notify-badge">
+                <button type="button" class="icon-btn" title="通知">
+                  <span aria-hidden="true">🔔</span>
+                </button>
+              </el-badge>
             </template>
-            <div v-if="notices.length === 0" class="notice-empty">暂无公告</div>
-            <ul v-else class="notice-list">
-              <li v-for="n in notices" :key="n.id" class="notice-item">
-                <div class="notice-title">{{ n.title }}</div>
-                <div class="notice-content">{{ n.content }}</div>
+            <div class="notify-head">
+              <span class="notify-head__title">通知中心</span>
+              <el-button link type="primary" size="small" :disabled="unreadCount === 0" @click="markAllRead">
+                全部已读
+              </el-button>
+            </div>
+            <div v-if="notifications.length === 0" class="notify-empty">暂无通知</div>
+            <ul v-else class="notify-list">
+              <li
+                v-for="n in notifications"
+                :key="n.id"
+                class="notify-item"
+                :class="{ 'notify-item--unread': !n.read_at }"
+                @click="onNotificationClick(n)"
+              >
+                <span class="notify-icon" aria-hidden="true">{{ NOTIFY_ICONS[n.type] ?? '📨' }}</span>
+                <div class="notify-body">
+                  <div class="notify-title">
+                    {{ n.title }}
+                    <span v-if="!n.read_at" class="notify-dot" />
+                  </div>
+                  <div class="notify-content">{{ n.content }}</div>
+                  <div class="notify-time">{{ n.created_at?.slice(0, 16).replace('T', ' ') ?? '' }}</div>
+                </div>
               </li>
             </ul>
           </el-popover>
@@ -209,6 +357,18 @@ onMounted(async () => {
           </el-dropdown>
         </template>
       </MfTopbar>
+
+      <!-- 配额预警条（PL-24）：余额低于免费额度 20% 时展示 -->
+      <el-alert
+        v-if="showQuotaAlert"
+        type="warning"
+        show-icon
+        :closable="true"
+        class="quota-alert"
+        title="积分余额不足"
+        description="当前积分余额低于免费额度的 20%，AI 生成任务可能因余额不足失败，建议前往计费页充值。"
+        @click="router.push('/billing')"
+      />
 
       <main class="default-layout__main">
         <router-view />
@@ -285,29 +445,77 @@ onMounted(async () => {
   filter: brightness(1.05);
 }
 
-/* 通知列表 */
-.notice-empty {
+/* 通知铃铛与列表（Task 10.2） */
+.notify-badge {
+  display: inline-flex;
+}
+.notify-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: var(--mf-sp-2);
+  border-bottom: 1px solid var(--mf-border);
+}
+.notify-head__title {
+  font-weight: var(--mf-fw-semibold);
+  font-size: var(--mf-fs-sm);
+}
+.notify-empty {
   padding: var(--mf-sp-5);
   text-align: center;
   color: var(--mf-text-3);
   font-size: var(--mf-fs-sm);
 }
-.notice-list {
+.notify-list {
   margin: 0;
   padding: 0;
   list-style: none;
+  max-height: 360px;
+  overflow-y: auto;
 }
-.notice-item + .notice-item {
-  margin-top: var(--mf-sp-3);
-  padding-top: var(--mf-sp-3);
+.notify-item {
+  display: flex;
+  gap: var(--mf-sp-2);
+  padding: var(--mf-sp-2) var(--mf-sp-1);
+  border-radius: var(--mf-r-ctl);
+  cursor: pointer;
+  transition: background var(--mf-dur) var(--mf-ease);
+}
+.notify-item:hover {
+  background: var(--mf-surface-2);
+}
+.notify-item + .notify-item {
+  margin-top: 2px;
+  padding-top: var(--mf-sp-2);
   border-top: 1px solid var(--mf-border);
 }
-.notice-title {
+.notify-item--unread .notify-title {
   font-weight: var(--mf-fw-semibold);
+}
+.notify-icon {
+  flex: none;
+  font-size: var(--mf-fs-md);
+}
+.notify-body {
+  flex: 1;
+  min-width: 0;
+}
+.notify-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: var(--mf-fw-medium);
   color: var(--mf-text);
   font-size: var(--mf-fs-sm);
 }
-.notice-content {
+.notify-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--mf-danger, #e5484d);
+  flex: none;
+}
+.notify-content {
   margin-top: 2px;
   color: var(--mf-text-2);
   font-size: var(--mf-fs-xs);
@@ -315,6 +523,18 @@ onMounted(async () => {
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+}
+.notify-time {
+  margin-top: 2px;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
+
+/* 配额预警条（PL-24） */
+.quota-alert {
+  margin: 0 var(--mf-sp-5) var(--mf-sp-2);
+  border-radius: var(--mf-r-ctl);
+  cursor: pointer;
 }
 
 /* 头像 */

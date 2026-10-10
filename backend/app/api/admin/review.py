@@ -23,7 +23,7 @@ from app.core.security import require_operator
 from app.models import Project, ReviewRecord, Storyboard, User
 from app.schemas.admin import MessageOut, ReviewHandleRequest, ReviewItem
 from app.schemas.common import PageResult
-from app.services import normalize_pagination
+from app.services import normalize_pagination, notification_service
 
 router = APIRouter(
     prefix="/api/admin/review",
@@ -161,6 +161,18 @@ async def handle_review(
     if req.suggestion:
         record.suggestion = req.suggestion
     await db.commit()
+
+    # 通知中心：处置成功后向内容归属用户推送审核结果通知
+    # （notify_review_result 自管理会话且内部吞异常，不影响处置主流程）
+    owner_id = await db.scalar(select(Project.user_id).where(Project.id == record.project_id)) \
+        if record.project_id else None
+    if owner_id:
+        await notification_service.notify_review_result(
+            owner_id,
+            record.id,
+            result=record.manual_status,
+            suggestion=record.suggestion,
+        )
 
     # 联表回填项目标题与分镜序号后返回
     project_title = None

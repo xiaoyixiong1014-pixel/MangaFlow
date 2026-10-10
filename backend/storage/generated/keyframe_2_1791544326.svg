@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="620,474 575,564 665,564" fill="#12B3A6" opacity="0.19"/><polygon points="482,234 461,276 503,276" fill="#12B3A6" opacity="0.13"/><circle cx="155" cy="945" r="18" fill="#12B3A6" opacity="0.18"/><polygon points="332,559 298,627 366,627" fill="#12B3A6" opacity="0.24"/><circle cx="220" cy="719" r="79" fill="#12B3A6" opacity="0.11"/><polygon points="335,838 259,990 411,990" fill="#12B3A6" opacity="0.09"/><polygon points="500,515 410,695 590,695" fill="#12B3A6" opacity="0.28"/><circle cx="187" cy="334" r="65" fill="#12B3A6" opacity="0.26"/>
+  
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">统一风格：测试风格；画面：测</text><text x="60" y="1136" fill="#E6F2F1" font-size="26" font-family="sans-serif">试画面</text>
+</svg>

@@ -7,6 +7,7 @@
  */
 import client from './client'
 import { sseGet } from './sse'
+import { downloadBlob } from '@/utils/download'
 import type {
   ComposePayload,
   FilmOutput,
@@ -209,4 +210,34 @@ export function shareInfo(token: string, password?: string): Promise<ShareInfo> 
   return client
     .get(`/share/${token}`, { params: password ? { password } : undefined })
     .then((r) => r.data)
+}
+
+// ============================================================
+// 成片导出下载（Task 10.4）
+// ============================================================
+
+/**
+ * 下载成片 MP4（GET /api/publish/outputs/{id}/download?resolution=）。
+ * resolution 传入且本机有 ffmpeg 时后端转码后返回，失败自动降级原片。
+ * @param outputId 成片版本记录 ID
+ * @param resolution 目标档位（720p/1080p/2k，可空 = 原片）
+ * @param versionNo 版本号（用于缺省文件名，可空）
+ * @returns 触发浏览器下载（无返回数据）
+ * @throws 400 resolution 非法；404 成片不存在/非本人项目
+ */
+export async function downloadOutput(
+  outputId: number,
+  resolution?: '720p' | '1080p' | '2k',
+  versionNo?: number,
+): Promise<void> {
+  const resp = await client.get(`/publish/outputs/${outputId}/download`, {
+    params: resolution ? { resolution } : undefined,
+    responseType: 'blob',
+    timeout: 300000, // 转码可能较慢，放宽超时
+  })
+  const fallback = `mangaflow_film_v${versionNo ?? outputId}${resolution ? `_${resolution}` : ''}.mp4`
+  const disposition = resp.headers['content-disposition'] as string | undefined
+  const utf8 = disposition ? /filename\*=UTF-8''([^;]+)/i.exec(disposition) : null
+  const filename = utf8?.[1] ? decodeURIComponent(utf8[1]) : fallback
+  downloadBlob(resp.data as Blob, filename)
 }

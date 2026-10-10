@@ -18,8 +18,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.schemas.common import PageResult
 
-# 节点类型合法取值（与 canvas_nodes.ck_cn_node_type 约束一致，双保险以应用层校验先行）
-NODE_TYPES = ("text", "image", "video", "audio", "generate", "asset_ref", "shot", "compose", "logic", "group")
+# 节点类型合法取值（与 canvas_nodes.ck_cn_node_type 约束一致，双保险以应用层校验先行；
+# plugin/mcp_tool 为 Task 9 画布增强新增的集成类节点）
+NODE_TYPES = (
+    "text", "image", "video", "audio", "generate", "asset_ref", "shot",
+    "compose", "logic", "group", "plugin", "mcp_tool",
+)
 
 # 画布模板合法取值（None 表示空白画布）
 CANVAS_TEMPLATES = ("script_to_storyboard", "character_sheet", "style_experiment")
@@ -313,6 +317,30 @@ class NodeExecuteResult(BaseModel):
     cache_ref: Optional[str] = None
     data: Optional[Dict[str, Any]] = None
     task_id: Optional[int] = None
+
+
+class CloneSubtreeRequest(BaseModel):
+    """子图克隆请求（CV 画布增强，Task 9）。
+
+    Attributes:
+        node_ids: 待克隆的节点 ID 列表（须属于源画布，缺失节点返回 400）。
+        target_canvas_id: 目标画布 ID（缺省克隆到源画布自身）。
+    """
+
+    node_ids: List[int] = Field(min_length=1)
+    target_canvas_id: Optional[int] = None
+
+
+class CloneSubtreeResult(BaseModel):
+    """子图克隆结果。
+
+    Attributes:
+        nodes: 克隆出的节点列表（含真实 id，坐标 +40/+40）。
+        edges: 克隆出的连线列表（两端均在克隆集合内的边）。
+    """
+
+    nodes: List[CanvasNodeOut] = Field(default_factory=list)
+    edges: List[CanvasEdgeOut] = Field(default_factory=list)
 
 
 class AssistantChatRequest(BaseModel):

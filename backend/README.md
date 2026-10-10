@@ -34,7 +34,7 @@ backend/
 │   ├── tasks/         # 生成任务执行器（runner）
 │   └── main.py        # FastAPI 应用入口（路由注册 / storage 静态挂载）
 ├── storage/           # 本地文件存储（上传素材、生成产物、备份）
-├── tests/             # pytest 回归测试（54 例）
+├── tests/             # pytest 回归测试（121 例）
 └── .venv/             # Python 虚拟环境
 ```
 
@@ -109,11 +109,78 @@ MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite pro
 
 完整端点与参数见 Swagger：http://127.0.0.1:8300/docs
 
+## 模型渠道配置（5 渠道）
+
+渠道常量定义在 `app/core/config.py`（带开发默认值），生产用 `backend/.env` 覆盖（环境变量名不区分大小写）：
+
+| 渠道 | 能力 | 配置项（BASE_URL / API_KEY / MODEL） | 默认值 |
+| --- | --- | --- | --- |
+| DeepSeek（主） | 文本 LLM | `DEEPSEEK_*` | `https://api.deepseek.com` / `deepseek-flash` |
+| Agnes（兜底） | 文本 LLM | `AGNES_LLM_*` | `https://apihub.agnes-ai.com/v1` / `agnes-3.0-flash` |
+| Agnes 图像 | 图像 | `AGNES_IMAGE_*` | 同 Agnes 地址 / `agnes-image-2.5-flash` |
+| Agnes 视频 | 视频 | `AGNES_VIDEO_*` | 同 Agnes 地址 / `agnes-video-2.5-flash`（轮询：`VIDEO_POLL_*_SECONDS`） |
+| 百炼 TTS | 语音 | `BAILIAN_TTS_*` | 阿里云百炼 OpenAI 兼容地址 / `qwen-audio-3.1-tts-flash` |
+
+连通性探测脚本：根目录 `.run/llm_image_video_tts_probe.py`（结果见 `.run/probe_result.md`）。
+
+## 渠道降级链与 mock 链尾
+
+- 图像/视频/TTS 任务执行时经 `services/model_router.resolve_channels_chain` 按
+  `logical_models.channel_priority` 顺序解析平台渠道（enabled 且非 down），链尾固定追加
+  本地 mock 哨兵渠道（channel_id=0），真实渠道全部失败时兜底出占位资源，业务不中断。
+- 每次尝试回写渠道健康状态，失败原因累积进任务 `meta.fallback_chain`，实际渠道记
+  `meta.provider`（agnes/bailian/mock），供任务详情与 DB 溯源。
+- 文本 LLM 走 `providers/llm.py` 内置降级链：DeepSeek 主渠道失败自动切 Agnes 兜底。
+
+## 健康探测
+
+- `model_channels.health_status`（unknown/healthy/degraded/down）：业务调用成功置
+  healthy、失败置 degraded（`model_router.record_result`）；管理端可主动探测
+  （`model_router.probe_channel`：llm 发 1 token，image/video 以极小主体试探，401/403 判 down）。
+- 健康状态为 down 的渠道在路由解析时自动跳过。
+
+## LangSmith 可选接入
+
+智能体（LangGraph/LangChain）链路追踪：配置环境变量 `LANGSMITH_TRACING=true`、
+`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`（项目名）即可上报；不配置则完全离线，
+不影响任何功能。
+
+## MCP 桥配置
+
+画布 MCP 工具节点读取站点设置 KV（key=`mcp_servers`，value 为
+`{"value": [{id, name, url, ...}, ...]}`）：管理端「系统设置」维护服务器清单，
+画布按 `server_id` 引用（`api/mcp.py` / `services/canvas_service.py`）。
+
+## 插件体系
+
+- `plugins` 表 + `endpoint_url`：`builtin:` 前缀为进程内实现（注册表
+  `services/plugin_service.py`，内置 `builtin:text-enhance` 文本增强）；其余为 HTTP endpoint。
+- 新插件需经管理端审查通过并启用后才可被画布调用；种子数据内置一个已审核插件。
+- 直调端点：`POST /api/plugins/builtin/text-enhance`（登录用户）。
+
+## 死信队列与指数退避
+
+- 平台故障自动重试最多 3 次，第 n 次失败后 `next_retry_at = now + 2^n 分钟`
+  （2/4/8 分钟），未到期任务不被 worker 领取（`tasks/runner.py` 调度 SQL）。
+- 重试耗尽置 `dead_letter=True` 进入管理端死信队列
+  （`GET /api/admin/tasks/dead-letters`），运营复核后 `POST /{task_id}/requeue` 重新冻结积分入队。
+
+## 通知中心（SSE）
+
+任务成功/失败等终态推送站内通知：`GET /api/notifications`（分页）、
+`/unread-count`（未读数）、`POST /read`（标记已读）、`GET /stream`（SSE 实时推送，
+`message` 事件 + 30s 心跳）。推送失败不影响任务主流程。
+
+## Prometheus 指标
+
+`GET /api/metrics`（免鉴权）：HTTP 请求计数/时延、任务状态迁移计数、进行中任务
+Gauge、渠道健康 Gauge 等聚合指标，供 Prometheus 抓取。
+
 ## 测试说明
 
 ```powershell
 cd backend
-.venv\Scripts\python.exe -m pytest tests/ -q    # 54 例全量回归
+.venv\Scripts\python.exe -m pytest tests/ -q    # 121 例全量回归
 ```
 
 ## 已知演示性实现说明

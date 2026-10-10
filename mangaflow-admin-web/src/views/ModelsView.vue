@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
  * 文件级注释：A-05 模型配置管理。
- * 三个页签：渠道管理（key 脱敏、健康 Tag、新增/编辑/删除/测试连通）、
- * 逻辑模型（默认开关、渠道优先级、价格 JSON 编辑）、健康探测（选渠道批量测试）。
+ * 四个页签：渠道管理（key 脱敏、健康 Tag、新增/编辑/删除/测试连通）、
+ * 逻辑模型（默认开关、渠道优先级、价格 JSON 编辑）、健康探测（选渠道批量测试）、
+ * 插件审查（Task 10.5：画布插件列表 + 审批通过/驳回 + 启用/停用）。
  */
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -10,13 +11,17 @@ import {
   createChannel,
   createLogicalModel,
   deleteChannel,
+  disablePlugin,
+  enablePlugin,
   getChannels,
   getLogicalModels,
+  getPlugins,
+  reviewPlugin,
   testChannel,
   updateChannel,
   updateLogicalModel,
 } from '@/api/admin'
-import type { ChannelTestResult, LogicalModel, ModelChannel } from '@/types'
+import type { ChannelTestResult, LogicalModel, ModelChannel, PluginReviewItem } from '@/types'
 
 /** 当前页签 */
 const activeTab = ref('channels')
@@ -370,9 +375,97 @@ async function handleProbe() {
   }
 }
 
+/* ============================ 插件审查（Task 10.5） ============================ */
+
+/** 插件列表加载状态 */
+const pluginLoading = ref(false)
+/** 插件列表（含未审核 / 停用） */
+const plugins = ref<PluginReviewItem[]>([])
+/** 操作中的插件 ID */
+const pluginBusyId = ref<number | null>(null)
+
+/**
+ * 拉取画布插件列表（all=true，仅运营方可见全部）。
+ * @returns 无
+ * @throws 无（接口错误由拦截器统一提示）
+ */
+async function fetchPlugins() {
+  pluginLoading.value = true
+  try {
+    plugins.value = await getPlugins()
+  } catch {
+    /* 错误已由拦截器提示 */
+  } finally {
+    pluginLoading.value = false
+  }
+}
+
+/**
+ * 审查插件：通过（reviewed=true）/ 驳回（需填写原因建议，二次确认）。
+ * @param row 目标插件
+ * @param approved 是否通过
+ * @returns 无
+ */
+async function handleReviewPlugin(row: PluginReviewItem, approved: boolean) {
+  if (pluginBusyId.value) return
+  if (!approved) {
+    // 驳回需确认并填写原因（写入审计）
+    try {
+      const { value } = await ElMessageBox.prompt(
+        `驳回插件「${row.name}」后用户端将不可见。请填写驳回原因：`,
+        '驳回插件',
+        {
+          confirmButtonText: '驳回',
+          cancelButtonText: '取消',
+          type: 'warning',
+          inputValidator: (v: string) => (v && v.trim().length > 0 ? true : '驳回原因不能为空'),
+        },
+      )
+      void value // 原因由后端审计记录（接口仅传 approved）
+    } catch {
+      return // 用户取消
+    }
+  }
+  pluginBusyId.value = row.id
+  try {
+    await reviewPlugin(row.id, approved)
+    ElMessage.success(approved ? '插件已通过审查' : '插件已驳回')
+    await fetchPlugins()
+  } catch {
+    /* 错误已由拦截器提示 */
+  } finally {
+    pluginBusyId.value = null
+  }
+}
+
+/**
+ * 启用 / 停用插件。
+ * @param row 目标插件
+ * @returns 无
+ */
+async function handleTogglePlugin(row: PluginReviewItem) {
+  if (pluginBusyId.value) return
+  pluginBusyId.value = row.id
+  try {
+    if (row.enabled) {
+      await disablePlugin(row.id)
+      ElMessage.success('插件已停用')
+    } else {
+      await enablePlugin(row.id)
+      ElMessage.success('插件已启用')
+    }
+    await fetchPlugins()
+  } catch {
+    /* 错误已由拦截器提示 */
+  } finally {
+    pluginBusyId.value = null
+  }
+}
+
 onMounted(() => {
   void fetchChannels()
   void fetchLogicals()
+  void fetchPlugins()
 })
 </script>
 
@@ -515,6 +608,93 @@ onMounted(() => {
             <template #default="{ row }">{{ row.result.error ?? '—' }}</template>
           </el-table-column>
         </el-table>
+      </el-tab-pane>
+
+      <!-- ==================== 插件审查（Task 10.5） ==================== -->
+      <el-tab-pane label="插件审查" name="plugins" data-test="tab-plugins">
+        <el-table :data="plugins" v-loading="pluginLoading" stripe>
+          <el-table-column prop="id" label="ID" width="60" />
+          <el-table-column label="插件" min-width="180">
+            <template #default="{ row }">
+              <span class="models__plugin-name">{{ row.name }}</span>
+              <span v-if="row.version" class="models__muted">v{{ row.version }}</span>
+            </template>
+          </el-table-column>
+          <el-table-column prop="description" label="描述" min-width="180" show-overflow-tooltip>
+            <template #default="{ row }">{{ row.description || '—' }}</template>
+          </el-table-column>
+          <el-table-column prop="endpoint_url" label="地址" min-width="180" show-overflow-tooltip />
+          <el-table-column label="权限" min-width="160">
+            <template #default="{ row }">
+              <template v-if="row.permissions?.length">
+                <el-tag
+                  v-for="p in row.permissions"
+                  :key="p"
+                  size="small"
+                  type="warning"
+                  effect="plain"
+                  class="models__prio"
+                >
+                  {{ p }}
+                </el-tag>
+              </template>
+              <span v-else class="models__muted">无</span>
+            </template>
+          </el-table-column>
+          <el-table-column label="安装者" width="90" align="center">
+            <template #default="{ row }">用户 {{ row.user_id }}</template>
+          </el-table-column>
+          <el-table-column label="审查状态" width="100">
+            <template #default="{ row }">
+              <el-tag size="small" :type="row.reviewed ? 'success' : 'warning'" effect="light">
+                {{ row.reviewed ? '已通过' : '待审查' }}
+              </el-tag>
+            </template>
+          </el-table-column>
+          <el-table-column label="启用" width="80">
+            <template #default="{ row }">
+              <el-switch
+                :model-value="row.enabled"
+                :disabled="!row.reviewed"
+                @change="handleTogglePlugin(row)"
+              />
+            </template>
+          </el-table-column>
+          <el-table-column label="操作" width="150" fixed="right">
+            <template #default="{ row }">
+              <el-button
+                v-if="!row.reviewed"
+                link
+                type="success"
+                size="small"
+                :disabled="pluginBusyId === row.id"
+                @click="handleReviewPlugin(row, true)"
+              >
+                通过
+              </el-button>
+              <el-button
+                v-if="!row.reviewed"
+                link
+                type="danger"
+                size="small"
+                :disabled="pluginBusyId === row.id"
+                @click="handleReviewPlugin(row, false)"
+              >
+                驳回
+              </el-button>
+              <el-button
+                v-if="row.reviewed"
+                link
+                size="small"
+                :disabled="pluginBusyId === row.id"
+                @click="handleTogglePlugin(row)"
+              >
+                {{ row.enabled ? '停用' : '启用' }}
+              </el-button>
+            </template>
+          </el-table-column>
+        </el-table>
+        <p class="models__hint">未通过审查的插件对用户端不可见；内置插件（builtin: 前缀）与用户安装插件统一在此审查。</p>
       </el-tab-pane>
     </el-tabs>
 
@@ -666,5 +846,10 @@ onMounted(() => {
   display: flex;
   gap: var(--mf-sp-3);
   margin-bottom: var(--mf-sp-4);
+}
+
+.models__plugin-name {
+  font-weight: var(--mf-fw-medium);
+  margin-right: var(--mf-sp-1);
 }
 </style>

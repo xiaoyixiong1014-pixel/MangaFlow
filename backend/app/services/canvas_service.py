@@ -19,6 +19,7 @@
 """
 
 import json
+import re
 from collections import deque
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set, Tuple
@@ -28,7 +29,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Canvas, CanvasEdge, CanvasNode, Project, Task
+from app.models import Canvas, CanvasEdge, CanvasNode, CanvasPlugin, LanggraphStore, Project, Task
 from app.schemas.canvas import (
     CANVAS_TEMPLATES,
     NODE_TYPES,
@@ -40,6 +41,86 @@ from app.schemas.canvas import (
     CanvasOut,
 )
 from app.services.billing_service import freeze_points
+from app.services.mcp_client import McpError, call_tool
+from app.services.plugin_service import PluginError, invoke_plugin
+
+# MCP server 配置在站点设置 KV 中的键（与 api/mcp.py 写入形态一致：{"value": [...]}）
+_MCP_KV_NAMESPACE = "site_settings"
+_MCP_KV_KEY = "mcp_servers"
+
+# mcp_tool 节点 arguments 中的上游输出占位符：{{node:<id>.output}}
+_NODE_OUTPUT_RE = re.compile(r"\{\{node:(\d+)\.output\}\}")
+
+
+def _resolve_placeholders(value: Any, node_map: Dict[int, CanvasNode]) -> Any:
+    """递归替换参数值中的 "{{node:<id>.output}}" 占位符（内部函数，CV-19）。
+
+    占位符替换为对应上游节点 data.output：字符串原样替换；dict/list 输出
+    序列化为 JSON 串；上游不存在或无输出替换为空串。
+
+    Args:
+        value: 参数值（str/dict/list/标量任意嵌套）。
+        node_map: 全画布节点映射（id → ORM）。
+
+    Returns:
+        Any: 替换后的参数值（结构不变）。
+    """
+
+    def _sub(match: "re.Match[str]") -> str:
+        """把单个占位符匹配替换为上游输出字符串（re.sub 回调，内部函数）。
+
+        Args:
+            match: 正则匹配对象（捕获组 1 = 节点 ID）。
+
+        Returns:
+            str: 上游输出的字符串形态（缺失时为空串）。
+        """
+        try:
+            src = node_map.get(int(match.group(1)))
+        except ValueError:
+            return ""
+        out = (src.data or {}).get("output") if src else None
+        if isinstance(out, str):
+            return out
+        if out is None:
+            return ""
+        return json.dumps(out, ensure_ascii=False, default=str)
+
+    if isinstance(value, str):
+        return _NODE_OUTPUT_RE.sub(_sub, value)
+    if isinstance(value, dict):
+        return {k: _resolve_placeholders(v, node_map) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_resolve_placeholders(v, node_map) for v in value]
+    return value
+
+
+async def _load_mcp_servers(db: AsyncSession) -> List[Dict[str, Any]]:
+    """从站点设置 KV 读取 MCP server 配置列表（内部函数，CV-19）。
+
+    读取形态与 api/mcp.py 的写入形态一致（{"value": [...]} 包装，
+    兼容直接 list）。此处在服务层重复实现以避免 service 反向依赖 api 模块。
+
+    Args:
+        db: 异步数据库会话。
+
+    Returns:
+        List[Dict[str, Any]]: server 配置列表（无记录时为空列表）。
+    """
+    row = (
+        await db.execute(
+            select(LanggraphStore).where(
+                LanggraphStore.namespace == _MCP_KV_NAMESPACE,
+                LanggraphStore.key == _MCP_KV_KEY,
+            )
+        )
+    ).scalar_one_or_none()
+    value = getattr(row, "value", None)
+    if isinstance(value, dict) and isinstance(value.get("value"), list):
+        return [s for s in value["value"] if isinstance(s, dict)]
+    if isinstance(value, list):
+        return [s for s in value if isinstance(s, dict)]
+    return []
 
 # ---------------------------------------------------------------------------
 # 预置画布模板定义（节点构成与连线以中文注释说明）
@@ -627,7 +708,12 @@ async def create_generate_task(db: AsyncSession, canvas: Canvas, node: CanvasNod
     return task
 
 
-async def execute_node_once(db: AsyncSession, canvas: Canvas, node: CanvasNode) -> Dict[str, Any]:
+async def execute_node_once(
+    db: AsyncSession,
+    canvas: Canvas,
+    node: CanvasNode,
+    node_map: Optional[Dict[int, CanvasNode]] = None,
+) -> Dict[str, Any]:
     """执行单个画布节点（单节点执行接口与 DAG 执行引擎共用的原子操作）。
 
     分派语义：
@@ -635,6 +721,12 @@ async def execute_node_once(db: AsyncSession, canvas: Canvas, node: CanvasNode) 
     - logic：按 data.action 对 data.input 做演示变换写入 data.output
       （uppercase=转大写 / reverse=反转字符串 / noop=原样透传，未知动作按 noop）；
     - generate：转 tasks 生成任务（冻结积分），节点进入 queued；
+    - plugin（CV-21）：按 config.plugin_id 加载插件 → invoke_plugin 调用
+      （builtin 前缀进程内直调，否则 HTTP POST）→ 结果写回 data.output；
+      插件未审核/未启用或调用失败时节点置 failed（不中断整批执行）；
+    - mcp_tool（CV-19）：按 config.server_id/tool 调用 MCP server 的
+      tools/call（arguments 支持 "{{node:<id>.output}}" 占位替换为上游
+      data.output）→ 结果写回 data.output；失败时节点置 failed；
     - image/video/audio/asset_ref/shot/compose/group：仅作结果展示容器，
       当前为占位实现（不产生真实生成），直接标记完成。
 
@@ -642,6 +734,8 @@ async def execute_node_once(db: AsyncSession, canvas: Canvas, node: CanvasNode) 
         db: 异步数据库会话（generate 场景内部可能提交事务）。
         canvas: 所属画布 ORM 对象。
         node: 目标节点 ORM 对象（就地修改）。
+        node_map: 全画布节点映射（id → ORM，mcp_tool 占位替换用；
+            缺省时仅按当前节点构建，占位符替换为空串）。
 
     Returns:
         Dict[str, Any]: {"status": 节点执行后状态, "task_id": 生成的任务 ID 或 None}。
@@ -675,7 +769,131 @@ async def execute_node_once(db: AsyncSession, canvas: Canvas, node: CanvasNode) 
         # 生成类节点：转生成任务（节点最终由任务完成回调置 done，此处入队）
         task = await create_generate_task(db, canvas, node)
         return {"status": node.status, "task_id": task.id}
+    if node_type == "plugin":
+        # 插件节点：加载插件 → 统一调用服务 → 结果写回（CV-21）
+        return await _execute_plugin_node(db, node)
+    if node_type == "mcp_tool":
+        # MCP 工具节点：解析 server 配置 → tools/call → 结果写回（CV-19）
+        return await _execute_mcp_node(db, node, node_map or {node.id: node})
     # 其余类型（image/video/audio/asset_ref/shot/compose/group）均为展示容器占位
+    mark_node_done(node)
+    return {"status": node.status, "task_id": None}
+
+
+def _mark_node_failed(node: CanvasNode, message: str) -> Dict[str, Any]:
+    """把节点标记为执行失败并写回错误信息（内部函数）。
+
+    失败节点保留 is_dirty=True（下次执行仍会重算），不写缓存引用，
+    且不向调用方抛异常——集成类节点（插件/MCP）的运行时失败不中断
+    同批 DAG 中其余节点的执行。
+
+    Args:
+        node: 目标节点 ORM 对象（就地修改）。
+        message: 失败原因（写入 data.output 展示给用户）。
+
+    Returns:
+        Dict[str, Any]: {"status": "failed", "task_id": None}。
+    """
+    data = dict(node.data or {})
+    data["output"] = f"执行失败：{message}"
+    node.data = data
+    node.status = "failed"
+    node.is_dirty = True
+    return {"status": node.status, "task_id": None}
+
+
+async def _execute_plugin_node(db: AsyncSession, node: CanvasNode) -> Dict[str, Any]:
+    """执行 plugin 类型节点（内部函数，CV-21）。
+
+    负载构造：data.payload 为 dict 时原样使用；否则按 {"text": data.text}
+    构造（内置 text-enhance 的约定负载）。插件须已审核（reviewed）且
+    启用（enabled）。
+
+    Args:
+        db: 异步数据库会话。
+        node: plugin 节点 ORM 对象（就地修改）。
+
+    Returns:
+        Dict[str, Any]: {"status": 节点执行后状态, "task_id": None}。
+    """
+    config = node.config if isinstance(node.config, dict) else {}
+    plugin_id = config.get("plugin_id")
+    if plugin_id is None:
+        return _mark_node_failed(node, "节点未绑定插件（缺少 config.plugin_id）")
+    plugin = await db.get(CanvasPlugin, int(plugin_id))
+    if plugin is None:
+        return _mark_node_failed(node, f"插件 {plugin_id} 不存在")
+    if not plugin.reviewed or not plugin.enabled:
+        return _mark_node_failed(node, "插件未通过审核或未启用")
+    data = dict(node.data or {})
+    payload = data.get("payload")
+    if not isinstance(payload, dict):
+        payload = {"text": str(data.get("text", ""))}
+    try:
+        result = await invoke_plugin(plugin, payload)
+    except PluginError as exc:
+        return _mark_node_failed(node, exc.message)
+    # 单键 text 结果直接解包为字符串，便于节点卡片/SSE 直接展示
+    data["output"] = result.get("text") if isinstance(result.get("text"), str) else result
+    node.data = data
+    mark_node_done(node)
+    return {"status": node.status, "task_id": None}
+
+
+async def _execute_mcp_node(
+    db: AsyncSession, node: CanvasNode, node_map: Dict[int, CanvasNode]
+) -> Dict[str, Any]:
+    """执行 mcp_tool 类型节点（内部函数，CV-19）。
+
+    参数来源：config.arguments（dict）优先；缺失时尝试 JSON 解析
+    data.arguments_text（前端编辑器的 JSON 文本域）。arguments 中的
+    "{{node:<id>.output}}" 占位符替换为上游节点输出。
+
+    Args:
+        db: 异步数据库会话。
+        node: mcp_tool 节点 ORM 对象（就地修改）。
+        node_map: 全画布节点映射（占位替换用）。
+
+    Returns:
+        Dict[str, Any]: {"status": 节点执行后状态, "task_id": None}。
+    """
+    config = node.config if isinstance(node.config, dict) else {}
+    server_id = str(config.get("server_id") or "")
+    tool = str(config.get("tool") or "")
+    if not server_id or not tool:
+        return _mark_node_failed(node, "节点未绑定 MCP server 或工具")
+    server = next(
+        (s for s in await _load_mcp_servers(db) if str(s.get("id")) == server_id), None
+    )
+    if server is None:
+        return _mark_node_failed(node, f"MCP server {server_id} 不存在或已删除")
+    arguments = config.get("arguments")
+    if not isinstance(arguments, dict):
+        raw = str((node.data or {}).get("arguments_text") or "")
+        try:
+            arguments = json.loads(raw) if raw.strip() else {}
+        except (json.JSONDecodeError, ValueError):
+            return _mark_node_failed(node, "arguments 不是合法 JSON")
+    if not isinstance(arguments, dict):
+        return _mark_node_failed(node, "arguments 必须为 JSON 对象")
+    try:
+        result = await call_tool(
+            server.get("url") or "", tool, _resolve_placeholders(arguments, node_map),
+            server.get("headers"),
+        )
+    except McpError as exc:
+        return _mark_node_failed(node, exc.message)
+    data = dict(node.data or {})
+    # MCP 结果展示友好化：纯文本 content 拼接为字符串，其余原样存放
+    content = result.get("content")
+    if (
+        isinstance(content, list) and content
+        and all(isinstance(c, dict) and c.get("type") == "text" for c in content)
+    ):
+        data["output"] = "".join(str(c.get("text", "")) for c in content)
+    else:
+        data["output"] = result
+    node.data = data
     mark_node_done(node)
     return {"status": node.status, "task_id": None}
 
@@ -752,7 +970,7 @@ async def run_canvas_execution(
             # 上游未变更：复用缓存（RD-45），计为 skipped
             result["skipped"].append(nid)
             continue
-        outcome = await execute_node_once(db, canvas, node)
+        outcome = await execute_node_once(db, canvas, node, node_map)
         if outcome.get("task_id"):
             result["tasks"].append(outcome["task_id"])
         result["executed"].append(nid)

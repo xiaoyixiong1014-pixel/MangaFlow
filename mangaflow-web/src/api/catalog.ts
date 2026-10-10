@@ -1,7 +1,8 @@
 /**
  * 模型目录与用户渠道 API（文件级注释）。
  *
- * 对应后端 /api/models：模型目录（按能力分组）、用户自有渠道 CRUD 与连通性测试。
+ * 对应后端 /api/models：模型目录（按能力分组）、用户自有渠道 CRUD 与连通性测试、
+ * 渠道健康摘要（D-05）、模型效果对比（PL-11）。
  */
 import client from './client'
 import type {
@@ -9,6 +10,9 @@ import type {
   Channel,
   ChannelCreatePayload,
   ChannelTestResult,
+  ComparePayload,
+  CompareResult,
+  HealthSummary,
   MessageResponse,
 } from '@/types'
 
@@ -55,4 +59,22 @@ export function deleteChannel(channelId: number): Promise<MessageResponse> {
  */
 export function testChannel(channelId: number): Promise<ChannelTestResult> {
   return client.post(`/models/channels/${channelId}/test`).then((r) => r.data)
+}
+
+/**
+ * 查询平台渠道健康摘要（D-05，工作台渠道健康标红条数据源）。
+ * @returns 渠道健康列表与 down/degraded 计数
+ */
+export function healthSummary(): Promise<HealthSummary> {
+  return client.get('/models/health-summary').then((r) => r.data)
+}
+
+/**
+ * 模型效果对比（PL-11）：对 1~4 个渠道用同一提示词逐渠道生成。
+ * 单渠道失败收敛进结果（ok=false + error），不影响其他渠道。
+ * @param payload 能力（llm/image）/提示词/渠道 ID 列表
+ * @returns 与请求顺序一致的逐渠道结果
+ */
+export function compare(payload: ComparePayload): Promise<CompareResult> {
+  return client.post('/models/compare', payload, { timeout: 120000 }).then((r) => r.data)
 }

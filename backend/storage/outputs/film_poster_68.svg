@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="1280" viewBox="0 0 720 1280">
+  <rect width="720" height="1280" fill="#15191A"/>
+  <rect x="24" y="24" width="672" height="1232" fill="none" stroke="#12B3A6" stroke-width="3"/>
+  <rect x="40" y="40" width="640" height="1200" fill="none" stroke="#12B3A6" stroke-width="1" opacity="0.5"/>
+  <polygon points="122,193 52,333 192,333" fill="#12B3A6" opacity="0.19"/><polygon points="273,281 213,401 333,401" fill="#12B3A6" opacity="0.26"/><polygon points="279,541 251,597 307,597" fill="#12B3A6" opacity="0.11"/><circle cx="293" cy="658" r="37" fill="#12B3A6" opacity="0.14"/><polygon points="455,344 383,488 527,488" fill="#12B3A6" opacity="0.27"/><circle cx="578" cy="822" r="75" fill="#12B3A6" opacity="0.27"/><circle cx="247" cy="216" r="24" fill="#12B3A6" opacity="0.12"/><circle cx="578" cy="770" r="63" fill="#12B3A6" opacity="0.22"/>
+  <text x="60" y="110" fill="#12B3A6" font-size="30" font-family="sans-serif">成片占位</text>
+  <text x="60" y="1100" fill="#E6F2F1" font-size="26" font-family="sans-serif">项目 20 成片占位</text>
+</svg>

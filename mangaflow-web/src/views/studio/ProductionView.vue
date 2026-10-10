@@ -12,7 +12,8 @@
     ③ 配音与合成（S-08）：角色音色映射表（音色 Select + 试听按钮 disabled 占位）、
       每镜「生成配音」tts()；时长差异处理三选一（缩短台词 / 延长镜头 / 重新配音）——
       仅「重新配音」真实调用 tts，其余为前端演示提示（说明见注释）；
-      BGM / 字幕 / 转场 Select + 保存（演示：配置暂存前端，不落库）；
+      BGM（曲库下拉 + 音量 + 上传自定义）/ 字幕（开关 + 字号/颜色/位置）/
+      转场（开关 + 类型 + 时长）—— 配置随 compose 请求体提交（Task 10.4）；
   - 全局任务面板：右侧常驻抽屉；初始 taskList 拉取最近任务，taskStream（GET SSE）
     实时更新类型/状态/进度/结果链接，支持单任务重试（taskRetry）/取消（taskCancel）；
   - 底部「全部完成，进入合成」：compose() 提交合成任务并轮询 taskDetail，
@@ -24,8 +25,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import * as productionApi from '@/api/production'
 import * as billingApi from '@/api/billing'
+import * as bgmApi from '@/api/bgm'
 import * as studioApi from '@/api/studio'
-import type { GenTask, Storyboard, Wallet, CharacterAsset } from '@/types'
+import type { BgmItem, ComposePayload, GenTask, Storyboard, Wallet, CharacterAsset } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -397,20 +399,112 @@ async function applyOverHandle(): Promise<void> {
   }
 }
 
-// BGM / 字幕 / 转场配置（演示：配置暂存前端，不落库后端）
-const mixConfig = reactive({
-  bgm: 'platform_lib',
-  subtitleFont: '思源黑体',
-  subtitlePos: 'bottom',
-  transition: 'fade',
+// BGM / 字幕 / 转场配置（Task 10.4 / S-08：并入 compose 请求体，字段对齐后端 schema）
+// —— BGM：曲库下拉 + 音量滑杆 + 上传自定义（复用 /api/bgm 上传）
+// —— 字幕：开关 + 样式（字号/颜色/位置）
+// —— 转场：开关 + 类型 + 时长
+
+/** BGM 曲库列表 */
+const bgmList = ref<BgmItem[]>([])
+/** 是否启用 BGM */
+const bgmEnabled = ref(false)
+/** 选中的 BGM 地址（/storage/bgm/... 或 /storage/uploads/...） */
+const bgmUrl = ref('')
+/** BGM 音量系数（0~1，仅作用于 BGM 轨） */
+const bgmVolume = ref(0.3)
+/** 自定义 BGM 上传中 */
+const bgmUploading = ref(false)
+/** 隐藏的 BGM 文件选择 input 引用 */
+const bgmFileRef = ref<HTMLInputElement>()
+
+/** 是否烧录字幕 */
+const subtitleEnabled = ref(false)
+/** 字幕样式（字号/颜色/位置，颜色为 #RRGGBB，提交时转 ASS 格式） */
+const subtitleStyle = reactive({
+  font_size: 24,
+  color: '#FFFFFF',
+  position: 'bottom' as 'bottom' | 'middle' | 'top',
 })
 
+/** 是否启用转场 */
+const transitionEnabled = ref(false)
+/** 转场类型（当前后端按 fade 处理） */
+const transitionType = ref('fade')
+/** 转场时长（秒，0.1~3.0） */
+const transitionDuration = ref(0.5)
+
 /**
- * 保存 BGM/字幕/转场配置（前端暂存演示）。
+ * #RRGGBB 颜色转 ASS PrimaryColour 格式（&H00BBGGRR，内部函数）。
+ * @param hex 十六进制颜色（#RRGGBB）
+ * @returns ASS 格式颜色串（如 &H00FFFFFF）
+ */
+function hexToAssColor(hex: string): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(hex.trim())
+  if (!m) return '&H00FFFFFF'
+  const r = m[1]!.slice(0, 2)
+  const g = m[1]!.slice(2, 4)
+  const b = m[1]!.slice(4, 6)
+  return `&H00${b}${g}${r}`.toUpperCase()
+}
+
+/**
+ * 拉取 BGM 曲库（静默失败不影响主流程）。
  * @returns 无
  */
-function saveMixConfig(): void {
-  ElMessage.success('配置已保存（演示：配置暂存前端）')
+async function fetchBgmList(): Promise<void> {
+  try {
+    bgmList.value = await bgmApi.list()
+    if (!bgmUrl.value && bgmList.value.length) bgmUrl.value = bgmList.value[0]!.url
+  } catch {
+    /* 曲库不可用时仍可选择不上传 */
+  }
+}
+
+/**
+ * 选择自定义 BGM 文件并上传，成功后刷新曲库并自动选中。
+ * @param e 文件选择事件
+ * @returns 无
+ */
+async function onBgmFileChosen(e: Event): Promise<void> {
+  const inputEl = e.target as HTMLInputElement
+  const file = inputEl.files?.[0]
+  inputEl.value = ''
+  if (!file || bgmUploading.value) return
+  bgmUploading.value = true
+  try {
+    const uploaded = await bgmApi.upload(file)
+    ElMessage.success('自定义 BGM 已上传')
+    await fetchBgmList()
+    bgmEnabled.value = true
+    bgmUrl.value = uploaded.url
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    bgmUploading.value = false
+  }
+}
+
+/**
+ * 组装本次合成的 BGM / 字幕 / 转场配置（对齐 ComposeCreateRequest 字段）。
+ * @returns ComposePayload 增量字段
+ */
+function buildMixPayload(): ComposePayload {
+  const payload: ComposePayload = {}
+  if (bgmEnabled.value && bgmUrl.value) {
+    payload.bgm = { url: bgmUrl.value, volume: bgmVolume.value }
+  }
+  if (subtitleEnabled.value) {
+    payload.subtitles = true
+    payload.subtitle_style = {
+      font_size: subtitleStyle.font_size,
+      color: hexToAssColor(subtitleStyle.color),
+      position: subtitleStyle.position,
+    }
+  }
+  if (transitionEnabled.value) {
+    payload.transition = { type: transitionType.value, duration: transitionDuration.value }
+  }
+  return payload
 }
 
 // ============================================================
@@ -431,7 +525,8 @@ async function composeFilm(): Promise<void> {
   composing.value = true
   composeProgress.value = 0
   try {
-    const task = await productionApi.compose(projectId.value, { mode: 'full' })
+    // 并入 BGM / 字幕 / 转场配置（Task 10.4，字段对齐后端 ComposeCreateRequest）
+    const task = await productionApi.compose(projectId.value, { mode: 'full', ...buildMixPayload() })
     ElMessage.success(`合成任务 #${task.id} 已提交`)
     panelVisible.value = true
     startTaskStream()
@@ -469,6 +564,7 @@ async function composeFilm(): Promise<void> {
 onMounted(async () => {
   await loadBase()
   void refreshTasks()
+  void fetchBgmList()
   // 进入页面即建立一次 SSE 流：无任务时服务端立即 done 结束，有任务时实时跟踪
   startTaskStream()
 })
@@ -686,34 +782,93 @@ onBeforeUnmount(() => {
           </div>
         </el-card>
 
-        <!-- BGM / 字幕 / 转场 -->
+        <!-- BGM / 字幕 / 转场（Task 10.4：配置并入 compose 请求体） -->
         <el-card shadow="never" class="block-card">
           <template #header><span>BGM / 字幕 / 转场</span></template>
           <el-form label-width="90px" class="mix-form">
             <el-form-item label="背景音乐">
-              <el-select v-model="mixConfig.bgm" style="width: 240px">
-                <el-option label="平台免版权曲库（自动 ducking）" value="platform_lib" />
-                <el-option label="不使用 BGM" value="none" />
-              </el-select>
+              <el-switch v-model="bgmEnabled" />
+              <template v-if="bgmEnabled">
+                <el-select v-model="bgmUrl" placeholder="选择曲库曲目" style="width: 260px; margin-left: 12px">
+                  <el-option
+                    v-for="b in bgmList"
+                    :key="b.url"
+                    :label="`${b.name}${b.duration ? `（${Math.round(b.duration)}s）` : ''}`"
+                    :value="b.url"
+                  />
+                </el-select>
+                <el-button
+                  size="small"
+                  style="margin-left: 8px"
+                  :loading="bgmUploading"
+                  @click="bgmFileRef?.click()"
+                >
+                  上传自定义
+                </el-button>
+                <input
+                  ref="bgmFileRef"
+                  type="file"
+                  accept="audio/*"
+                  style="display: none"
+                  @change="onBgmFileChosen"
+                />
+              </template>
+            </el-form-item>
+            <el-form-item v-if="bgmEnabled" label="BGM 音量">
+              <el-slider
+                v-model="bgmVolume"
+                :min="0"
+                :max="1"
+                :step="0.05"
+                show-input
+                :show-input-controls="false"
+                style="max-width: 320px"
+              />
             </el-form-item>
             <el-form-item label="字幕">
-              <el-select v-model="mixConfig.subtitleFont" style="width: 160px">
-                <el-option label="思源黑体" value="思源黑体" />
-                <el-option label="思源宋体" value="思源宋体" />
-              </el-select>
-              <el-select v-model="mixConfig.subtitlePos" style="width: 140px; margin-left: 12px">
-                <el-option label="底部" value="bottom" />
-                <el-option label="顶部" value="top" />
-              </el-select>
+              <el-switch v-model="subtitleEnabled" />
+              <template v-if="subtitleEnabled">
+                <span class="mix-inline-label">字号</span>
+                <el-input-number
+                  v-model="subtitleStyle.font_size"
+                  :min="10"
+                  :max="72"
+                  size="small"
+                  style="width: 100px; margin-left: 8px"
+                />
+                <span class="mix-inline-label">颜色</span>
+                <el-color-picker v-model="subtitleStyle.color" size="small" />
+                <el-select
+                  v-model="subtitleStyle.position"
+                  size="small"
+                  style="width: 100px; margin-left: 8px"
+                >
+                  <el-option label="底部" value="bottom" />
+                  <el-option label="居中" value="middle" />
+                  <el-option label="顶部" value="top" />
+                </el-select>
+              </template>
             </el-form-item>
             <el-form-item label="转场">
-              <el-select v-model="mixConfig.transition" style="width: 240px">
-                <el-option label="淡入淡出（自动适配场景切换）" value="fade" />
-                <el-option label="硬切" value="cut" />
-              </el-select>
+              <el-switch v-model="transitionEnabled" />
+              <template v-if="transitionEnabled">
+                <el-select v-model="transitionType" size="small" style="width: 130px; margin-left: 8px">
+                  <el-option label="淡入淡出" value="fade" />
+                  <el-option label="擦除" value="wipeleft" />
+                  <el-option label="滑动" value="slideleft" />
+                </el-select>
+                <span class="mix-inline-label">时长 {{ transitionDuration.toFixed(1) }}s</span>
+                <el-slider
+                  v-model="transitionDuration"
+                  :min="0.1"
+                  :max="3"
+                  :step="0.1"
+                  style="width: 160px; margin-left: 8px"
+                />
+              </template>
             </el-form-item>
           </el-form>
-          <el-button type="primary" plain @click="saveMixConfig">保存配置</el-button>
+          <div class="mix-note">以上配置在点击「全部完成，进入合成」时随合成任务提交生效</div>
         </el-card>
       </template>
 
@@ -926,7 +1081,17 @@ onBeforeUnmount(() => {
   margin: 0 var(--mf-sp-2);
 }
 .mix-form {
-  max-width: 560px;
+  max-width: 640px;
+}
+.mix-inline-label {
+  margin-left: 12px;
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+}
+.mix-note {
+  margin-top: var(--mf-sp-2);
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
 }
 .footer-bar {
   display: flex;

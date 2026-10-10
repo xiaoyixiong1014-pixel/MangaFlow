@@ -65,7 +65,9 @@ async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
     创建流程：
     1. 连接 postgres 系统库（AUTOCOMMIT）查询 pg_database，库不存在则
        CREATE DATABASE（该语句不能在事务块内执行）；
-    2. 对测试库执行 Base.metadata.create_all（幂等，存在即跳过）。
+    2. 对测试库执行 Base.metadata.create_all（幂等，存在即跳过），
+       随后执行 init_db 的存量表幂等补列清单（create_all 不给已存在的
+       表加列）。
 
     Yields:
         AsyncEngine: 绑定测试库的异步引擎（pytest session 级共享）。
@@ -85,10 +87,15 @@ async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
     finally:
         await admin_engine.dispose()
 
-    # ---------- 2. 建表（幂等 create_all） ----------
+    # ---------- 2. 建表（幂等 create_all + 存量表补列） ----------
     engine = create_async_engine(TEST_DB_URL, pool_pre_ping=True)
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # 测试库同为存量库：create_all 不给已存在的表加列，复用主库的
+        # 幂等补列清单（Task 2.1 tasks.priority/next_retry_at/dead_letter 等）
+        from app.core.init_db import MISSING_COLUMN_DDL_STATEMENTS
+        for _table, ddl in MISSING_COLUMN_DDL_STATEMENTS:
+            await conn.execute(text(ddl))
     yield engine
     await engine.dispose()
 
@@ -97,8 +104,9 @@ async def test_engine() -> AsyncGenerator[AsyncEngine, None]:
 async def task_runner(test_engine: AsyncEngine) -> AsyncGenerator[None, None]:
     """会话级夹具：启动连接测试库的进程内任务执行器。
 
-    - 将 runner / agent_chat / database 三个模块的 SessionLocal 重定向到
-      测试库会话工厂（生成任务、SSE 落库等内部会话均写测试库）；
+    - 将 runner / agent_chat / notification_service / database 四个模块的
+      SessionLocal 重定向到测试库会话工厂（生成任务、通知落库等内部会话
+      均写测试库）；
     - 启动 3 个 worker 协程常驻当前（session 级）事件循环；
     - 会话结束时取消全部 worker 并还原模块属性。
 
@@ -113,6 +121,7 @@ async def task_runner(test_engine: AsyncEngine) -> AsyncGenerator[None, None]:
     """
     from app.api import agent_chat as agent_chat_mod
     from app.core import database as db_mod
+    from app.services import notification_service as notification_mod
     from app.tasks import runner as runner_mod
 
     factory = async_sessionmaker(
@@ -122,10 +131,12 @@ async def task_runner(test_engine: AsyncEngine) -> AsyncGenerator[None, None]:
     originals: List[Tuple[Any, str, Any]] = [
         (agent_chat_mod, "SessionLocal", agent_chat_mod.SessionLocal),
         (db_mod, "SessionLocal", db_mod.SessionLocal),
+        (notification_mod, "SessionLocal", notification_mod.SessionLocal),
         (runner_mod, "SessionLocal", runner_mod.SessionLocal),
     ]
     agent_chat_mod.SessionLocal = factory
     db_mod.SessionLocal = factory
+    notification_mod.SessionLocal = factory
     runner_mod.SessionLocal = factory
 
     runner_mod._RUNNER_TASKS.clear()

@@ -21,8 +21,8 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.llm_adapter import llm
 from app.models import Character, Project, Prop, Scene, Script, VersionSnapshot
-from app.providers.llm import chat
 
 # visual_prompt 缺省中文模板（抽取确认 / 手工建角色共用）
 DEFAULT_VISUAL_TEMPLATE = "统一风格插画，{name}，{description}，全身立绘，纯色背景，高细节"
@@ -422,11 +422,13 @@ async def llm_extract(raw_text: str) -> Optional[Dict[str, Any]]:
         无：内部捕获一切异常（含网络/鉴权/限流），保证降级路径可达。
     """
     try:
-        text = await chat(
+        text = await llm.chat(
+            None,
             [
                 {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
                 {"role": "user", "content": (raw_text or "")[:4000]},
             ],
+            agent_name="script_extract",
             json_mode=True,
             temperature=0.2,
         )

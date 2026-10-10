@@ -17,6 +17,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agents.llm_adapter import llm
 from app.models import (
     AssetVariant,
     Canvas,
@@ -30,7 +31,6 @@ from app.models import (
     StoryboardCharacter,
     User,
 )
-from app.providers.llm import chat
 from app.services.script_service import strip_json_fences, unwrap_scenes
 
 # 场景名匹配命中时的应用层置信度（storyboards 表无独立字段，仅作匹配策略语义记录）
@@ -150,11 +150,13 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         f"场景时长：{scene.get('duration_sec', 30)} 秒"
     )
     try:
-        text = await chat(
+        text = await llm.chat(
+            None,
             [
                 {"role": "system", "content": _SHOTS_SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ],
+            agent_name="storyboard_decompose",
             json_mode=True,
             temperature=0.3,
         )

@@ -13,6 +13,7 @@
  */
 import client from './client'
 import { ssePost } from './sse'
+import { downloadBlob, filenameFromDisposition } from '@/utils/download'
 import type {
   AssetsGroup,
   AssetVariant,
@@ -344,6 +345,30 @@ export function deliverToCanvas(
       storyboard_id: storyboardId ?? null,
     })
     .then((r) => r.data)
+}
+
+/**
+ * 导出分镜表（xlsx / csv，Task 10.4）。
+ * episode_id=0 为「项目全部分镜」全量导出（普通创作流分镜不绑剧集）。
+ * @param projectId 项目 ID
+ * @param format 导出格式：xlsx 或 csv
+ * @returns 触发浏览器下载（无返回数据）
+ * @throws 404 项目不存在/非本人；422 format 非法
+ */
+export async function exportStoryboardSheet(
+  projectId: number,
+  format: 'xlsx' | 'csv',
+): Promise<void> {
+  const resp = await client.get(
+    `/projects/${projectId}/storyboards/episodes/0/export`,
+    { params: { format }, responseType: 'blob' },
+  )
+  const fallback = `storyboards_all.${format}`
+  const filename = filenameFromDisposition(
+    resp.headers['content-disposition'] as string | undefined,
+    fallback,
+  )
+  downloadBlob(resp.data as Blob, filename)
 }
 
 // ============================================================

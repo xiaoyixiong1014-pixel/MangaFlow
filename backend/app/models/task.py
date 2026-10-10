@@ -4,9 +4,10 @@
 严格对应架构设计文档 §5.3.20（P-02 ~ P-12 / SYS-01）。
 """
 
+from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, SmallInteger, String, Text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKey, Index, Integer, SmallInteger, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +33,9 @@ class Task(Base):
         idempotency_key: 幂等键（唯一，P-11 / RD-28）。
         estimated_seconds: 预估剩余秒数（RD-29）。
         progress: 进度百分比（0-100）。
+        priority: 调度优先级（0-9，越大越先被 worker 领取，默认 5）。
+        next_retry_at: 下次允许重试的时间（指数退避调度，NULL 表示立即可领）。
+        dead_letter: 死信标记（重试耗尽仍失败的任务置 True，进入管理端死信队列）。
     """
 
     __tablename__ = "tasks"
@@ -69,6 +73,15 @@ class Task(Base):
     idempotency_key: Mapped[str] = mapped_column(String(80), nullable=False, comment="幂等键（P-11/RD-28）")
     estimated_seconds: Mapped[Optional[int]] = mapped_column(nullable=True, comment="预估剩余秒数（RD-29）")
     progress: Mapped[int] = mapped_column(SmallInteger, nullable=False, server_default="0", comment="进度百分比")
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="5", index=True,
+        comment="调度优先级（0-9，越大越先执行，默认 5）")
+    next_retry_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+        comment="下次允许重试时间（指数退避；NULL 表示立即可领取）")
+    dead_letter: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", index=True,
+        comment="死信标记（重试耗尽仍失败，进入管理端死信队列）")
     # 任务附加信息：目标资产/提示词/时长等
     meta: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True,
                                                  comment="任务附加信息：目标资产/提示词/时长等")

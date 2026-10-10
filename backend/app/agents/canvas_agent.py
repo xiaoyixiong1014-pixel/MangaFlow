@@ -10,8 +10,8 @@ import logging
 
 from langchain_core.messages import AIMessage
 
+from app.agents.llm_adapter import llm
 from app.agents.state import AgentState, last_human_text
-from app.providers.llm import chat
 
 logger = logging.getLogger(__name__)
 
@@ -43,11 +43,13 @@ async def canvas_node(state: AgentState) -> dict:
     artifacts = dict(state.get("artifacts") or {})
     summary = artifacts.get("canvas_input") or last_human_text(state) or "画布为空，希望开始一个新漫剧项目"
     try:
-        raw = await chat(
+        raw = await llm.chat(
+            state,
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": f"画布节点摘要：{summary}"},
             ],
+            agent_name="canvas",
             temperature=0.5,
             json_mode=True,
         )
@@ -55,6 +57,7 @@ async def canvas_node(state: AgentState) -> dict:
         data = data if isinstance(data, dict) else {}
         suggestion = {"reply": str(data.get("reply", "")), "actions": data.get("actions") or []}
         artifacts["canvas_suggestion"] = suggestion
+        artifacts = llm.attach_usage(artifacts)
         content = json.dumps(suggestion, ensure_ascii=False, indent=2)
         return {"messages": [AIMessage(content=content)], "artifacts": artifacts, "error": ""}
     except Exception as exc:  # noqa: BLE001 —— LLM/解析异常必须降级

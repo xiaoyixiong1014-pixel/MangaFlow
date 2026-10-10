@@ -1,7 +1,9 @@
 """模型配置路由模块（文件级说明）。
 
-实现逻辑模型目录 / 平台渠道信息 / 用户自有 Key 管理：
+实现逻辑模型目录 / 平台渠道信息 / 用户自有 Key 管理 / 渠道健康摘要 / 效果对比：
 - GET    /api/models/catalog                逻辑模型（按能力分组，附渠道健康）+ 平台渠道信息（不含 Key）
+- GET    /api/models/health-summary         平台渠道健康摘要（D-05，用户端可见只读）
+- POST   /api/models/compare                模型效果对比（PL-11，逐渠道生成并返回结果）
 - GET    /api/models/channels               当前用户自有渠道（api_key 脱敏前4后4）
 - POST   /api/models/channels               新建自有渠道（Key 经 Fernet 加密落库）
 - DELETE /api/models/channels/{id}          删除自有渠道（仅自己的）
@@ -10,6 +12,8 @@
 注：项目级模型配置存于 projects.config，由 /api/projects 维护，此处不做。
 """
 
+import asyncio
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -18,10 +22,13 @@ from openai import AsyncOpenAI
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.crypto import decrypt_text, encrypt_text
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models import LogicalModel, ModelChannel, User
+from app.providers.image_agnes import generate_image_real
+from app.providers.llm import chat_with_meta
 from app.schemas.model_config import (
     CatalogGroupOut,
     CatalogModelOut,
@@ -29,8 +36,14 @@ from app.schemas.model_config import (
     ChannelCreateRequest,
     ChannelOut,
     ChannelTestResponse,
+    CompareItemOut,
+    CompareRequest,
+    CompareResponse,
+    HealthChannelItem,
+    HealthSummaryOut,
     PlatformChannelOut,
 )
+from app.services.model_router import ResolvedChannel, _extract_default_model
 
 router = APIRouter(prefix="/api/models", tags=["models"])
 
@@ -39,6 +52,9 @@ _CAPABILITY_ORDER = ("llm", "image", "video", "tts")
 
 # 渠道连通性测试超时（秒）
 _TEST_TIMEOUT_SECONDS = 10.0
+
+# 效果对比单渠道调用超时（秒；图像含生成与下载，放宽到 90s）
+_COMPARE_TIMEOUT_SECONDS = 90.0
 
 
 def _mask_api_key(stored: str) -> str:
@@ -135,6 +151,163 @@ async def get_catalog(
         for c in channels if c.owner_user_id is None
     ]
     return CatalogOut(capabilities=capabilities, platform_channels=platform_channels)
+
+
+@router.get("/health-summary", response_model=HealthSummaryOut)
+async def get_health_summary(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> HealthSummaryOut:
+    """查询平台渠道健康摘要（D-05，只读，登录用户可见）。
+
+    供工作台顶部「渠道健康标红条」使用：返回全部平台渠道的健康快照与
+    down / degraded 计数；不包含任何 Key 信息。
+
+    Args:
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        HealthSummaryOut: 渠道健康列表 + 异常渠道计数。
+
+    Raises:
+        HTTPException: 401 —— 未认证（由依赖抛出）。
+    """
+    rows = (
+        await db.execute(
+            select(ModelChannel)
+            .where(ModelChannel.owner_user_id.is_(None))
+            .order_by(ModelChannel.id)
+        )
+    ).scalars().all()
+    items = [HealthChannelItem.model_validate(c) for c in rows]
+    return HealthSummaryOut(
+        channels=items,
+        down_count=sum(1 for c in rows if c.health_status == "down"),
+        degraded_count=sum(1 for c in rows if c.health_status == "degraded"),
+    )
+
+
+@router.post("/compare", response_model=CompareResponse)
+async def compare_models(
+    req: CompareRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CompareResponse:
+    """模型效果对比（PL-11）：对指定渠道用同一提示词逐渠道生成并返回结果。
+
+    规则：
+    - 渠道须为平台渠道（owner_user_id IS NULL）或本人自有渠道，否则该渠道
+      返回 ok=False、error="渠道不存在"（不抛 404，避免整批失败）；
+    - llm：以渠道自身的 base_url / 解密 Key / models 目录首个模型构造单渠道
+      调用链，委托 providers.llm.chat_with_meta（channels 参数指定渠道）；
+    - image：构造 ResolvedChannel 委托 providers.image_agnes.generate_image_real
+      （结果落 storage/generated，返回 /storage/... 地址）；
+    - 单渠道异常（含超时）全部收敛进结果，渠道间互不影响，并发执行。
+
+    Args:
+        req: 对比请求（capability/prompt/channel_ids）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CompareResponse: 与请求顺序一致的逐渠道结果。
+
+    Raises:
+        HTTPException: 401 —— 未认证（由依赖抛出）；422 —— 请求体校验失败。
+    """
+    # 一次批量加载目标渠道（平台渠道或本人自有渠道）
+    rows = (
+        await db.execute(
+            select(ModelChannel).where(
+                ModelChannel.id.in_(req.channel_ids),
+                (ModelChannel.owner_user_id.is_(None)) | (ModelChannel.owner_user_id == user.id),
+            )
+        )
+    ).scalars().all()
+    channel_map: Dict[int, ModelChannel] = {c.id: c for c in rows}
+
+    async def _run_one(channel_id: int) -> CompareItemOut:
+        """执行单渠道对比并收敛全部异常（内部函数）。
+
+        Args:
+            channel_id: 渠道 ID。
+
+        Returns:
+            CompareItemOut: 该渠道的对比结果（失败也返回 ok=False 结构）。
+
+        Raises:
+            无：内部捕获全部异常。
+        """
+        started = time.perf_counter()
+        channel = channel_map.get(channel_id)
+        if channel is None:
+            return CompareItemOut(
+                channel_id=channel_id, ok=False,
+                error="渠道不存在或无权访问", elapsed_ms=0,
+            )
+        try:
+            if req.capability == "llm":
+                model_name = _extract_default_model(channel.models) or "gpt-4o-mini"
+                text_out, _meta = await asyncio.wait_for(
+                    chat_with_meta(
+                        messages=[{"role": "user", "content": req.prompt}],
+                        temperature=0.7,
+                        channels=[(
+                            channel.base_url,
+                            _decrypt_api_key(channel.api_key_encrypted) or "missing-key",
+                            model_name,
+                            f"channel-{channel.id}",
+                        )],
+                    ),
+                    timeout=_COMPARE_TIMEOUT_SECONDS,
+                )
+                elapsed = int((time.perf_counter() - started) * 1000)
+                return CompareItemOut(
+                    channel_id=channel_id, ok=True, text=text_out, elapsed_ms=elapsed,
+                )
+            # image：构造 ResolvedChannel 走 Agnes 真实出图（内部已吞异常返回 None）
+            resolved = ResolvedChannel(
+                channel_id=channel.id,
+                name=f"channel-{channel.id}",
+                protocol=channel.protocol,
+                base_url=channel.base_url,
+                api_key=_decrypt_api_key(channel.api_key_encrypted) or "",
+                model=_extract_default_model(channel.models) or "image-gen",
+                capability="image",
+            )
+            result = await asyncio.wait_for(
+                generate_image_real(
+                    req.prompt,
+                    settings.storage_path() / "generated",
+                    seed=int(time.time() * 1000) % 1_000_000_000 + channel.id,
+                    channel=resolved,
+                ),
+                timeout=_COMPARE_TIMEOUT_SECONDS,
+            )
+            elapsed = int((time.perf_counter() - started) * 1000)
+            if result is None:
+                return CompareItemOut(
+                    channel_id=channel_id, ok=False,
+                    error="图像生成失败（渠道返回异常或超时）", elapsed_ms=elapsed,
+                )
+            return CompareItemOut(
+                channel_id=channel_id, ok=True, image_url=result["url"], elapsed_ms=elapsed,
+            )
+        except asyncio.TimeoutError:
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return CompareItemOut(
+                channel_id=channel_id, ok=False,
+                error=f"生成超时（>{_COMPARE_TIMEOUT_SECONDS:.0f}s）", elapsed_ms=elapsed,
+            )
+        except Exception as exc:  # noqa: BLE001 —— 对比需要逐渠道收敛一切异常
+            elapsed = int((time.perf_counter() - started) * 1000)
+            return CompareItemOut(
+                channel_id=channel_id, ok=False, error=str(exc), elapsed_ms=elapsed,
+            )
+
+    results = list(await asyncio.gather(*(_run_one(cid) for cid in req.channel_ids)))
+    return CompareResponse(results=results)
 
 
 @router.get("/channels", response_model=List[ChannelOut])

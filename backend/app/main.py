@@ -21,6 +21,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.database import engine
 from app.core.init_db import init_database
+from app.core.metrics import HTTPMetricsMiddleware
 from app.tasks.runner import start_runner
 
 logger = logging.getLogger("mangaflow.main")
@@ -89,6 +90,10 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Prometheus HTTP 指标中间件（纯 ASGI 实现：拦截 http.response.start 记
+    # 状态码并计时计数，不缓冲响应流，避免 BaseHTTPMiddleware 与 SSE 冲突）
+    app.add_middleware(HTTPMetricsMiddleware)
+
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
         """全局兜底异常处理器。
@@ -123,11 +128,17 @@ def create_app() -> FastAPI:
         announcements,
         assets,
         auth,
+        bgm,
         billing,
+        canvas_plugins,
         canvases,
         generation,
+        mcp,
         media,
+        memories,
         models_config,
+        notifications,
+        plugins_builtin,
         projects,
         prompts,
         publish,
@@ -143,6 +154,8 @@ def create_app() -> FastAPI:
     app.include_router(prompts.router)
     app.include_router(media.router)
     app.include_router(models_config.router)
+    # BGM 曲库：列表（登录用户）/ 上传与下架（运营方）
+    app.include_router(bgm.router)
     app.include_router(announcements.router)
     # 以下路由因携带 {project_id} 路径参数，不设 prefix，路由内部写完整路径
     app.include_router(script.router)
@@ -152,11 +165,26 @@ def create_app() -> FastAPI:
     app.include_router(publish.router)
     app.include_router(canvases.router)
     app.include_router(agent_chat.router)
+    app.include_router(memories.router)
+    # 画布插件市场：列表/安装/审查/启停/手动调用（CV-20/21/22，登录用户 + 运营方审查）
+    app.include_router(canvas_plugins.router)
+    # 内置插件直调端点（CV-21：builtin:text-enhance 等，登录用户）
+    app.include_router(plugins_builtin.router)
+    # MCP 桥：server 配置（站点设置 KV）/ 工具列举 / 工具调用（CV-19）
+    app.include_router(mcp.router)
+    # 通知中心：列表/未读数/已读/SSE 实时推送（登录用户）
+    app.include_router(notifications.router)
+
+    # Prometheus 指标端点（免鉴权：仅聚合指标，无敏感数据，供监控系统抓取）
+    from app.api.metrics import router as metrics_router
+
+    app.include_router(metrics_router)
 
     # ---------- 管理端路由（占位） ----------
     from app.api.admin import (
         content,
         dashboard,
+        dlq,
         models,
         orders,
         review,
@@ -171,6 +199,8 @@ def create_app() -> FastAPI:
     app.include_router(orders.router)
     app.include_router(content.router)
     app.include_router(admin_settings.router)
+    # 任务死信队列：死信列表 / 重新入队（运营方）
+    app.include_router(dlq.router)
 
     @app.get("/", tags=["meta"])
     async def root() -> dict:
