@@ -4,7 +4,8 @@
 - ResolvedChannel：解析后的渠道视图（含已解密 Key 与默认模型）。
 - resolve_channels_chain()：按 LogicalModel.channel_priority 顺序解析候选渠道
   列表（仅平台渠道 enabled=True 且非 down；解密失败按明文降级）。
-- record_result()：业务调用后回写渠道健康状态（成功 healthy / 失败 degraded）。
+- record_result()：业务调用后回写渠道健康状态（成功 healthy（degraded 一次
+  成功调用即自动复位）/ 失败 degraded）。
 - probe_channel()：按能力协议探测单个渠道连通性（llm 发 1 token 请求；
   image/video 用极小主体试探、非 401/403 的 4xx 视为连通以免真实计费；
   tts 发最短合成请求；mock 协议视为恒可用），并回写 health_status/last_check_at。
@@ -205,9 +206,13 @@ async def record_result(
 ) -> None:
     """回写渠道调用结果的健康状态（由业务方在每次渠道调用后触发）。
 
-    ok=True → healthy；ok=False → degraded（连续失败置 down 的策略简化为
-    直接 degraded，可由健康探测任务进一步降级）。同时刷新 last_check_at。
-    mock 哨兵（channel_id=0）不落库，直接跳过。
+    双向自动流转：ok=True → healthy（degraded 渠道一次成功调用即自动复位，
+    无需人工干预或探测任务）；ok=False → degraded（连续失败置 down 的策略
+    简化为直接 degraded，可由健康探测任务进一步降级）。复位/降级同时刷新
+    last_check_at（渠道表无独立 last_healthy_at 列，last_check_at 即最近
+    健康变更时间）。401/403 → down 的口径在 probe_channel（探测）侧维护，
+    本函数保持 healthy/degraded 二分不变。mock 哨兵（channel_id=0）不落库，
+    直接跳过。
 
     Args:
         session: 异步数据库会话（不主动 commit，由调用方统一提交）。

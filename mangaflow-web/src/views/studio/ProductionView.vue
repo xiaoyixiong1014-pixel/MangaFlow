@@ -10,7 +10,9 @@
       keyframes(phase=full)；任务提交后不阻塞，由任务面板跟踪；
     ② 视频：每镜行（首帧缩略 + video_url 播放器或占位 + 「生成视频片段」video()）；
     ③ 配音与合成（S-08）：角色音色映射表（音色 Select + 试听按钮 disabled 占位）、
-      每镜「生成配音」tts()；时长差异处理三选一（缩短台词 / 延长镜头 / 重新配音）——
+      每镜「生成配音」tts()；已配音行（后端回写 audio_url）在操作列展示行内
+      播放/暂停试听图标，未配音行显示「未生成」占位；时长差异处理三选一
+      （缩短台词 / 延长镜头 / 重新配音）——
       仅「重新配音」真实调用 tts，其余为前端演示提示（说明见注释）；
       BGM（曲库下拉 + 音量 + 上传自定义）/ 字幕（开关 + 字号/颜色/位置）/
       转场（开关 + 类型 + 时长）—— 配置随 compose 请求体提交（Task 10.4）；
@@ -23,6 +25,7 @@
 import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import * as productionApi from '@/api/production'
 import * as billingApi from '@/api/billing'
 import * as bgmApi from '@/api/bgm'
@@ -336,8 +339,50 @@ function voiceOf(b: Storyboard): 'male_01' | 'female_01' {
 
 /** 配音任务提交中的分镜 ID 集合（防重复点击） */
 const ttsBusyIds = ref<number[]>([])
-/** 已完成配音的分镜 ID 集合（本地跟踪，用于展示时长差异处理区） */
-const ttsDoneIds = ref<number[]>([])
+
+/** 已完成配音的分镜列表（依据后端回写的 audio_url，刷新页面后依然准确） */
+const ttsDoneBoards = computed(() => boards.value.filter((x) => x.audio_url))
+
+// ---------- 行内配音试听（单例播放器：同时只播一条） ----------
+
+/** 正在播放配音的分镜 ID（null = 无播放） */
+const playingSbId = ref<number | null>(null)
+/** 单例音频播放器（模块级复用，避免每行各建一份） */
+const audioEl = new Audio()
+
+/**
+ * 切换某行配音的播放/暂停：播放新行前先停止当前行。
+ * @param b 目标分镜（audio_url 为空时不处理）
+ * @returns 无
+ */
+function togglePlay(b: Storyboard): void {
+  if (!b.audio_url) return
+  if (playingSbId.value === b.id) {
+    audioEl.pause()
+    playingSbId.value = null
+    return
+  }
+  audioEl.pause()
+  audioEl.src = b.audio_url
+  playingSbId.value = b.id
+  audioEl
+    .play()
+    .then(() => {
+      /* 播放成功，图标由 playingSbId 驱动 */
+    })
+    .catch(() => {
+      playingSbId.value = null
+      ElMessage.warning('音频播放失败，可能该试听资源不可用')
+    })
+}
+
+// 播放结束/异常时复位图标
+audioEl.addEventListener('ended', () => {
+  playingSbId.value = null
+})
+audioEl.addEventListener('error', () => {
+  playingSbId.value = null
+})
 
 /**
  * 生成单镜配音（TTS）。
@@ -353,13 +398,14 @@ async function genTts(b: Storyboard): Promise<void> {
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
-    // 轮询该任务直到终态，完成后标记并给出处理提示
+    // 轮询该任务直到终态；完成后刷新分镜列表以取回后端回写的 audio_url
     const timer = setInterval(async () => {
       try {
         const t = await productionApi.taskDetail(task.id)
         if (t.status === 'done') {
           clearInterval(timer)
-          if (!ttsDoneIds.value.includes(b.id)) ttsDoneIds.value = [...ttsDoneIds.value, b.id]
+          const sb = await studioApi.listStoryboard(projectId.value)
+          boards.value = sb
           ElMessage.success(`#${b.sequence} 镜配音完成`)
         } else if (t.status === 'failed' || t.status === 'canceled') {
           clearInterval(timer)
@@ -571,6 +617,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopTaskStream()
+  // 离开页面时停止行内试听
+  audioEl.pause()
+  playingSbId.value = null
 })
 </script>
 
@@ -734,7 +783,7 @@ onBeforeUnmount(() => {
             <el-table-column label="音色" width="110">
               <template #default="{ row }">{{ voiceOf(row) === 'male_01' ? '男声' : '女声' }}</template>
             </el-table-column>
-            <el-table-column label="操作" width="150">
+            <el-table-column label="操作" width="190">
               <template #default="{ row }">
                 <el-button
                   size="small"
@@ -743,23 +792,37 @@ onBeforeUnmount(() => {
                   :loading="ttsBusyIds.includes(row.id)"
                   @click="genTts(row)"
                 >
-                  {{ ttsDoneIds.includes(row.id) ? '重新配音' : '生成配音' }}
+                  {{ row.audio_url ? '重新配音' : '生成配音' }}
                 </el-button>
-                <el-tag v-if="ttsDoneIds.includes(row.id)" size="small" type="success" class="tts-done-tag">
-                  已配音
+                <!-- 已配音：行内播放/暂停试听图标（替代原"已配音"标签）；未配音：未生成占位 -->
+                <el-button
+                  v-if="row.audio_url"
+                  link
+                  type="primary"
+                  class="tts-play-btn"
+                  :title="playingSbId === row.id ? '暂停试听' : '播放配音'"
+                  @click="togglePlay(row)"
+                >
+                  <el-icon :size="18">
+                    <VideoPause v-if="playingSbId === row.id" />
+                    <VideoPlay v-else />
+                  </el-icon>
+                </el-button>
+                <el-tag v-else size="small" type="info" effect="plain" class="tts-none-tag">
+                  未生成
                 </el-tag>
               </template>
             </el-table-column>
           </el-table>
 
           <!-- 时长差异处理（三选一；演示范围见脚本注释） -->
-          <div v-if="ttsDoneIds.length" class="over-box">
+          <div v-if="ttsDoneBoards.length" class="over-box">
             <div class="over-title">
-              时长差异处理（已完成配音 {{ ttsDoneIds.length }} 镜；实际时长由后端在合成阶段自动对齐）
+              时长差异处理（已完成配音 {{ ttsDoneBoards.length }} 镜；实际时长由后端在合成阶段自动对齐）
             </div>
             <el-select v-model="overBoard" value-key="id" placeholder="选择分镜" style="width: 200px" size="small">
               <el-option
-                v-for="b in boards.filter((x) => ttsDoneIds.includes(x.id))"
+                v-for="b in ttsDoneBoards"
                 :key="b.id"
                 :label="`#${String(b.sequence).padStart(2, '0')}（预计 ${b.duration}s）`"
                 :value="b"
@@ -1059,8 +1122,13 @@ onBeforeUnmount(() => {
 .block-card {
   margin-bottom: 0;
 }
-.tts-done-tag {
+.tts-none-tag {
   margin-left: 8px;
+}
+/* 行内配音试听图标（播放/暂停切换） */
+.tts-play-btn {
+  margin-left: 8px;
+  vertical-align: middle;
 }
 .over-box {
   margin-top: var(--mf-sp-4);
@@ -1100,6 +1168,8 @@ onBeforeUnmount(() => {
   gap: var(--mf-sp-4);
   position: sticky;
   bottom: 0;
+  /* sticky 吸底时浮于 positioned 内容（如 el-table 单元格）之上，避免滚动穿透重叠 */
+  z-index: 10;
   padding: var(--mf-sp-3);
   background: var(--mf-surface);
   border: 1px solid var(--mf-border);

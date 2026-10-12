@@ -42,6 +42,7 @@ class StoryboardOut(BaseModel):
         prompt_editable: 提示词用户可编辑层。
         keyframe_url: 关键帧 URL。
         video_url: 视频片段 URL。
+        audio_url: 配音 URL（TTS 任务完成后回写，可用于行内试听播放）。
         status: 状态 pending/generating/done/failed。
         regen_count: 重生成次数。
         characters: 关联角色列表。
@@ -60,6 +61,7 @@ class StoryboardOut(BaseModel):
     prompt_editable: Optional[str] = None
     keyframe_url: Optional[str] = None
     video_url: Optional[str] = None
+    audio_url: Optional[str] = None
     status: str = "pending"
     regen_count: int = 0
     characters: List[StoryboardCharacterLinkOut] = Field(default_factory=list)

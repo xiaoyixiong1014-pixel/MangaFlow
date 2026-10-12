@@ -10,6 +10,7 @@
 启动方式：`python -m uvicorn app.main:app --port 8000`（cwd=backend）。
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -18,22 +19,45 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.core.config import settings
+from app.core.config import BASE_DIR, settings
 from app.core.database import engine
 from app.core.init_db import init_database
 from app.core.metrics import HTTPMetricsMiddleware
-from app.tasks.runner import start_runner
+from app.core.tracing import setup_tracing
+from app.tasks.runner import recover_orphan_running_tasks, start_runner
 
 logger = logging.getLogger("mangaflow.main")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+
+
+def _run_alembic_upgrade() -> None:
+    """同步执行 Alembic 迁移至最新版本（alembic upgrade head，程序化 API）。
+
+    使用 alembic 的 command.upgrade 而非 subprocess：进程内调用免于环境/依赖拼接，
+    连接串经 alembic.ini 占位由 env.py 动态注入（运行时取 settings.database_url）。
+
+    Raises:
+        Exception: 数据库不可达、迁移脚本执行失败时向上抛出，由调用方捕获降级。
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    # alembic.ini 与 alembic/ 版本目录均位于 backend 根目录（BASE_DIR）；
+    # 显式 set_main_option 兜底 script_location，兼容任意工作目录下的程序化调用
+    cfg = Config(str(BASE_DIR / "alembic.ini"))
+    cfg.set_main_option("script_location", str(BASE_DIR / "alembic"))
+    cfg.set_main_option("sqlalchemy.url", settings.database_url)
+    command.upgrade(cfg, "head")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理。
 
-    启动时：初始化数据库（建库/建表/种子，失败仅记录日志不阻塞启动），
-    随后启动进程内异步任务执行器（当前为占位 no-op）。
+    启动时：可选执行 Alembic 迁移（ALEMBIC_ON_STARTUP=true 时，先于 create_all），
+    随后初始化数据库（建库/建表/种子，失败仅记录日志不阻塞启动），再执行在途
+    任务启动恢复（遗留 running 行重置回 queued，先恢复后领取避免竞态），
+    并启动进程内异步任务执行器。
     关闭时：释放数据库引擎连接池。
 
     Args:
@@ -45,12 +69,47 @@ async def lifespan(app: FastAPI):
     Raises:
         Exception: 初始化异常均被捕获记录，不向上传播（降级启动）。
     """
+    # LangSmith 追踪接线（MA-13）：须在任何 LLM/Graph 调用之前注入追踪环境变量；
+    # 未配置（langsmith_tracing=False 默认）时零开销直接返回
+    setup_tracing()
+
+    if settings.alembic_on_startup:
+        try:
+            # alembic 的 env.py 在线模式经 asyncio.run 驱动异步迁移，而 lifespan 运行
+            # 于主事件循环中——asyncio.run 不能在运行中的循环内调用，故用 to_thread
+            # 切到工作线程执行（工作线程无运行中循环，可安全创建新循环）
+            await asyncio.to_thread(_run_alembic_upgrade)
+            logger.info("Alembic 迁移执行完成（upgrade head）")
+        except Exception:
+            # 降级策略：迁移失败不阻断启动，交由 create_all + 幂等补列兜底
+            logger.exception("Alembic 迁移失败，将降级为 create_all 兜底初始化")
+
     try:
         await init_database()
         logger.info("数据库初始化完成（建库/建表/种子）")
     except Exception:
         # 降级启动：数据库不可达时服务仍可拉起，接口层面再暴露错误
         logger.exception("数据库初始化失败，服务将以降级模式启动")
+
+    try:
+        # pgvector 双模向量检索（Task 6）：create_all 之后、恢复/启动 worker 之前
+        # 探测扩展可用性并幂等 ensure 影子向量列 + ivfflat 索引；失败仅告警降级，
+        # 检索自动回退 JSONB+Python 余弦路径，不阻断启动
+        from app.services.vector_store import ensure_pgvector_schema
+
+        await ensure_pgvector_schema(engine)
+    except Exception:
+        logger.exception("pgvector 影子列初始化异常，向量检索降级为 JSONB+Python 余弦路径")
+
+    try:
+        # 启动恢复（R-03）：先重置进程重启遗留的 running 僵尸任务，再拉起
+        # worker——先恢复后领取，保证恢复事务先于任何领取提交，消除竞态；
+        # 恢复失败仅记录日志降级继续，不阻断启动（worker 照常服务新任务）
+        recovered = await recover_orphan_running_tasks()
+        if recovered:
+            logger.warning("在途任务恢复完成：%d 条僵尸任务重回队列", recovered)
+    except Exception:
+        logger.exception("在途任务恢复失败，跳过恢复降级启动")
 
     try:
         await start_runner(engine)
@@ -116,9 +175,12 @@ def create_app() -> FastAPI:
     # ---------- 静态文件：生成/上传素材的本地存储对外服务 ----------
     # 生成任务与上传文件的物理目录（config.storage_dir），通过 /storage/* URL 暴露，
     # 前端 <img>/<video>/<audio> 直接引用该地址（生产环境应替换为对象存储 + CDN）。
+    # 注意：必须使用 settings.storage_path()（以 PROJECT_ROOT 为基准的绝对路径），
+    # 不能直接用相对的 settings.storage_dir —— 服务以 cwd=backend 启动时相对路径
+    # 会解析为 backend/backend/storage，导致所有 /storage/* 产物 404（C-BUG-2）。
     from fastapi.staticfiles import StaticFiles
 
-    storage_dir = Path(settings.storage_dir)
+    storage_dir = settings.storage_path()
     storage_dir.mkdir(parents=True, exist_ok=True)
     app.mount("/storage", StaticFiles(directory=str(storage_dir)), name="storage")
 
@@ -145,11 +207,13 @@ def create_app() -> FastAPI:
         script,
         storyboards,
         users,
+        versions,
     )
 
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(projects.router)
+    app.include_router(versions.router)
     app.include_router(billing.router)
     app.include_router(prompts.router)
     app.include_router(media.router)

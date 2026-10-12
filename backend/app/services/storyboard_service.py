@@ -311,6 +311,7 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
             "prompt_editable": sb.prompt_editable,
             "keyframe_url": sb.keyframe_url,
             "video_url": sb.video_url,
+            "audio_url": sb.audio_url,
             "status": sb.status,
             "regen_count": sb.regen_count,
             "characters": links_by_sb.get(sb.id, []),

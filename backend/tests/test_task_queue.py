@@ -6,7 +6,10 @@
 - 指数退避：next_retry_at 未到期的 queued 任务本轮不被领取；领取失败重试后
   next_retry_at = now + 2^retry_count 分钟（首次重试 2 分钟）；
 - 死信：retry_count 达到上限（>= 3）后终态失败并置 dead_letter=True，
-  冻结积分按 platform 承担退款。
+  冻结积分按 platform 承担退款；
+- 启动恢复（R-03）：进程重启遗留的 running 僵尸行被重置回 queued
+  （retry_count/progress 保持，meta 记 recover_at/recover_from），恢复后
+  可被 worker 重新领取，queued/failed 行不受恢复影响。
 
 说明：测试直接调用 runner._process_one()（单次处理单元）而非走 HTTP 客户端，
 且不加载 task_runner 常驻 worker（避免并发领取竞争导致断言不稳定）；通过局部
@@ -20,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest_asyncio
-from sqlalchemy import select, update
+from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from app.models import Project, Task, User, Wallet, WalletTransaction
@@ -48,6 +51,13 @@ async def patched_runner(test_engine):
     factory = async_sessionmaker(
         bind=test_engine, class_=AsyncSession, expire_on_commit=False, autoflush=False
     )
+    # 防御性清空任务表：本组用例依赖「库中仅存在用例自建任务」的假设
+    # （如 next_retry_at 未到期用例断言 processed is False），全量运行时
+    # 前序用例 teardown 异常可能残留 queued 行并被 _process_one 领走，
+    # 造成领取断言误报——用例开始前统一清理。
+    async with factory() as s:
+        await s.execute(delete(Task))
+        await s.commit()
     original_runner = runner_mod.SessionLocal
     original_notification = notification_mod.SessionLocal
     runner_mod.SessionLocal = factory
@@ -293,3 +303,103 @@ async def test_retry_haojin_jinru_sixin(db, patched_runner):
     ).scalars().first()
     assert tx is not None, "死信失败后应产生冻结退款流水"
     assert tx.bear == "platform"
+
+
+async def test_recover_running_hui_queued(db, patched_runner):
+    """启动恢复：running 僵尸任务被重置回 queued，retry_count/progress 保持。
+
+    进程重启后遗留的 status="running" 行（无人处理、永不终态）应被
+    recover_orphan_running_tasks 重置回 queued：进度保留、retry_count 不变
+    （恢复 ≠ 失败，不计入指数退避），meta 追加 recover_from/recover_at 留痕。
+
+    Args:
+        db: 测试库会话。
+        patched_runner: 会话工厂已重定向的 runner 模块。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 恢复计数/状态/字段保持语义不符时中断。
+    """
+    user = await _make_user_with_wallet(db)
+    project = await _make_project(db, user.id)
+    task = await _insert_task(
+        db, project.id, status="running", retry_count=2, meta={"prompt": "测试提示词"}
+    )
+    task.progress = 55
+    await db.commit()
+
+    recovered = await patched_runner.recover_orphan_running_tasks()
+    assert recovered == 1, "应恰好恢复 1 条 running 任务"
+
+    # 以列选择方式重读（恢复在独立会话中提交，绕开本会话身份映射缓存）
+    row = (
+        await db.execute(
+            select(Task.status, Task.retry_count, Task.progress, Task.meta)
+            .where(Task.id == task.id)
+        )
+    ).one()
+    assert row.status == "queued", "running 僵尸行应被重置回 queued"
+    assert row.retry_count == 2, "恢复不是失败，retry_count 应保持不变"
+    assert row.progress == 55, "恢复应保持原进度"
+    assert row.meta.get("recover_from") == "running", "meta 应记录恢复来源标记"
+    assert row.meta.get("recover_at"), "meta 应记录恢复时间戳"
+    assert row.meta.get("prompt") == "测试提示词", "恢复不应覆盖既有 meta 键"
+
+
+async def test_recover_hou_ke_lingqu(db, patched_runner):
+    """启动恢复后任务可被 worker 领取：恢复回 queued 的任务进入失败重试链路。
+
+    用 llm 类型（执行器不支持 → 领取后按 platform_error 走失败重试链路）
+    证明恢复任务真实可被 _process_one 领取，而非停留在队列外。
+
+    Args:
+        db: 测试库会话。
+        patched_runner: 会话工厂已重定向的 runner 模块。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 恢复任务未被领取或未进入重试链路时中断。
+    """
+    user = await _make_user_with_wallet(db)
+    project = await _make_project(db, user.id)
+    task = await _insert_task(db, project.id, status="running", retry_count=0)
+
+    assert await patched_runner.recover_orphan_running_tasks() == 1
+
+    processed = await patched_runner._process_one()
+    assert processed is True, "恢复回 queued 的任务应可被 worker 领取"
+    row = await _get_task(db, task.id)
+    # llm 类型领取后执行器不支持 → platform_error 失败重试：retry_count 0→1 并回队
+    assert row.retry_count == 1, "领取后应走失败重试链路（retry_count +1）"
+    assert row.status == "queued", "首败未耗尽重试应回队等待退避"
+
+
+async def test_recover_bu_yingxiang_qita_zhuangtai(db, patched_runner):
+    """启动恢复只作用于 running 行：queued/failed 任务不受影响，计数为 0。
+
+    Args:
+        db: 测试库会话。
+        patched_runner: 会话工厂已重定向的 runner 模块。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 非 running 行状态/retry_count 被误改时中断。
+    """
+    user = await _make_user_with_wallet(db)
+    project = await _make_project(db, user.id)
+    queued = await _insert_task(db, project.id, status="queued")
+    failed = await _insert_task(db, project.id, status="failed", retry_count=3)
+
+    recovered = await patched_runner.recover_orphan_running_tasks()
+    assert recovered == 0, "无 running 行时应返回 0"
+
+    q_row = await _get_task(db, queued.id)
+    f_row = await _get_task(db, failed.id)
+    assert q_row.status == "queued" and q_row.retry_count == 0, "queued 行不应被恢复触碰"
+    assert f_row.status == "failed" and f_row.retry_count == 3, "failed 行不应被恢复触碰"

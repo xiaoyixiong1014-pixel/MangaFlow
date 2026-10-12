@@ -11,7 +11,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import OperationLog, ReviewRecord
+from app.models import OperationLog, ReviewRecord, Wallet
 from tests.conftest import create_project, register_user
 
 
@@ -216,7 +216,7 @@ async def test_admin_yonghu_liebiao(client, auth, admin_auth):
         admin_auth: 运营方账号上下文。
 
     Returns:
-        None。
+        None.
 
     Raises:
         AssertionError: 任一断言失败时中断。
@@ -233,3 +233,71 @@ async def test_admin_yonghu_liebiao(client, auth, admin_auth):
     assert item["id"] == auth["user_id"]
     assert item["points_balance"] == 5000
     assert item["role"] == "user"
+
+
+async def test_admin_yonghu_liebiao_jifen_yu_db_yizhi(client, auth, admin_auth, db):
+    """用户列表积分与 DB 钱包严格一致且非零（A-BUG-1 回归）。
+
+    UI 报告缺陷：列表积分恒 0 而实际钱包余额 52380+。后端需保证：
+    1. 列表接口聚合 Wallet.points_balance（含管理端调整后的最新值）；
+    2. 响应为扁平结构（points_balance 直接位于 item 顶层、不存在 wallet
+       嵌套键）—— 前端列表按 row.points_balance 绑定，若后端改为 wallet
+       嵌套将复现恒 0。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 目标普通用户上下文。
+        admin_auth: 运营方账号上下文。
+        db: 测试库会话。
+
+    Returns:
+        None.
+
+    Raises:
+        AssertionError: 接口余额与 DB 不一致、或结构契约被破坏时中断。
+    """
+    from tests.conftest import get_wallet_model
+
+    target_id = auth["user_id"]
+
+    # 1. 直改钱包为报告同款非零值（52430），冻结 100
+    wallet = (
+        await db.execute(select(Wallet).where(Wallet.user_id == target_id))
+    ).scalar_one()
+    wallet.points_balance = 52430
+    wallet.frozen_points = 100
+    wallet.version += 1
+    await db.commit()
+
+    resp = await client.get(
+        "/api/admin/users",
+        headers=admin_auth["headers"],
+        params={"search": auth["payload"]["username"]},
+    )
+    assert resp.status_code == 200, resp.text
+    item = resp.json()["items"][0]
+
+    # 2. 接口余额与 DB 快照一致（非 0）
+    snapshot = await get_wallet_model(db, target_id)
+    assert item["points_balance"] == snapshot.points_balance == 52430
+    assert item["frozen_points"] == snapshot.frozen_points == 100
+
+    # 3. 扁平结构契约：item 顶层直接携带余额字段，不存在 wallet 嵌套键
+    assert "points_balance" in item
+    assert "frozen_points" in item
+    assert "wallet" not in item
+
+    # 4. 管理端扣减 50 后，列表同步反映新余额（对应 UI 报告"扣减后仍显示 0"）
+    adjust = await client.post(
+        f"/api/admin/users/{target_id}/points",
+        headers=admin_auth["headers"],
+        json={"amount": -50, "reason": "A-BUG-1 回归：扣减后核对列表"},
+    )
+    assert adjust.status_code == 200, adjust.text
+    after = await client.get(
+        "/api/admin/users",
+        headers=admin_auth["headers"],
+        params={"search": auth["payload"]["username"]},
+    )
+    assert after.status_code == 200, after.text
+    assert after.json()["items"][0]["points_balance"] == 52430 - 50

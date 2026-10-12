@@ -10,6 +10,12 @@
 - POST   /api/canvas-plugins/{id}/invoke  手动调用（登录用户；插件须 reviewed+enabled）
 
 调用统一走 services/plugin_service.invoke_plugin（与画布 plugin 节点执行共用）。
+
+安全（CV-22 轻量加固，2026-10-10）：安装（POST）与 invoke 前均校验
+endpoint_url（validate_endpoint_url：仅 http/https + 内网保留地址黑名单 +
+可选运营方信任域白名单 plugin_allowed_hosts，SSRF 防护），违规 400；
+"builtin:" 前缀进程内插件不受限。运行时隔离沙箱为已知限制（P2），
+当前以 SSRF 防护 + 运营审查 + 调用留痕缓解。
 """
 
 from typing import Any, Dict, List
@@ -27,7 +33,7 @@ from app.schemas.plugin import (
     PluginOut,
     PluginReviewRequest,
 )
-from app.services.plugin_service import PluginError, invoke_plugin
+from app.services.plugin_service import PluginError, invoke_plugin, validate_endpoint_url
 
 router = APIRouter(prefix="/api/canvas-plugins", tags=["canvas-plugins"])
 
@@ -115,6 +121,8 @@ async def create_plugin(
     """安装（登记）插件：reviewed 默认 False（待运营方审核）、enabled 默认 False。
 
     同一用户下 endpoint_url 唯一（uk_plugins_user_url），重复安装返回 400。
+    endpoint_url 先经 CV-22 安全校验（validate_endpoint_url）：仅 http/https、
+    禁止内网保留地址（SSRF 防护）、可选信任域白名单，违规返回 400。
 
     Args:
         req: 安装请求（name/version/description/endpoint_url/inputs/outputs/permissions）。
@@ -125,8 +133,14 @@ async def create_plugin(
         PluginOut: 新建的插件信息。
 
     Raises:
-        HTTPException: 400 —— 重复安装同一地址；401 —— 未登录。
+        HTTPException: 400 —— endpoint_url 校验不通过或重复安装同一地址；
+            401 —— 未登录。
     """
+    # CV-22：安装前校验 endpoint_url（SSRF 防护），违规 400
+    try:
+        validate_endpoint_url(req.endpoint_url)
+    except PluginError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=exc.message) from exc
     dup = (
         await db.execute(
             select(CanvasPlugin).where(

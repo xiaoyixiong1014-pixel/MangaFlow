@@ -10,9 +10,11 @@ wiki.agnes-ai.com/en/docs/agnes-video-25-flash，2026-10-09 实测对齐）：
   间隔 settings.video_poll_interval_seconds，总超时
   settings.video_poll_timeout_seconds）；status=completed 后取顶层 url 字段
   下载落盘（下载走完整 https 地址）；
-- 提交遇 HTTP 503 "video_queue_full"（官方提示稍后重试）时按
-  settings.video_poll_interval_seconds 间隔做有限次重试；
-任何失败返回 None（不抛出），由调用方（tasks/runner.py）降级到下一渠道。
+- 提交遇 HTTP 503 "video_queue_full"（官方提示稍后重试）时做快速探测重试，
+  重试耗尽抛出 VideoQueueFullError（由 runner 层弹性等待重试，避免持续
+  满载时过早降级 mock 占位）；
+任何失败返回 None（不抛出），由调用方（tasks/runner.py）降级到下一渠道；
+仅队列满以异常信号上抛。
 
 函数签名与 mock 视频渠道对齐（prompt + duration + out_dir + seed + channel → url + meta），
 channel 为 model_router.ResolvedChannel。
@@ -44,10 +46,18 @@ _ASPECT_RATIO_PORTRAIT = "9:16"
 # seconds 允许范围（官方契约：字符串 "4"~"12"）
 _SECONDS_MIN = 4
 _SECONDS_MAX = 12
-# 503 队列满（官方提示 retry later）/ 429 免费档限流时的最大重试次数
-_SUBMIT_MAX_RETRIES = 5
-# 503/429 重试间隔（秒）：免费渠道队列与 RPM 窗口均需分钟级恢复时间
-_SUBMIT_RETRY_INTERVAL = 60.0
+# 503 队列满（官方提示 retry later）/ 429 免费档限流时的快速探测重试次数：
+# 仅覆盖短时空隙；持续满载由 runner 层弹性等待重试（见 _run_video）
+_SUBMIT_MAX_RETRIES = 3
+# 503/429 重试间隔（秒）：快速探测节奏
+_SUBMIT_RETRY_INTERVAL = 30.0
+
+
+class VideoQueueFullError(Exception):
+    """Agnes 视频渠道队列满异常（503 video_queue_full 重试耗尽后抛出）。
+
+    runner 层捕获后进入弹性等待重试（不立即降级 mock），详见 _run_video。
+    """
 
 
 def _pick_video_url(data: Dict[str, Any]) -> Optional[str]:
@@ -176,6 +186,11 @@ async def generate_video_real(
                                    channel.name, resp.status_code, attempt, _SUBMIT_MAX_RETRIES)
                     await asyncio.sleep(_SUBMIT_RETRY_INTERVAL)
                     continue
+                if resp.status_code == 503 and "video_queue_full" in resp.text:
+                    # 队列满重试耗尽：抛出可重试信号（runner 弹性等待），不视为渠道死亡
+                    raise VideoQueueFullError(
+                        f"渠道 {channel.name} 视频队列满（video_queue_full，已快速探测 {_SUBMIT_MAX_RETRIES} 次）"
+                    )
                 logger.warning("渠道 %s 视频任务提交失败（HTTP %s）：%s",
                                channel.name, resp.status_code, resp.text[:300])
                 return None

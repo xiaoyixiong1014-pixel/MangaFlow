@@ -11,6 +11,7 @@ MangaFlow（漫序）是 AI 漫剧一站式生产平台，后端基于 FastAPI �
 
 - Web 框架：FastAPI + Uvicorn（REST / SSE 流式）
 - 数据库：PostgreSQL 16 + SQLAlchemy 2.x（异步，asyncpg 驱动）
+- 数据库迁移：Alembic（异步 env.py，连接串经 settings 动态注入）
 - 数据校验：Pydantic v2 + pydantic-settings
 - 认证：JWT（access / refresh 双令牌），渠道 Key 使用 Fernet/AES 加密落库
 - LLM：DeepSeek（OpenAI 兼容协议，流式 SSE）
@@ -21,6 +22,8 @@ MangaFlow（漫序）是 AI 漫剧一站式生产平台，后端基于 FastAPI �
 
 ```
 backend/
+├── alembic/           # Alembic 迁移环境（env.py 异步模板 + versions/ 版本脚本）
+├── alembic.ini        # Alembic 配置（sqlalchemy.url 仅占位，运行时动态注入）
 ├── app/
 │   ├── agents/        # 智能体（supervisor / review / intake 等）
 │   ├── api/           # 路由层（auth/users/projects/billing/prompts/media/models/
@@ -87,6 +90,56 @@ cd mangaflow-admin-web; npm run dev   # http://localhost:5174
 MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite proxy、一键脚本）
 统一指向 8300。前端 5173（用户端）、5174（管理端）。
 
+## 数据库迁移（Alembic）
+
+表结构变更的**唯一事实来源**是 Alembic 迁移（版本目录 `alembic/versions/`），初始基线为
+`2026_10_10_2012-e2b3b5b5c90a_initial_schema_32_tables.py`（32 张业务表全量建表）。
+
+- 连接串优先级：环境变量 `ALEMBIC_DATABASE_URL` > `settings.database_url`
+  （alembic.ini 的 `sqlalchemy.url` 仅占位留空；`env.py` 为 asyncpg 异步模板）。
+- 排除范围：langgraph checkpoint 运行时自管表（`checkpoints` / `checkpoint_blobs` /
+  `checkpoint_writes` / `checkpoint_migrations`，由 `AsyncPostgresSaver.setup()` 在应用
+  启动时自动建表），不纳入迁移对比与生成，避免 autogenerate 产生 drop_table 建议。
+
+常用命令（cwd=backend，解释器用 `.venv\Scripts\alembic.exe`）：
+
+```powershell
+# 1. ORM 模型变更后生成迁移（生成后必须人工逐段校验：
+#    禁止 drop_table / 改列类型等破坏性 op；确认无害的噪音 diff 手动剔除）
+.venv\Scripts\alembic.exe revision --autogenerate -m "描述"
+
+# 2. 升级到最新（幂等：已在 head 时为 no-op）
+.venv\Scripts\alembic.exe upgrade head
+
+# 3. 回滚（-1 上一版 / base 全部回滚）
+.venv\Scripts\alembic.exe downgrade -1
+
+# 4. 同步性检查：ORM 与目标库 diff 应输出 "No new upgrade operations detected."
+.venv\Scripts\alembic.exe check
+
+# 5. 查看当前版本 / 历史
+.venv\Scripts\alembic.exe current
+.venv\Scripts\alembic.exe history
+```
+
+与 `create_all` 的关系：
+
+- `init_db.py` 的 `Base.metadata.create_all()` + 幂等补列仍是**开发环境兜底**
+  （`python -m app.core.init_db` / lifespan 自动执行，保证空库可跑、种子可灌）。
+- **结构变更走迁移**：新任务涉及表结构时，先改 ORM 模型 → `alembic revision
+  --autogenerate` → `alembic upgrade head`，不要手工改库、不要只改 ORM。
+- 存量库（本机 mangaflow 主库）已 `alembic stamp head` 打基线（结构已存在，
+  不重放建表）；全新环境从空库直接 `alembic upgrade head` 即得完整 schema。
+
+部署建议（`deploy/docker-compose.yml`，backend 以 uvicorn 启动）：
+
+- **方式一（生产推荐）**：backend 启动前显式执行迁移——在部署流水线/容器 entrypoint
+  先跑 `alembic upgrade head`（或增加一次性 one-shot 服务），迁移失败在启动前置暴露。
+- **方式二（小部署）**：环境变量设 `ALEMBIC_ON_STARTUP=true`，应用 lifespan 会在
+  `create_all` 兜底初始化**之前**自动执行 `alembic upgrade head`（程序化 API，经
+  工作线程驱动异步迁移）；迁移失败不阻断启动，记 error 日志后降级为 create_all 兜底。
+- 默认 `ALEMBIC_ON_STARTUP=false` 保持现状（仅 create_all + 幂等补列）。
+
 ## API 概览
 
 | 模块 | 主要端点 | 用途 |
@@ -119,7 +172,8 @@ MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite pro
 | Agnes（兜底） | 文本 LLM | `AGNES_LLM_*` | `https://apihub.agnes-ai.com/v1` / `agnes-3.0-flash` |
 | Agnes 图像 | 图像 | `AGNES_IMAGE_*` | 同 Agnes 地址 / `agnes-image-2.5-flash` |
 | Agnes 视频 | 视频 | `AGNES_VIDEO_*` | 同 Agnes 地址 / `agnes-video-2.5-flash`（轮询：`VIDEO_POLL_*_SECONDS`） |
-| 百炼 TTS | 语音 | `BAILIAN_TTS_*` | 阿里云百炼 OpenAI 兼容地址 / `qwen-audio-3.1-tts-flash` |
+| 百炼 TTS | 语音 | `BAILIAN_TTS_*` | 阿里云百炼专属实例 / `qwen-audio-3.1-tts-flash`（仅提供 dashscope WebSocket 端点，走 `dashscope.audio.tts_v2.SpeechSynthesizer`；音色需用该模型专属 `_v3.1` 后缀音色，如 `longanhuan_v3.1`，qwen3-tts 系音色会报 Engine error 411，2026-10-12 实测） |
+| 百炼视频 | 视频 | `BAILIAN_WAN_*` | 阿里云百炼专属实例（根域名，DashScope 原生异步协议）/ `wan2.7-i2v` 图生视频（请求体 `input.media=[{type:first_frame,url}]`，url 支持 Base64 data URI——本地关键帧直接传入；轮询 GET 不可携带 X-DashScope-Async 头否则 403，2026-10-12 实测出片；Key 与 TTS 共用 `BAILIAN_TTS_API_KEY`） |
 
 连通性探测脚本：根目录 `.run/llm_image_video_tts_probe.py`（结果见 `.run/probe_result.md`）。
 
@@ -132,18 +186,127 @@ MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite pro
   `meta.provider`（agnes/bailian/mock），供任务详情与 DB 溯源。
 - 文本 LLM 走 `providers/llm.py` 内置降级链：DeepSeek 主渠道失败自动切 Agnes 兜底。
 
+## 内容机审：图像/视频真实视觉机审（Task 7，合规红线 R-08/C-01）
+
+生成产物（图像/视频）在既有「提示词词表预检 + LLM 文本机审」之上，新增
+**真实视觉机审**：对画面实际视觉内容送视觉理解模型判定（区别于纯文本机审），
+判定口径与词表分级一致（严禁→violate / 敏感擦边→suspect / 正常→pass）。
+
+- **视觉模型**：`AGNES_VISION_MODEL`（默认 `agnes-3.0-flash-max`，OpenAI 兼容
+  chat/completions 图文混合协议）。经探测（2026-10-10，证据见
+  `.run/probe_result.md`「视觉机审模型探测」一节）：Agnes 网关模型列表无显式
+  视觉命名模型，但文本旗舰 agnes-2.5-pro-alpha / agnes-3.0-flash-max /
+  agnes-2.5-pro 实测均接受图文输入并返回准确图片描述（image_tokens 证明图片
+  真实入模），即旗舰文本模型即多模态视觉模型。
+- **降级链**：视觉机审（method=`vision`）→ LLM 纯文本机审（method=`llm-text`）
+  → 纯词表（method=`keyword`）。视觉调用失败（网络/超时 15s/无模型/输出非法）
+  自动降级，任务不阻塞；审核方式以 review_records.method 为准。
+- **图像**：生成成功后产物可访问（本地 storage 文件读 base64 / 公网 URL）即送
+  审视觉模型（`providers/vision_review.review_image`）。
+- **视频**：生成成功后用 ffmpeg 抽取产物首帧（`-frames:v 1`，无 ffmpeg 跳过）
+  送视觉机审；抽帧失败降级文本机审。
+- **流转**：violate → 任务 failed（content_violation）+ 按用户退款 + 分级处罚；
+  suspect → 写审核记录待人工复核；pass → 写通过记录。全部落
+  review_records（gate=generate）。违规任务产物 URL 清空，不回写分镜/资产。
+- 测试：`tests/test_vision_review.py`（判定解析容错/降级链/图像与视频端到端拦截）。
+
+## 业务开关：违规处罚限流（上线后打开）
+
+- 配置项 `PUNISHMENT_ENABLED`（`app/core/config.py`，默认 `false`）：控制 C-04 分级处罚的
+  生成准入拦截（banned → 403 拒绝、restricted → 当日 10 次 → 429 限流）。
+- **当前默认关闭 = 生成限制已取消**（上线前策略）：违规处罚的累计（violation_count）与
+  站内通知照常生效，仅不拦截提交。
+- 产品成功上线后打开：`backend/.env` 写入 `PUNISHMENT_ENABLED=true`（或环境变量同名覆盖），
+  重启后端即恢复拦截，无需改代码。
+
 ## 健康探测
 
 - `model_channels.health_status`（unknown/healthy/degraded/down）：业务调用成功置
   healthy、失败置 degraded（`model_router.record_result`）；管理端可主动探测
   （`model_router.probe_channel`：llm 发 1 token，image/video 以极小主体试探，401/403 判 down）。
+- **成功自动复位**（Task 8 收敛点）：degraded 渠道一次业务调用成功即自动复位
+  healthy（`record_result(ok=True)`），无需人工干预或等待探测任务；复位与降级
+  均同步刷新 `last_check_at`。401/403 → down 仅出现在探测口径（`probe_channel`），
+  业务回写保持 healthy/degraded 二分。
+- 呈现一致性：用户端 `GET /api/models/health-summary` 与管理端
+  `GET /api/admin/models/channels` 同源读取 `model_channels.health_status`，
+  两端视图天然一致。若库中健康值与实际不符（如长期 degraded 但探测 PASS），
+  管理端调 `POST /api/admin/models/channels/{id}/test` 主动探测即可按实测回写，
+  或经 `PUT /api/admin/models/channels/{id}` 直接修正 `health_status`。
 - 健康状态为 down 的渠道在路由解析时自动跳过。
+
+## 向量检索：pgvector 双模（Task 6）
+
+资产语义搜索（`/api/assets/search`）与用户记忆检索（`/api/memories/search`）
+为「pgvector SQL 余弦 / Python 余弦」双模，运行时自动分流，返回结构完全一致
+（前端无感知）。支撑模块：`app/services/vector_store.py`。
+
+- **启用条件与探测**：应用启动（lifespan，create_all 之后、worker 启动之前）
+  执行 `probe_pgvector`：尝试 `CREATE EXTENSION IF NOT EXISTS vector` 并确认
+  pg_extension 注册，结果进程内缓存。
+- **生产（自动启用）**：`deploy/docker-compose.yml` 使用 `pgvector/pgvector:pg16`
+  镜像，探测成功后幂等 ensure 影子列 `asset_embeddings.embedding_vec` 与
+  `langgraph_store.embedding_vec`（类型 `vector(dim)`）、从 JSONB 回填存量向量、
+  建 ivfflat 索引（`vector_cosine_ops`，lists=100）；检索走 `1 - (embedding_vec
+  <=> :qv)`（ivfflat 为距离语义）的索引 TopK。
+- **开发机（自动降级）**：本机 PostgreSQL 无 pgvector 扩展（`pg_available_extensions`
+  无 vector），探测失败即跳过建列，检索走既有「JSONB 全量扫 + Python 余弦」
+  路径，行为与历史版本一致。
+- **维度决策**：向量维度不固定（本地 hash-bag 降级恒 256 维；远程
+  text-embedding-v4 由模型决定），影子列维度取 ensure 时探测到的「现有 JSONB
+  向量最长维度与 256 的较大者」；维度不匹配的向量不写影子列（置 NULL），
+  查询向量维度与影子列不一致时自动回退 Python 路径。模型维度整体切换后
+  pgvector 路径自动失效，重启 ensure 时按新维度重建影子列并回填。
+- **双写策略（迁移期安全）**：JSONB 为主存储始终写入；pgvector 可用时经
+  SAVEPOINT（`begin_nested`）同步双写影子列，影子列失败仅告警、绝不影响
+  JSONB 主事务。检索 SQL 路径运行期失败（如列被误删）会自愈降级：关闭本进程
+  pgvector 开关并回退 Python 路径，重启后重新探测恢复。
+- **迁移策略**：影子列与索引用运行时 ensure 而非 Alembic——扩展可能不存在，
+  Alembic 迁移无法表达条件 DDL；ensure 幂等，重复启动无副作用。
+- **测试取舍**：真实 pgvector 路径需真扩展环境（SQL 真跑，无法用 mock 替代），
+  开发机无扩展，测试以降级路径（排序/结构断言）+「探测可用但影子列缺失」的
+  运行期自愈回退路径覆盖（`tests/test_vector_dual.py`）。
 
 ## LangSmith 可选接入
 
-智能体（LangGraph/LangChain）链路追踪：配置环境变量 `LANGSMITH_TRACING=true`、
-`LANGSMITH_API_KEY`、`LANGSMITH_PROJECT`（项目名）即可上报；不配置则完全离线，
-不影响任何功能。
+智能体（LangGraph/LangChain）链路追踪（MA-13，**接线完成，待密钥启用**）：
+
+- **配置字段**（`app/core/config.py`，环境变量名不区分大小写，亦写入 `backend/.env`）：
+
+  | 字段 | 默认值 | 说明 |
+  | --- | --- | --- |
+  | `LANGSMITH_TRACING` | `false` | 追踪开关，`true` 启用 |
+  | `LANGSMITH_API_KEY` | 空 | LangSmith API Key（`lsv2_` 前缀） |
+  | `LANGSMITH_PROJECT` | `mangaflow` | trace 上报的目标项目名 |
+
+- **接线方式**：应用启动时 `lifespan` 开头调用 `app/core/tracing.py` 的
+  `setup_tracing()`——未启用时零开销直接返回；启用后注入 LangChain 标准追踪
+  环境变量（`LANGSMITH_TRACING` / `LANGSMITH_API_KEY` / `LANGSMITH_PROJECT`，
+  并同步旧名 `LANGCHAIN_TRACING_V2` / `LANGCHAIN_API_KEY` 兼容），此后全部
+  图节点执行、LLM 调用与子图运行自动产出 trace。不引入新依赖
+  （langchain-core >= 0.3 原生识别该组环境变量）。
+- **`.env` 示例**：
+
+  ```dotenv
+  LANGSMITH_TRACING=true
+  LANGSMITH_API_KEY=lsv2_pt_xxxxxxxxxxxxxxxx
+  LANGSMITH_PROJECT=mangaflow
+  ```
+
+- **验证方式**：配置真实 Key 重启后端，触发一次智能体链路（如剧本生成），
+  登录 LangSmith 控制台对应项目即可看到按 thread_id 检索的完整 trace；
+  未配置 Key 时仅注入开关、上报被 SDK 拒绝，无副作用。
+- **现状**：当前无真实 LangSmith Key，链路已就绪待密钥启用；测试见
+  `tests/test_tracing.py`（未配置零注入 / 配置后注入与幂等）。
+
+## 多智能体会话与 Time Travel（MA-06）
+
+- 会话域接口（`api/agent_chat.py`）：`GET /api/agent/threads/{id}/history` 返回
+  LangGraph 检查点历史（分页）；`POST /api/agent/threads/{id}/rewind` 把
+  `agent_threads.rewind_checkpoint` 标记为回溯点，**下次对话**从该检查点分叉
+  续聊（一次性语义：分叉续聊完成后自动清空标记）。
+- 复核结论：`tests/test_agent_hitl.py` 4 passed（history 分页、rewind 标记、
+  分叉续聊、一次性清标记均已覆盖），报告 §4.9「待确认」口径更新为**已实现**。
 
 ## MCP 桥配置
 
@@ -164,6 +327,9 @@ MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite pro
   （2/4/8 分钟），未到期任务不被 worker 领取（`tasks/runner.py` 调度 SQL）。
 - 重试耗尽置 `dead_letter=True` 进入管理端死信队列
   （`GET /api/admin/tasks/dead-letters`），运营复核后 `POST /{task_id}/requeue` 重新冻结积分入队。
+- 重启恢复：应用启动时（lifespan，先于 worker 拉起）把遗留的 `status=running`
+  在途任务重置回 `queued`（进度保留，`meta.recover_at` 留痕，不计入 retry_count），
+  由 worker 重新领取，避免进程重启产生僵尸任务。
 
 ## 通知中心（SSE）
 

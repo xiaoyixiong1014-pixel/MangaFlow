@@ -12,6 +12,7 @@ import type {
   ProjectCreatePayload,
   ProjectDetail,
   ProjectUpdatePayload,
+  RollbackResult,
   VersionSnapshot,
 } from '@/types'
 import { downloadBlob, filenameFromDisposition } from '@/utils/download'
@@ -105,6 +106,18 @@ export function createSnapshot(
   payload: { stage: string; summary?: unknown },
 ): Promise<VersionSnapshot> {
   return client.post(`/projects/${id}/snapshots`, payload).then((r) => r.data)
+}
+
+/**
+ * 回退到指定版本快照（V-01）。
+ * 服务端事务内自动创建「回退前快照」（stage=pre_rollback）保证回退可撤销，
+ * 并写操作日志（action=version_rollback, risk_level=medium）。
+ * @param id 项目 ID
+ * @param snapshotId 目标快照 ID
+ * @returns 回退结果（restored / new_snapshot_id / restored_at）
+ */
+export function rollbackSnapshot(id: number, snapshotId: number): Promise<RollbackResult> {
+  return client.post(`/projects/${id}/versions/${snapshotId}/rollback`).then((r) => r.data)
 }
 
 /**

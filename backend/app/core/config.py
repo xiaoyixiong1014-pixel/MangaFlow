@@ -41,6 +41,8 @@ class Settings(BaseSettings):
         agnes_video_mode: Agnes 视频生成模式（官方枚举 text/keyframe/reference，
             text 即文生视频；首帧图生视频由 provider 按传入的 first_frame_url
             自动切换 keyframe 模式，2026-10-09 依官方文档与实测确定）。
+        agnes_vision_model: 视觉机审模型名（图像/视频产物真实视觉机审，OpenAI
+            兼容图文混合协议；探测详见 .run/probe_result.md）。
         bailian_tts_base_url: 阿里云百炼 TTS 兼容 OpenAI 协议的 API 地址。
         bailian_tts_api_key: 阿里云百炼 TTS API Key。
         bailian_tts_model: 阿里云百炼 TTS 默认模型名。
@@ -49,6 +51,21 @@ class Settings(BaseSettings):
         aes_key: 模型渠道 API Key 的 AES 加密密钥（须为 16/24/32 字节字符串，本默认值为 32 字符）。
         storage_dir: 本地文件存储根目录；相对路径时按项目根目录拼接为绝对路径。
         cors_origins: 允许跨域的来源列表，"*" 表示不限制。
+        alembic_on_startup: 启动时是否先执行 Alembic 迁移（alembic upgrade head）再走
+            create_all 兜底初始化。默认 False 保持现状（仅 create_all + 幂等补列）；
+            生产部署建议置 True 或改由部署流水线在启动前显式执行迁移。
+            迁移失败不阻断启动（记 error 日志后降级为 create_all 兜底）。
+        langsmith_tracing: 是否启用 LangSmith 链路追踪（MA-13）。环境变量
+            LANGSMITH_TRACING 可覆盖（"true"/"1" 等真值）；默认 False 时
+            setup_tracing() 零开销直接跳过。
+        langsmith_api_key: LangSmith API Key（环境变量 LANGSMITH_API_KEY 可覆盖）；
+            未配置时仅注入追踪开关，上报会被 LangSmith SDK 拒绝（无副作用）。
+        langsmith_project: LangSmith 项目名（环境变量 LANGSMITH_PROJECT 可覆盖），
+            trace 上报的目标项目，默认 "mangaflow"。
+        plugin_allowed_hosts: 画布插件 endpoint_url 信任域白名单（CV-22 轻量加固）。
+            非空时插件 HTTP 主机必须命中白名单（精确或子域名匹配，大小写不敏感）；
+            空列表 = 不限公网域名，仅强制内网保留地址黑名单（SSRF 防护）；
+            "builtin:" 前缀进程内插件不受限。
     """
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
@@ -66,7 +83,9 @@ class Settings(BaseSettings):
     # ---------- LLM（DeepSeek） ----------
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_api_key: str = "sk-461126bcb5944b62a6a6a15137df42eb"
-    deepseek_model: str = "deepseek-flash"
+    # 模型名实测（2026-10-10）：deepseek-flash 网关接受但返回空 content（51 tokens 无输出），
+    # deepseek-chat 正常回复——现役模型名为 deepseek-chat
+    deepseek_model: str = "deepseek-chat"
 
     # ---------- Agnes 文本 LLM（兜底） ----------
     agnes_llm_base_url: str = "https://apihub.agnes-ai.com/v1"
@@ -86,12 +105,29 @@ class Settings(BaseSettings):
     # 文生视频传 text；带首帧图时 provider 自动改用 keyframe）
     agnes_video_mode: str = "text"
 
+    # ---------- Agnes 视觉机审（图像/视频产物真实视觉机审，Task 7 / R-08、C-01） ----------
+    # 视觉理解模型名（OpenAI 兼容 chat/completions 图文混合协议）。
+    # 经探测（2026-10-10，详见 .run/probe_result.md「视觉机审模型探测」一节）：
+    # 网关 /models 共 11 个模型均无显式视觉命名（无 vision/vl 关键词），但对文本
+    # 旗舰 agnes-2.5-pro-alpha / agnes-3.0-flash-max / agnes-2.5-pro 实测图文小样
+    # 调用均 HTTP 200 并返回准确图片描述（usage.prompt_tokens_details.image_tokens
+    # =943 证明图片真实入模），即 Agnes 旗舰文本模型即多模态视觉模型。默认取
+    # 3.0 代旗舰；视觉调用失败时 runner 自动降级 llm-text → keyword 文本机审。
+    agnes_vision_model: str = "agnes-3.0-flash-max"
+
     # ---------- 阿里云百炼 TTS ----------
     bailian_tts_base_url: str = "https://ws-66dgbbhi5gzzll8r.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     bailian_tts_api_key: str = "sk-ws-H.PELYYXM.G9wO.MEYCIQC7OSlfz1heRD_p5p18Hyu3U6YnL2lw8Er_ouB9f7mL4QIhALQnDZ-ndYxd0S0t0z6ObC5hs1mV8SwFsTgJ9Hk6LfCh"
-    # 默认模型名：经 GET /models 实测（2026-10-09）该实例无 qwen-audio-3.1-tts-flash，
-    # 真实可列出的 TTS 模型为 qwen3-tts-flash（探测详见 tts_bailian.py 顶部说明）
-    bailian_tts_model: str = "qwen3-tts-flash"
+    # 默认模型名：qwen-audio-3.1-tts-flash 仅提供 WebSocket 端点
+    # （dashscope.audio.tts_v2.SpeechSynthesizer），不出现在 OpenAI 兼容
+    # GET /models 列表中（2026-10-12 实测合成成功，接入详见 tts_bailian.py）
+    bailian_tts_model: str = "qwen-audio-3.1-tts-flash"
+
+    # ---------- 阿里云百炼视频（wan2.7-i2v 图生视频，DashScope 原生异步协议） ----------
+    # 根域名：视频任务创建/轮询走原生路径 /api/v1/...（非 OpenAI 兼容 /compatible-mode）；
+    # API Key 与 TTS 渠道共用（bailian_tts_api_key）
+    bailian_wan_base_url: str = "https://ws-66dgbbhi5gzzll8r.cn-beijing.maas.aliyuncs.com"
+    bailian_wan_model: str = "wan2.7-i2v"
 
     # ---------- 视频轮询配置 ----------
     video_poll_interval_seconds: int = 5
@@ -105,6 +141,35 @@ class Settings(BaseSettings):
 
     # ---------- 跨域 ----------
     cors_origins: List[str] = ["*"]
+
+    # ---------- 画布插件（CV-22 轻量加固，2026-10-10） ----------
+    # 插件 endpoint_url 信任域白名单（运营方可配）：非空时插件 HTTP 主机必须
+    # 命中白名单（精确或子域名匹配，大小写不敏感）；空列表 = 不限公网域名，
+    # 仅强制内网保留地址黑名单（localhost / 127.0.0.0/8 / 10/8 / 172.16-31 /
+    # 192.168/16 / 169.254/16 / ::1 等，SSRF 防护）。"builtin:" 前缀进程内
+    # 插件不受限；安装（POST）与 invoke 前均校验，违规 400。
+    plugin_allowed_hosts: List[str] = []
+
+    # ---------- 业务开关 ----------
+    # 违规分级处罚准入校验（C-04：banned 403 拒绝 / restricted 当日 10 次限流 429）。
+    # 产品上线前默认关闭（False）：处罚数据照常累计与通知，但生成接口不拦截；
+    # 产品成功上线后于 backend/.env 或环境变量设 PUNISHMENT_ENABLED=true 即可重新启用。
+    punishment_enabled: bool = False
+
+    # 启动钩子开关：lifespan 在 create_all 之前可选执行 Alembic 迁移（alembic upgrade
+    # head，程序化 API）。默认 False 保持现状（仅 create_all + 幂等补列），生产部署
+    # 可设 ALEMBIC_ON_STARTUP=true 或由部署流水线在启动前显式执行迁移
+    alembic_on_startup: bool = False
+
+    # ---------- LangSmith 追踪（MA-13） ----------
+    # 是否启用 LangSmith 链路追踪：默认 False（不配置零开销）；生产环境在
+    # backend/.env 或环境变量设 LANGSMITH_TRACING=true 并配 LANGSMITH_API_KEY 即启用
+    langsmith_tracing: bool = False
+    # LangSmith API Key（lsv2_ 前缀），启用追踪时上报鉴权用；当前无真实 Key，
+    # 链路已就绪待密钥启用
+    langsmith_api_key: str = ""
+    # trace 上报的目标 LangSmith 项目名
+    langsmith_project: str = "mangaflow"
 
     def storage_path(self) -> Path:
         """获取存储根目录的绝对路径。

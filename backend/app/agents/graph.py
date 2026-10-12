@@ -13,14 +13,14 @@ consistency/review/research/canvas/cost(billing)/chat → END；
 - research → research_exec → research_reflect --(补充任务循环/汇总)→
   research_finalize → END（MA-18 Deep Agents 规划-执行-反思链路）。
 
-MA-13 可观测性（LangSmith 可选接入，无需改代码）：
-LangChain/LangGraph 原生支持经环境变量自动上报 trace 到 LangSmith，部署时按需
-设置即可启用，不设置则完全无开销：
-- LANGSMITH_TRACING=true            # 开启追踪上报
-- LANGSMITH_API_KEY=lsv2_xxx        # LangSmith API Key
-- LANGSMITH_PROJECT=mangaflow       # 项目名（默认按仓库名上报）
-启用后本图全部节点执行、LLM 调用、子图运行均自动产出 trace，可在 LangSmith
-控制台按 thread_id / agent 名检索排障。
+MA-13 可观测性（LangSmith 追踪，已接线，待密钥启用）：
+应用启动时 main.py lifespan 开头调用 core/tracing.setup_tracing()，按 settings
+（config.py 的 langsmith_tracing / langsmith_api_key / langsmith_project，经
+LANGSMITH_* 环境变量覆盖）注入 LangChain 标准追踪环境变量（含旧名
+LANGCHAIN_TRACING_V2 兼容）；未配置时零开销不上报。启用后本图全部节点执行、
+LLM 调用、子图运行均自动产出 trace，可在 LangSmith 控制台按 thread_id /
+agent 名检索排障。当前无真实 Key，链路就绪，配置 LANGSMITH_TRACING=true +
+LANGSMITH_API_KEY 即启用（详见 backend/README.md「LangSmith 可选接入」）。
 
 检查点决策记录（重要）：
 1. langgraph-checkpoint-postgres 的 AsyncPostgresSaver.from_conn_string() 是 async

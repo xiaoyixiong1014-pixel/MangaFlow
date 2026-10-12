@@ -11,11 +11,23 @@
 - 取消支持：CANCEL_EVENTS[task_id] 置位，worker 执行中分步检测后落库
   canceled 并退款（running 场景）；取消接口对 queued 任务直接落库退款。
 
+- 启动恢复（R-03）：lifespan 在 worker 协程拉起之前先调
+  recover_orphan_running_tasks()，把进程重启遗留的 running 僵尸行重置回
+  queued（进度保持、retry_count 不动，meta 记 recover_at/recover_from 留痕），
+  先恢复后领取避免竞态；恢复失败降级不阻断启动。
+
 mock 供应商（可插拔兜底）：providers/image_mock.py、video_mock.py、tts_mock.py。
 image/video/tts 任务执行时先经 model_router.resolve_channels_chain 解析
 「逻辑模型 → 物理渠道」降级链（Agnes 图像/视频、百炼 TTS 等真实渠道在前），
 链尾固定追加本地 mock 哨兵渠道（channel_id=0）兜底：逐候选调用，成功即止，
 每次尝试回写渠道健康状态，失败原因累积进任务 meta.fallback_chain 供溯源。
+
+生成产物内容机审（Task 7 / R-08、C-01）：图像生成成功后先做**真实视觉机审**
+（providers/vision_review.py 调 Agnes 视觉模型审画面实际内容，method=vision），
+失败降级 LLM 纯文本机审（method=llm-text）→ 纯词表（method=keyword）；视频
+生成成功后抽取产物首帧（ffmpeg，无则跳过）送视觉机审，降级链同上。violate
+判定任务置 failed（content_violation）并按用户承担退款、触发分级处罚；
+suspect 写审核记录待人工复核；pass 写通过记录（review_records，gate=generate）。
 
 调度增强（Task 2.1）：
 - 优先级调度：领取 SQL 按 priority DESC, created_at ASC 排序，高优先级任务
@@ -27,8 +39,11 @@ image/video/tts 任务执行时先经 model_router.resolve_channels_chain 解析
 """
 
 import asyncio
+import base64
 import logging
+import tempfile
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from sqlalchemy import func, or_, select
@@ -47,12 +62,14 @@ from app.models import (
     Task,
     Wallet,
 )
+from app.providers import vision_review
 from app.providers.image_agnes import generate_image_real
 from app.providers.image_mock import generate_image
 from app.providers.tts_bailian import generate_tts_real
 from app.providers.tts_mock import generate_tts
 from app.providers.video_agnes import generate_video_real
 from app.providers.video_mock import generate_video
+from app.providers.video_wan import generate_video_wan
 from app.services import model_router, notification_service
 from app.services.billing_service import consume_frozen, refund_frozen
 from app.services.compose_service import compose_film
@@ -84,6 +101,10 @@ _WORKER_COUNT = 3
 _IDLE_INTERVAL = 1.0
 # 自动重试上限（达到后判失败并按平台承担退款）
 _MAX_RETRY = 3
+# 视频队列满弹性等待轮数上限（每轮覆盖降级链完整重试 + 间隔等待）
+_VIDEO_QUEUE_WAIT_ROUNDS = 6
+# 视频队列满轮间等待（秒）：免费渠道高峰满载可维持数分钟，总弹性窗口 ≈ 轮数 × 间隔
+_VIDEO_QUEUE_WAIT_INTERVAL = 120.0
 
 
 async def start_runner(engine: Any) -> None:
@@ -104,6 +125,54 @@ async def start_runner(engine: Any) -> None:
         t = loop.create_task(_worker_loop(worker_id=i))
         _RUNNER_TASKS.append(t)
     logger.info("任务执行器已启动（%d 个 worker）", _WORKER_COUNT)
+
+
+async def recover_orphan_running_tasks() -> int:
+    """启动恢复：将进程重启遗留的 running 僵尸任务重置回 queued（R-03 收敛）。
+
+    进程重启时，重启前正在执行的任务行会停留在 status="running"（原 worker
+    已消失，无人继续处理、永不终态、冻结积分被长期占用）。本函数由 lifespan
+    在 worker 协程拉起**之前**调用（先恢复后领取，保证恢复事务先于任何领取
+    提交，消除竞态），把全部 running 行重置回 queued：
+
+    - progress 保持原值（不打断已有进度展示，重领后分步覆盖）；
+    - retry_count 不变（重启恢复不是任务失败，不应计入指数退避）；
+    - meta 追加 recover_from="running" 与 recover_at（UTC ISO 时间戳）留痕溯源；
+    - 通知服务不推送（重启恢复是运维事件，非任务终态，不打扰用户）。
+
+    单实例部署下本函数在 worker 启动前独占运行，无需行锁/SKIP LOCKED；
+    极端多实例误部署时两个进程重复重置为 queued 也幂等无害。
+
+    Returns:
+        int: 本次恢复（重置回 queued）的任务条数；无遗留 running 行时为 0。
+
+    Raises:
+        Exception: 数据库异常向上抛出（由 lifespan 捕获记录后降级继续启动）。
+    """
+    ids: list = []
+    async with SessionLocal() as db:
+        tasks = (
+            await db.execute(select(Task).where(Task.status == "running"))
+        ).scalars().all()
+        if not tasks:
+            return 0
+        recovered_at = datetime.now(timezone.utc).isoformat()
+        for task in tasks:
+            ids.append(task.id)
+            task.status = "queued"
+            # meta 整体重新赋值以触发 JSONB 变更检测（保留既有键，不覆盖）
+            task.meta = {
+                **(task.meta or {}),
+                "recover_from": "running",
+                "recover_at": recovered_at,
+            }
+            # progress 保持原值；retry_count 不动（恢复 ≠ 失败，不重排退避）
+        await db.commit()
+    logger.warning(
+        "启动恢复：检测到 %d 条遗留 running 任务（进程重启僵尸行），已重置回 queued，任务 ID：%s",
+        len(ids), ids,
+    )
+    return len(ids)
 
 
 def request_cancel(task_id: int) -> None:
@@ -456,11 +525,15 @@ async def _check_violation(db, task: Task, user_id: int, text: str, target_type:
 
 
 async def _review_generated_image(db, task: Task, user_id: int, meta: dict) -> bool:
-    """生成成功后的图像内容复审（Task 4.1 图像审核链）：LLM 机审优先，失败降级词表。
+    """生成成功后的图像内容复审（Task 7 视觉优先 / R-08、C-01）：视觉机审 → LLM 文本机审 → 词表。
 
-    以「生成提示词 + 资产描述」为送审文本（分镜关键帧目标取分镜画面描述），
-    经 providers.llm.chat 做 JSON 判定（method=llm-text）；LLM 失败/超时降级
-    纯词表判定（method=keyword）。复审结果一律写 review_records（gate=generate）：
+    降级链（真实视觉机审优先）：
+    1. 产物可访问（task.result_url 可解析为本地文件/URL）时先调视觉模型对画面
+       实际视觉内容机审（method=vision，providers.vision_review.review_image）；
+    2. 视觉失败（异常/超时/产物不可读）降级既有 LLM 纯文本机审（method=llm-text）；
+    3. LLM 再失败降级纯词表判定（method=keyword）。
+
+    复审结果一律写 review_records（gate=generate）：
     - violate：重置结果地址后按 content_violation 失败退款（并触发分级处罚）；
     - suspect：写记录等人工复核，不拦截本次任务；
     - pass：写通过记录。
@@ -475,31 +548,61 @@ async def _review_generated_image(db, task: Task, user_id: int, meta: dict) -> b
         bool: 复审判定 violate 返回 True（任务已置 failed 并退款）；其余 False。
 
     Raises:
-        无：LLM 审核异常内部降级词表；记录/失败落库异常由 _execute_task 兜底。
+        无：视觉/LLM 审核异常内部降级；记录/失败落库异常由 _execute_task 兜底。
     """
     prompt = meta.get("prompt", "")
-    # 资产描述：分镜关键帧目标取画面描述，与提示词拼接送审
+    # 资产描述：分镜关键帧目标取画面描述，与提示词拼接作为文本机审送审文本
     description = ""
     target_id = meta.get("target_id")
     if meta.get("target_type") == "storyboard_keyframe" and target_id:
         sb = await db.get(Storyboard, int(target_id))
         description = (sb.visual_description or "") if sb else ""
     text = f"{prompt} {description}".strip()
-    if not text:
-        # 无任何可审文本（理论少见）：跳过复审，不产生记录
+    if not text and not task.result_url:
+        # 无任何可审对象（无文本且产物不可用，理论少见）：跳过复审，不产生记录
         return False
+
     method = "llm-text"
+    verdict: Optional[str] = None
+    reason = ""
     word: Optional[str] = None
     level: Optional[str] = None
-    try:
-        verdict, reason = await llm_review_content(text)
-    except Exception:  # noqa: BLE001 —— LLM 审核失败降级纯词表判定
-        method = "keyword"
-        verdict, word, level = classify_text(text)
-        reason = (
-            f"命中{'严禁' if level == 'strict' else '敏感'}词「{word}」" if word else "词表判定通过"
-        )
+
+    # 第一优先：真实视觉机审（产物可访问时，Task 7 / R-08）
+    if task.result_url:
+        try:
+            vr = await vision_review.review_image(image_url=task.result_url, context=text)
+            method = "vision"
+            verdict = vr["verdict"]
+            reason = vr["reason"]
+            logger.info("任务 %s 图像视觉机审完成（%s）：%s", task.id, vr.get("model"), verdict)
+        except Exception:  # noqa: BLE001 —— 视觉机审失败降级 LLM 文本机审
+            logger.warning("任务 %s 图像视觉机审失败，降级 LLM 文本机审", task.id, exc_info=True)
+
+    # 第二/三优先：LLM 文本机审 → 纯词表（保持既有降级骨架）
+    if verdict is None:
+        if not text:
+            # 视觉失败且无任何可审文本：跳过复审，不产生记录
+            return False
+        method = "llm-text"
+        try:
+            verdict, reason = await llm_review_content(text)
+        except Exception:  # noqa: BLE001 —— LLM 审核失败降级纯词表判定
+            method = "keyword"
+            verdict, word, level = classify_text(text)
+            reason = (
+                f"命中{'严禁' if level == 'strict' else '敏感'}词「{word}」" if word else "词表判定通过"
+            )
+
     storyboard_id = meta.get("storyboard_id") or meta.get("target_id")
+    violation_type: Optional[str] = None
+    if verdict != "pass":
+        if method == "vision":
+            violation_type = "vision_review"
+        elif method == "llm-text":
+            violation_type = "llm_review"
+        else:
+            violation_type = "banned_word" if level == "strict" else "sensitive_word"
     await create_review_record(
         db,
         project_id=task.project_id,
@@ -508,10 +611,7 @@ async def _review_generated_image(db, task: Task, user_id: int, meta: dict) -> b
         target_id=int(storyboard_id) if storyboard_id else None,
         result=verdict,
         method=method,
-        violation_type=None if verdict == "pass" else (
-            "llm_review" if method == "llm-text" else
-            ("banned_word" if level == "strict" else "sensitive_word")
-        ),
+        violation_type=violation_type,
         suggestion=reason or None,
     )
     if verdict != "violate":
@@ -522,6 +622,157 @@ async def _review_generated_image(db, task: Task, user_id: int, meta: dict) -> b
     task.result_url = None
     await _fail_task(db, task, user_id, "content_violation",
                      f"生成内容复审判定违规：{reason or '内容不合规'}，已拦截并退款")
+    return True
+
+
+async def _extract_video_first_frame(video_path: Path) -> Optional[bytes]:
+    """用 ffmpeg 抽取视频首帧（Task 7 视频视觉机审，内部辅助）。
+
+    通过 asyncio 子进程调用 ffmpeg（-frames:v 1）把视频首帧抽为 PNG 临时
+    文件并读取字节；环境无 ffmpeg 命令、抽帧失败或超时均返回 None（由调用
+    方降级 LLM 文本机审）。
+
+    Args:
+        video_path: 视频文件本地绝对路径（不存在时直接返回 None）。
+
+    Returns:
+        Optional[bytes]: 首帧 PNG 字节；无法抽取时返回 None。
+
+    Raises:
+        无：内部捕获全部异常（FileNotFoundError/超时/非零退出码）返回 None。
+    """
+    if not video_path.is_file():
+        logger.warning("视频首帧抽取跳过：产物文件不存在 %s", video_path)
+        return None
+    try:
+        with tempfile.TemporaryDirectory() as td:
+            frame_path = Path(td) / "first_frame.png"
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y", "-i", str(video_path),
+                    "-frames:v", "1", str(frame_path),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                # 环境未安装 ffmpeg：跳过抽帧，由调用方降级文本机审
+                logger.info("未检测到 ffmpeg，跳过视频首帧抽取")
+                return None
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=30.0)
+            except asyncio.TimeoutError:
+                proc.kill()
+                logger.warning("视频首帧抽取超时（30s），已终止 ffmpeg")
+                return None
+            if proc.returncode != 0 or not frame_path.is_file():
+                logger.warning("视频首帧抽取失败（ffmpeg 退出码 %s）", proc.returncode)
+                return None
+            return frame_path.read_bytes()
+    except Exception:  # noqa: BLE001 —— 抽帧任何异常均降级，不阻断视频任务主流程
+        logger.warning("视频首帧抽取异常", exc_info=True)
+        return None
+
+
+async def _review_video_first_frame(db, task: Task, user_id: int, meta: dict) -> bool:
+    """视频产物首帧视觉机审（Task 7 / R-08、C-01）：视觉机审 → LLM 文本机审 → 词表。
+
+    视频生成成功后抽取产物首帧（ffmpeg 无则跳过）送视觉模型机审（method=vision）；
+    抽帧失败或视觉审核失败降级既有 LLM 纯文本机审（method=llm-text）→ 纯词表
+    （method=keyword）。审核结果写 review_records（gate=generate，target_type=video）：
+    - violate：清空结果地址后按 content_violation 失败退款（并触发分级处罚）；
+    - suspect：写记录等人工复核，不拦截本次任务；
+    - pass：写通过记录。
+
+    Args:
+        db: 异步数据库会话。
+        task: 任务对象（生成已成功，result_url 已回填）。
+        user_id: 用户 ID。
+        meta: 任务附加信息（prompt/storyboard_id）。
+
+    Returns:
+        bool: 判定 violate 返回 True（任务已置 failed 并退款）；其余 False。
+
+    Raises:
+        无：视觉/LLM 审核异常内部降级；记录/失败落库异常由 _execute_task 兜底。
+    """
+    prompt = meta.get("prompt", "")
+    storyboard_id = meta.get("storyboard_id")
+    sb = None
+    description = ""
+    if storyboard_id:
+        sb = await db.get(Storyboard, int(storyboard_id))
+        description = (sb.visual_description or "") if sb else ""
+    text = f"{prompt} {description}".strip()
+
+    method = "llm-text"
+    verdict: Optional[str] = None
+    reason = ""
+    word: Optional[str] = None
+    level: Optional[str] = None
+
+    # 第一优先：真实视觉机审（产物可访问时抽取首帧送审，Task 7 / R-08）
+    first_frame: Optional[bytes] = None
+    if task.result_url:
+        rel = task.result_url.lstrip("/")
+        if rel.startswith("storage/"):
+            rel = rel[len("storage/"):]
+        video_path = settings.storage_path() / rel
+        first_frame = await _extract_video_first_frame(video_path)
+    if first_frame:
+        try:
+            vr = await vision_review.review_image(
+                image_b64=base64.b64encode(first_frame).decode(), context=text
+            )
+            method = "vision"
+            verdict = vr["verdict"]
+            reason = vr["reason"]
+            logger.info("任务 %s 视频首帧视觉机审完成（%s）：%s", task.id, vr.get("model"), verdict)
+        except Exception:  # noqa: BLE001 —— 视觉机审失败降级 LLM 文本机审
+            logger.warning("任务 %s 视频首帧视觉机审失败，降级 LLM 文本机审", task.id, exc_info=True)
+
+    # 第二/三优先：LLM 文本机审 → 纯词表（抽帧失败或视觉审核失败时进入）
+    if verdict is None:
+        if not text:
+            # 无首帧且无可审文本：跳过复审，不产生记录
+            return False
+        logger.info("任务 %s 视频首帧不可用，降级文本机审（抽帧失败或视觉审核异常）", task.id)
+        method = "llm-text"
+        try:
+            verdict, reason = await llm_review_content(text)
+        except Exception:  # noqa: BLE001 —— LLM 审核失败降级纯词表判定
+            method = "keyword"
+            verdict, word, level = classify_text(text)
+            reason = (
+                f"命中{'严禁' if level == 'strict' else '敏感'}词「{word}」" if word else "词表判定通过"
+            )
+
+    violation_type: Optional[str] = None
+    if verdict != "pass":
+        if method == "vision":
+            violation_type = "vision_review"
+        elif method == "llm-text":
+            violation_type = "llm_review"
+        else:
+            violation_type = "banned_word" if level == "strict" else "sensitive_word"
+    await create_review_record(
+        db,
+        project_id=task.project_id,
+        gate="generate",
+        target_type="video",
+        target_id=int(storyboard_id) if storyboard_id else None,
+        result=verdict,
+        method=method,
+        violation_type=violation_type,
+        suggestion=reason or None,
+    )
+    if verdict != "violate":
+        if verdict == "suspect":
+            logger.info("任务 %s 视频首帧机审判定 suspect，已记录待人工复核", task.id)
+        return False
+    # 违规：清空结果地址（避免失败任务仍暴露产物），走 content_violation 失败退款
+    task.result_url = None
+    await _fail_task(db, task, user_id, "content_violation",
+                     f"视频内容机审判定违规：{reason or '内容不合规'}，已拦截并退款")
     return True
 
 
@@ -668,7 +919,7 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
 
 
 async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
-    """执行视频片段任务：按渠道降级链生成 → 回写分镜 video_url。
+    """执行视频片段任务：按渠道降级链生成 → 首帧视觉机审 → 回写分镜 video_url。
 
     Args:
         db: 异步数据库会话。
@@ -686,12 +937,20 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     # duration/resolution 参数保持与既有 meta 兼容
     duration = int(meta.get("duration", 5) or 5)
     out_dir = settings.storage_path() / "generated"
+    # 首帧本地路径（wan2.7-i2v 图生视频需要关键帧驱动；本地文件以 base64 上传，
+    # 无公网 URL 依赖）。取分镜关键帧 URL 的文件名拼接 storage 路径。
+    first_frame_path: Optional[Path] = None
+    storyboard_id = meta.get("storyboard_id")
+    if storyboard_id:
+        sb_for_frame = await db.get(Storyboard, int(storyboard_id))
+        if sb_for_frame and sb_for_frame.keyframe_url:
+            first_frame_path = settings.storage_path() / "generated" / Path(sb_for_frame.keyframe_url).name
     # 机审闸门一：视频提示词违规直接拦截（Task 4.1 补齐 video 目标机审）
     if await _check_violation(db, task, user_id, prompt, "video"):
         return
 
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
-        """单渠道视频生成回调：channel_id==0 走本地 mock，否则走 Agnes 真实渠道。
+        """单渠道视频生成回调：按渠道协议分派 mock / 百炼 wan / Agnes。
 
         Args:
             channel: 当前候选渠道。
@@ -700,13 +959,38 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
             Optional[Dict]: 生成结果；失败返回 None。
 
         Raises:
-            无（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
+            VideoQueueFullError: Agnes 队列满（供弹性等待重试判定）。
+            无其他（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
         if channel.channel_id == 0:
             return await generate_video(prompt, duration, out_dir, seed=task.id)
+        if channel.protocol == "dashscope":
+            return await generate_video_wan(
+                prompt, duration, out_dir, task.id, channel, first_frame_path,
+            )
         return await generate_video_real(prompt, duration, out_dir, task.id, channel)
 
-    result, used_channel, fallback = await _generate_with_fallback(db, "video", _generate)
+    # 队列满弹性等待：Agnes 免费渠道高峰持续 video_queue_full（实测可满载数分钟
+    # 以上），为避免过早降级 mock 占位，满载时按轮次等待重试；轮次耗尽才走
+    # 降级链（链尾 mock 兜底）。轮数持久化进 meta，任务重跑时累计。
+    result: Optional[Dict] = None
+    fallback: list = []
+    used_channel: Optional[ResolvedChannel] = None
+    queue_rounds = int(meta.get("queue_wait_rounds", 0) or 0)
+    for _ in range(_VIDEO_QUEUE_WAIT_ROUNDS):
+        result, used_channel, fallback = await _generate_with_fallback(db, "video", _generate)
+        queue_hit = any("队列满" in str(f.get("error", "")) for f in fallback)
+        if result is not None or not queue_hit:
+            break
+        queue_rounds += 1
+        logger.warning(
+            "任务 %s 视频队列满，第 %s/%s 轮等待重试（%ss）",
+            task.id, queue_rounds, queue_rounds + _VIDEO_QUEUE_WAIT_ROUNDS,
+            _VIDEO_QUEUE_WAIT_INTERVAL,
+        )
+        task.meta = {**meta, "queue_wait_rounds": queue_rounds}
+        await db.commit()
+        await asyncio.sleep(_VIDEO_QUEUE_WAIT_INTERVAL)
     if result is None:
         await _fail_task(db, task, user_id, "platform_error", "视频供应商返回空结果（已尝试全部渠道）")
         return
@@ -714,6 +998,12 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
     task.meta = {**meta, **(result.get("meta") or {}), "fallback_chain": fallback, "provider": provider}
+
+    # 视频首帧视觉机审（Task 7 / R-08）：violate 时任务置 failed 退款并触发分级处罚；
+    # 先于 video_url 回写执行，避免违规产物暴露进分镜
+    if await _review_video_first_frame(db, task, user_id, meta):
+        return
+
     storyboard_id = meta.get("storyboard_id")
     if storyboard_id:
         sb = await db.get(Storyboard, int(storyboard_id))

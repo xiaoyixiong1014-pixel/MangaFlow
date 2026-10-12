@@ -185,12 +185,13 @@ class OperationLog(Base):
         action: 操作类型。
         detail: 操作详情（JSONB）。
         ip: 操作 IP。
-        risk_level: 风险等级 normal/high（RD-56 高危操作）。
+        risk_level: 风险等级 normal/medium/high（RD-56 高危操作；medium 用于
+            版本回退等可撤销但影响面较大的操作）。
     """
 
     __tablename__ = "operation_logs"
     __table_args__ = (
-        CheckConstraint("risk_level IN ('normal', 'high')", name="ck_oplog_risk_level"),
+        CheckConstraint("risk_level IN ('normal', 'medium', 'high')", name="ck_oplog_risk_level"),
         Index("idx_oplog_user", "user_id"),
         Index("idx_oplog_project", "project_id"),
         Index("idx_oplog_action", "action"),
@@ -207,4 +208,4 @@ class OperationLog(Base):
     detail: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="操作详情")
     ip: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="操作 IP")
     risk_level: Mapped[str] = mapped_column(String(10), nullable=False, server_default="normal",
-                                            comment="风险等级：normal / high（RD-56）")
+                                            comment="风险等级：normal / medium / high（RD-56）")

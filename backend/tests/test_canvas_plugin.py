@@ -159,6 +159,62 @@ async def test_canvas_plugin_node_execution(client: httpx.AsyncClient, auth: dic
 
 
 @pytest.mark.asyncio
+async def test_plugin_endpoint_url_ssrf_guard_rejected(client: httpx.AsyncClient, auth: dict):
+    """CV-22 SSRF 防护：非法 endpoint_url 安装被拒（400）。
+
+    覆盖：非 http/https 协议（file:/ftp:）、内网保留地址（127.0.0.1 回环 /
+    10.x / 192.168.x / 169.254.x 链路本地 / localhost）、十进制整数形式
+    内网地址（2130706433 = 127.0.0.1）。
+    """
+    bad_urls = [
+        "file:///etc/passwd",                       # 非 http/https 协议
+        "ftp://example.com/hook",                   # 非 http/https 协议
+        "http://127.0.0.1:9999/hook",               # 回环地址
+        "http://localhost:9999/hook",               # localhost 主机名
+        "http://10.1.2.3/hook",                     # 10/8 私网
+        "http://192.168.1.5/hook",                  # 192.168/16 私网
+        "http://172.16.0.9/hook",                   # 172.16-31 私网
+        "http://169.254.169.254/latest/meta-data",  # 链路本地（云元数据）
+        "http://2130706433/hook",                   # 十进制整数形式 = 127.0.0.1
+    ]
+    for bad_url in bad_urls:
+        resp = await client.post("/api/canvas-plugins", headers=auth["headers"], json={
+            "name": f"非法端点_{unique_suffix()}", "endpoint_url": bad_url})
+        assert resp.status_code == 400, f"{bad_url} 应被拒绝，实际: {resp.status_code} {resp.text}"
+
+
+@pytest.mark.asyncio
+async def test_plugin_builtin_exempt_and_invoke_ssrf_guard(
+    client: httpx.AsyncClient, auth: dict, admin_auth: dict, db
+):
+    """CV-22：builtin: 前缀不受校验限制（安装 201 + invoke 200）；
+    存量插件地址被改为内网地址后 invoke 被拒（400，调用前校验兜底）。"""
+    # builtin: 前缀安装不受限，走全流程后 invoke 成功
+    plugin = await _install_plugin(client, auth["headers"], name=f"内置豁免_{unique_suffix()}")
+    assert plugin["endpoint_url"].startswith("builtin:")
+    pid = plugin["id"]
+    resp = await client.post(f"/api/canvas-plugins/{pid}/review",
+                             headers=admin_auth["headers"], json={"approved": True})
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(f"/api/canvas-plugins/{pid}/enable", headers=admin_auth["headers"])
+    assert resp.status_code == 200, resp.text
+    resp = await client.post(f"/api/canvas-plugins/{pid}/invoke",
+                             headers=auth["headers"], json={"payload": {"text": "文本  测试！！！"}})
+    assert resp.status_code == 200, resp.text
+
+    # 存量数据改内网地址（绕过安装期校验的兜底场景）：invoke 前校验拦截 → 400
+    from app.models import CanvasPlugin
+
+    row = await db.get(CanvasPlugin, pid)
+    assert row is not None
+    row.plugin_url = "http://127.0.0.1:9999/hook"
+    await db.commit()
+    resp = await client.post(f"/api/canvas-plugins/{pid}/invoke",
+                             headers=auth["headers"], json={"payload": {"text": "hi"}})
+    assert resp.status_code == 400, f"内网地址 invoke 应被拒绝: {resp.text}"
+
+
+@pytest.mark.asyncio
 async def test_mcp_server_kv_crud(client: httpx.AsyncClient, auth: dict, admin_auth: dict):
     """MCP server 配置 KV：operator 增删；普通用户写 403；删除不存在 404。"""
     # 普通用户添加 → 403

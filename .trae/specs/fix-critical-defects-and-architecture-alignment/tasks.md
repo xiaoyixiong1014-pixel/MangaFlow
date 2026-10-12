@@ -1,0 +1,53 @@
+# Tasks
+
+- [x] Task 1: 高危缺陷 C-BUG-1 修复（前端资产页空白 + 接口循环请求）
+  - [x] 1.1 复现定位：根因双重缺陷——①四个 el-tab-pane 均未声明 name，而 activeTab='characters' 与自动索引 '0' 恒不匹配致全部 pane v-show:false（空白）；②asset.generation_status 的 pending 初始态被 ensurePolling 误判为 busy + loadAssets 无 catch，形成失败也永转的 3s 轮询死环
+  - [x] 1.2 修复加载链：tab name 显式对齐；轮询条件收敛为仅 generating + 100 tick（5 分钟）上限自停；loadSeq/disposed 竞态保护；loadError el-result 错误兜底 + 重试
+  - [x] 1.3 验证：type-check 通过；接口实测首载仅 1 次 GET /assets 且零增长；SFC 编译产物确认新逻辑生效
+- [x] Task 2: 高危缺陷 C-BUG-2 + A-BUG-1 修复（产物 404 与后台积分列）
+  - [x] 2.1 C-BUG-2 根因：main.py 静态挂载用相对路径字符串 `Path(settings.storage_dir)`（cwd=backend 时解析为 backend\backend\storage 空目录），与全项目 storage_path() 落盘口径脱节 → 所有 /storage/* 404；其余环节（url 写库、URL_PREFIX、vite 代理）均一致。修复为 settings.storage_path() 绝对路径；清理遗留空目录树
+  - [x] 2.2 A-BUG-1 根因：UsersView.vue 绑定 row.wallet?.points_balance，但列表接口为扁平结构（points_balance 在顶层，wallet 嵌套仅详情接口有）→ undefined ?? 0 恒 0；后端聚合本身正确。绑定改 row.points_balance
+  - [x] 2.3 验证：新增 tests/test_static_storage.py 4 用例 + test_admin.py 追加 1 用例（含扁平 schema 契约锁死），相关 11 passed；curl 实测 mock/真实产物均 200（修复前 404）；compileall 通过
+- [x] Task 3: Alembic 迁移基线（上线硬门槛）
+  - [x] 3.1 alembic>=1.14 入 requirements（实装 1.20.0）；env.py 异步模板（ALEMBIC_DATABASE_URL > settings.database_url，导入 app.models 注册 32 表，排除 4 张 langgraph 自管表，compare_server_default=False 排噪）
+  - [x] 3.2 初始迁移 e2b3b5b5c90a（对照空库 autogenerate 全量基线，逐段校验零破坏性 op；init_db 补列全部体现；人工修正 3 项：langgraph 表排除、9 处 COMMENT 补齐对齐 ORM、canvas_nodes CHECK 名对齐命名约定）
+  - [x] 3.3 空库验证：mangaflow_mig_test upgrade head 后与主库全维度对比零差异（32 表）；downgrade base 清零；主库 stamp head 后 upgrade 幂等 no-op，alembic check 干净
+  - [x] 3.4 启动钩子：ALEMBIC_ON_STARTUP 开关（默认 false），lifespan 在 create_all 前经 asyncio.to_thread 程序化 upgrade（规避事件循环嵌套），失败记 error 降级 create_all 兜底；README 新增迁移专章
+- [x] Task 4: 部署文件落库（上线硬门槛）
+  - [x] 4.1 deploy/ 9 文件：backend.Dockerfile（含 ffmpeg+中文字体+HEALTHCHECK）、web/admin.Dockerfile（node:22 多阶段→nginx，管理端 /admin/ 子路径）、nginx.conf（SSE buffering off）+ 双前端站点 conf
+  - [x] 4.2 docker-compose.yml（pgvector/pgvector:pg16 + backend + web + admin-web + nginx，宿主映射 15432/18300/15173/15174/18080 避让本机占用）+ .env.example + .dockerignore + deploy/README.md（含与部署文档 V1.0 差异对照）
+  - [x] 4.3 验证：三镜像构建成功（backend 1.28GB / web 96.1MB / admin 97.1MB）；compose 冒烟 postgres+backend healthy、/api/metrics 200、32 表自动初始化、网关 5 项 200；nginx -t 语法通过；已 down -v 零残留
+- [x] Task 5: 队列在途任务恢复（架构偏离 #1 收敛）
+  - [x] 5.1 runner.recover_orphan_running_tasks()：全部 running→queued（retry_count 不动不计退避、progress 保持、meta 追加 recover_from/recover_at 留痕、logger.warning 记录）；main.py lifespan 在 start_runner 之前调用（先恢复后领取），异常降级不阻断
+  - [x] 5.2 test_task_queue.py 增 3 用例：恢复回 queued+meta 标记、恢复后 _process_one 可真实领走、其他状态不受影响；test_task_queue 6 passed + dlq/generation 回归 13 passed
+  - [x] 5.3 README 补重启恢复说明；文档拍板口径待 Task 11 统一修订架构文档
+- [x] Task 6: pgvector 双模向量检索（架构偏离 #2 收敛）
+  - [x] 6.1 新建 services/vector_store.py：probe（CREATE EXTENSION 尝试+pg_extension 确认+进程内缓存）与 ensure（幂等建影子列 embedding_vec vector(N)+ivfflat 索引+JSONB 回填，维度取 max(256, 现有最长维度)，维度不符自动 DROP 重建）；main.py lifespan create_all 后接线，失败仅告警降级
+  - [x] 6.2 检索双模：semantic_search_assets/search_memories 按维度匹配分流 SQL 余弦（1-<=> 距离）或 Python 余弦（截断对齐语义保留），SQL 失败自愈降级，返回结构不变；upsert 经 SAVEPOINT 双写影子列
+  - [x] 6.3 tests/test_vector_dual.py 4 用例（无扩展降级排序/结构、ensure 跳过、自愈回退、双写失败不影响主存储）+ 既有 consistency/assets/agents 回归 10 passed；影子列运行时 ensure 不走 Alembic（条件 DDL 不可行，README 说明）；真实 pgvector 路径由生产镜像（pgvector/pgvector:pg16）承载，开发机降级路径测试覆盖
+- [x] Task 7: 图像/视频真实视觉机审（合规红线）
+  - [x] 7.1 探测实证：Agnes 网关 11 个模型无显式视觉命名，但对 3 个文本旗舰实测图文调用全 200 且 image_tokens 计费——确认旗舰即多模态；默认模型 agnes-3.0-flash-max（证据入 probe_result.md + provider 文件头）
+  - [x] 7.2 新建 providers/vision_review.py（图文 JSON 判定 + 围栏容错 + 15s 超时 + 本地/URL 双输入）；runner 图像视觉优先（method=vision）失败降级 llm-text→keyword；视频新增 ffmpeg 首帧抽帧审核链（violate 不回写产物 + content_violation 退款处罚），抽帧失败降级文本机审
+  - [x] 7.3 tests/test_vision_review.py 10 用例（解析容错/请求契约/降级链/图像视频端到端拦截）+ penalty/gates 回归，合计 19 passed
+- [x] Task 8: 渠道健康巡检与恢复（P0 依赖项）
+  - [x] 8.1 record_result「成功即复位 healthy」确认原本已具备（测试锁定 test_record_result_chenggong_fuwei_degraded）；探测复核发现并修复 DeepSeek 模型名过时问题（deepseek-flash 空回复 → A/B 实测 deepseek-chat 正常，config/主库渠道/逻辑模型/种子四处同步修正）——修复后复测：DeepSeek PASS、Agnes LLM PASS、图像 PASS、视频任务被服务端接受并进入轮询（契约修复实证），仅 TTS 百炼实例限制 FAIL（外部依赖证据归档）
+  - [x] 8.2 双端健康呈现同源一致确认；复位路径（admin 探测/手动修正）写入 README；全部证据更新至 .run/probe_result.md
+- [x] Task 9: LangSmith 追踪启用（架构偏离 #6 收敛）
+  - [x] 9.1 core/tracing.py setup_tracing()：未配置零开销直接返回，配置时注入 LANGSMITH_TRACING/API_KEY/PROJECT + 旧名 LANGCHAIN_* 兼容；config 三字段；main.py lifespan 开头调用；零新依赖（langchain-core>=0.3 原生识别）
+  - [x] 9.2 tests/test_tracing.py 2 用例（零注入/配置注入+幂等，7 passed 连同 model_router）；README 重写 LangSmith 章节（链路就绪待密钥启用）；graph.py MA-13 注释与进度报告口径同步更新
+- [x] Task 10: V-01 版本回退真实化 + MA-06 复核
+  - [x] 10.1 MA-06 复核：test_agent_hitl 4 passed；rewind 机制确认（rewind_checkpoint 标记→下次对话分叉→一次性清空），README 留证，报告「待确认」可更新为已实现
+  - [x] 10.2 V-01 回退：快照原仅存统计摘要——增强 confirm_extract 快照把资产实体完整状态序列化进 impact_scope；新增 POST /versions/{id}/rollback（回退前自动 pre_rollback 快照可再撤销、软删+复活恢复机制规避唯一约束、operation_logs medium 留痕，risk_level 约束同步放开 medium 三处对齐）；前端 ScriptView 版本历史抽屉 + 回退确认；tests/test_version_rollback.py 4 用例（主链路/撤销/404/400）+ 回归 26 passed；type-check 通过
+- [x] Task 11: 杂项收敛与文档修订
+  - [x] 11.1 ENV-01：管理端 vite server.host 显式 "0.0.0.0"；实测 IPv4 curl 200（对照旧配置 [::1] 复现现象本体）；创作端已有 host:true 无需改
+  - [x] 11.2 CV-22 轻量加固：validate_endpoint_url（协议白名单 + 内网黑名单含十进制 IP 反解析与 IPv4-mapped IPv6 + operator 信任域白名单 plugin_allowed_hosts），安装与 invoke 双重校验防绕过；2 新用例（9 passed）；CV-21 核实关闭（TS SDK 导出完整+dist 在位）
+  - [x] 11.3 架构文档 V1.1 六处口径修订（队列/向量/存储/迁移/DeepAgents/LangSmith）+ 新增 §8 修订记录（R-10 拍板留痕）；进度报告 §7.1/§2.1/§4.7 CV-21 口径更正
+- [x] Task 12: 全量回归与验收核验（主控执行）
+  - [x] 12.1 pytest 全量 `-k "not real"`：**153 passed**（基线 122 + 新增 31）；双前端 type-check + build 均 exit 0
+  - [x] 12.2 checklist.md 逐项核验勾选（全部通过）；docker compose build 三镜像成功 + 冒烟确认（Task 4 证据）
+
+# Task Dependencies
+- Task 3（Alembic）→ Task 4（compose 中 backend 启动引用迁移方式）
+- Task 4 与 Task 6 中 pgvector 镜像/影子列协同（先 4 后 6 或同一代理内对齐）
+- Task 1 与 Task 2 分别为前端/后端缺陷，可并行；Task 3-10 互不共享文件可并行，但**涉及跑 pytest 的任务必须串行**（共享测试库 TRUNCATE 互锁教训）
+- Task 11（文档为主）可与 Task 10 并行；Task 12 最后执行

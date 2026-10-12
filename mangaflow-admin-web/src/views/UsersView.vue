@@ -241,8 +241,10 @@ onMounted(() => {
       <el-table-column prop="project_count" label="项目" width="80" align="right" />
       <el-table-column label="积分" width="120" align="right">
         <template #default="{ row }">
-          <span :class="{ 'users__points-neg': row.wallet?.points_balance < 0 }">
-            {{ (row.wallet?.points_balance ?? 0).toLocaleString('zh-CN') }}
+          <!-- 列表接口 AdminUserItem 为扁平结构，points_balance 直接在行上；
+               wallet 嵌套对象仅存在于详情接口，误绑会导致积分列恒 0（A-BUG-1） -->
+          <span :class="{ 'users__points-neg': row.points_balance < 0 }">
+            {{ (row.points_balance ?? 0).toLocaleString('zh-CN') }}
           </span>
         </template>
       </el-table-column>

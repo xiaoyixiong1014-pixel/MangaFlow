@@ -406,6 +406,16 @@ export interface VersionSnapshot {
   created_at?: string | null
 }
 
+/** 版本回退结果（POST /projects/{id}/versions/{snapshotId}/rollback） */
+export interface RollbackResult {
+  /** 是否恢复成功 */
+  restored: boolean
+  /** 回退前自动创建的快照 ID（保证回退本身可撤销） */
+  new_snapshot_id: number
+  /** 回退完成时间（UTC ISO8601） */
+  restored_at: string
+}
+
 // ============================================================
 // 剧本（Studio 阶段一）
 // ============================================================
@@ -751,6 +761,8 @@ export interface Storyboard {
   keyframe_url?: string | null
   /** 视频片段 URL */
   video_url?: string | null
+  /** 配音 URL（TTS 任务完成后由后端回写，可用于行内试听） */
+  audio_url?: string | null
   /** 状态：pending/generating/done/failed */
   status: string
   /** 重生成次数 */

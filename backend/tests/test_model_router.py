@@ -157,6 +157,31 @@ async def test_record_result_jiankang_huixie(db):
     await record_result(db, 0, False, error="mock 不回写")
 
 
+async def test_record_result_chenggong_fuwei_degraded(db):
+    """成功自动复位：初始 degraded 的渠道一次成功调用后复位 healthy。
+
+    验证 record_result 的双向语义——降级渠道无需人工干预或探测，业务调用
+    成功即自动恢复 healthy（Task 8 健康巡检收敛点）。
+
+    Args:
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: degraded 渠道成功调用后未复位 healthy 时中断。
+    """
+    channel = await _make_channel(db, health_status="degraded")
+    assert channel.health_status == "degraded"
+
+    await record_result(db, channel.id, True)
+    await db.commit()
+    await db.refresh(channel)
+    assert channel.health_status == "healthy", "degraded 渠道一次成功调用应自动复位 healthy"
+    assert channel.last_check_at is not None, "复位时应同步刷新最近检查时间"
+
+
 async def test_mock_sentinel_ziduan():
     """mock 哨兵渠道：channel_id=0、协议 mock、模型名带能力后缀。
 

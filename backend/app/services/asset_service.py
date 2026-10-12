@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import logging
 from fastapi import HTTPException, status
-from sqlalchemy import func, literal, select
+from sqlalchemy import func, literal, select, text as sa_text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger("mangaflow.services.asset_service")
@@ -36,6 +36,7 @@ from app.schemas.asset import (
     PROP_VARIANT_TYPES,
     SCENE_VARIANT_TYPES,
 )
+from app.services import vector_store
 from app.services.generation_service import freeze_and_create_task
 from app.services.script_service import DEFAULT_VISUAL_TEMPLATE, get_owned_project
 
@@ -271,9 +272,9 @@ async def list_variants(
 
 # asset_embeddings.embedding JSONB 的承载结构约定：
 #   {"vector": [float...], "text_preview": 前200字, "updated_at": ISO时间}
-# JSONB 方案说明：本机未装 pgvector，向量以 JSONB 列存储、相似度在 Python 侧
-# 计算；数据量大时切换 pgvector（ivfflat 索引）只需替换本模块的存储
-# （upsert_asset_embedding）与检索（semantic_search_assets）两个函数。
+# JSONB 为主存储（迁移期安全）；pgvector 可用时由 vector_store 幂等维护影子
+# 列 embedding_vec（vector(dim)）并双写，检索侧按维度匹配自动分流 SQL/Python
+# 两条路径（见 vector_store 模块说明与 semantic_search_assets）。
 
 # 一致性校验通过阈值（保持与原占位实现一致）
 CONSISTENCY_THRESHOLD = 0.85
@@ -335,6 +336,8 @@ async def upsert_asset_embedding(
     - asset_embeddings 表无 (asset_type, asset_id) 唯一约束，采用「先查后写」；
     - embedding JSONB 存 {"vector", "text_preview", "updated_at"} 结构，
       model 列存 "remote" | "hash-bag"；
+    - pgvector 可用时同步双写影子列 embedding_vec（SAVEPOINT 隔离，失败仅
+      告警，不影响 JSONB 主存储）；
     - 自带独立 commit 且全程吞异常：失败仅告警，绝不影响调用方主流程。
 
     Args:
@@ -368,21 +371,87 @@ async def upsert_asset_embedding(
             )
         ).scalar_one_or_none()
         if row is None:
-            db.add(AssetEmbedding(
+            obj = AssetEmbedding(
                 asset_type=asset_type,
                 asset_id=asset_id,
                 embedding=payload,
                 model=_embedding_model_tag(text, vector),
-            ))
+            )
+            db.add(obj)
+            # flush 取得自增 id 并先发出 INSERT，影子列 UPDATE 才能在同一事务内命中该行
+            await db.flush()
         else:
             row.embedding = payload  # 赋新 dict 触发 JSONB 更新
             row.model = _embedding_model_tag(text, vector)
+        # pgvector 双写：影子列与 JSONB 同事务提交（内部 SAVEPOINT 隔离失败）
+        await vector_store.sync_asset_embedding_vec(db, asset_type, asset_id, vector)
         await db.commit()
     except Exception as exc:  # noqa: BLE001 —— 向量化写入失败不影响资产主流程
         logger.warning(
             "资产向量 upsert 失败（%s/%s）：%s", asset_type, asset_id, exc
         )
         await db.rollback()
+
+
+async def _semantic_search_assets_pgvector(
+    db: AsyncSession,
+    user_id: int,
+    qvec: List[float],
+    types: List[str],
+    limit: int,
+) -> List[Dict[str, Any]]:
+    """pgvector SQL 余弦 TopK 检索（内部函数，影子列路径）。
+
+    逐类型执行 `1 - (embedding_vec <=> :qv)`（ivfflat 的 <=> 为余弦距离语义，
+    1-距离即余弦相似度），仅命中影子列非空行；归属过滤（项目属于当前用户、
+    项目未删）与软删过滤与 Python 路径保持一致。每类型取 limit 条后全局
+    排序截断，与全量余弦 TopK 等价。注意：ivfflat 为近似检索（probes=1），
+    极小召回差异由近似语义接受。
+
+    Args:
+        db: 异步数据库会话。
+        user_id: 当前用户 ID（仅搜索其名下项目资产）。
+        qvec: 查询向量（维度已与影子列一致，由 can_use_pgvector 保证）。
+        types: 资产类型列表。
+        limit: 每类型返回条数上限（TopK）。
+
+    Returns:
+        List[Dict[str, Any]]: 与 Python 路径结构完全一致的条目列表
+            [{"asset_type", "asset_id", "name", "score", "preview"}]，按 score 降序。
+
+    Raises:
+        Exception: SQL 执行失败向上抛出，由调用方捕获后自愈降级回 Python 路径。
+    """
+    qv = vector_store.vector_literal(qvec)
+    results: List[Dict[str, Any]] = []
+    for t in types:
+        cls = Style if t == "style" else _ASSET_CLS[t]
+        # style 无软删字段，其余类型排除软删行（与 Python 路径条件一致）
+        del_cond = "" if t == "style" else " AND c.deleted_at IS NULL"
+        sql = sa_text(
+            "SELECT ae.asset_id AS asset_id, c.name AS name, ae.embedding AS embedding, "
+            "c.visual_prompt AS visual_prompt, "
+            "1 - (ae.embedding_vec <=> CAST(:qv AS vector)) AS score "
+            f"FROM asset_embeddings ae "
+            f"JOIN {cls.__tablename__} c ON ae.asset_type = :t AND ae.asset_id = c.id "
+            "JOIN projects p ON c.project_id = p.id "
+            f"WHERE p.user_id = :uid AND p.deleted_at IS NULL{del_cond} "
+            "AND ae.embedding_vec IS NOT NULL "
+            "ORDER BY ae.embedding_vec <=> CAST(:qv AS vector) "
+            "LIMIT :k"
+        )
+        rows = (await db.execute(sql, {"qv": qv, "t": t, "uid": user_id, "k": limit})).all()
+        for r in rows:
+            payload = r.embedding if isinstance(r.embedding, dict) else {}
+            results.append({
+                "asset_type": t,
+                "asset_id": r.asset_id,
+                "name": r.name,
+                "score": round(float(r.score), 4),
+                "preview": payload.get("text_preview") or (r.visual_prompt or "")[:200],
+            })
+    results.sort(key=lambda r: r["score"], reverse=True)
+    return results[:limit]
 
 
 async def semantic_search_assets(
@@ -392,11 +461,13 @@ async def semantic_search_assets(
     asset_type: Optional[str] = None,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """资产语义搜索：查询文本向量化后与 asset_embeddings 全量行做余弦 TopK。
+    """资产语义搜索：查询文本向量化后做余弦 TopK（pgvector 双模分流）。
 
-    数据量小的当前阶段采用「全表扫 + Python 侧余弦」即可接受；
-    数据量大时的 pgvector（ivfflat 索引）升级点：将本函数的遍历计算
-    替换为 ORDER BY embedding <=> :qvec 的索引检索。
+    - pgvector 可用且查询向量维度与影子列一致 → SQL 余弦 TopK（ivfflat 索引，
+      见 _semantic_search_assets_pgvector）；SQL 失败自愈降级（关闭本进程
+      pgvector 开关）并回退 Python 路径；
+    - 否则走原有「全表扫 + Python 侧余弦」降级路径（行为不变，维度截断对齐）；
+    - 两种模式返回结构完全一致，前端无感知。
 
     Args:
         db: 异步数据库会话。
@@ -419,6 +490,15 @@ async def semantic_search_assets(
                                 detail="type 仅支持 character/scene/prop/style")
 
     qvec = await embed_text(query)
+    # ---------- pgvector 双模分流：影子列可用且维度一致时走 SQL 余弦 TopK ----------
+    if vector_store.can_use_pgvector(len(qvec)):
+        try:
+            return await _semantic_search_assets_pgvector(db, user_id, qvec, types, limit)
+        except Exception as exc:  # noqa: BLE001 —— SQL 路径失败自愈降级
+            vector_store.mark_pgvector_unavailable(exc)
+            await db.rollback()  # 释放 aborted 事务，保证后续只读查询可用
+
+    # ---------- Python 降级路径：全量遍历 + 余弦（行为与既有实现一致） ----------
     results: List[Dict[str, Any]] = []
     for t in types:
         cls = Style if t == "style" else _ASSET_CLS[t]

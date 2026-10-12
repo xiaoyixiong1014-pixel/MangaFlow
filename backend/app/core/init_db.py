@@ -74,7 +74,7 @@ async def seed_data() -> None:
     2. 模型渠道：id=1 平台 DeepSeek 渠道；id=2~5 真实渠道（Agnes 文本/图像/视频、
        百炼 TTS）；id=6~8 本地 mock 渠道（protocol=mock）。全部 API Key 经
        crypto.encrypt_text 加密为 Fernet 密文落库（mock 渠道无 Key，置 NULL）
-    3. 逻辑模型：llm 沿用 deepseek-flash（降级链 [1,2]）；image/video/tts 新增
+    3. 逻辑模型：llm 沿用 deepseek-chat（降级链 [1,2]）；image/video/tts 新增
        Agnes/百炼真实模型并设为各能力默认（降级链含真实渠道 + mock 兜底），
        既有 mock 模型降为备选
     4. 公共提示词：5 条（capability：角色定妆/分镜画面/运镜/配音）
@@ -138,7 +138,11 @@ async def seed_data() -> None:
             (4, "openai", settings.agnes_video_base_url, settings.agnes_video_api_key,
              {"video": ["agnes-video-2.5-flash"]}, "unknown"),
             (5, "openai", settings.bailian_tts_base_url, settings.bailian_tts_api_key,
-             {"tts": ["qwen-audio-3.1-tts-flash"]}, "unknown"),
+             {"tts": [settings.bailian_tts_model]}, "unknown"),
+            # id=9：百炼视频渠道（wan2.7-i2v 图生视频，DashScope 原生异步协议，
+            # base_url 为根域名 /api/v1/... 原生路径；Key 与 TTS 渠道共用）
+            (9, "dashscope", settings.bailian_wan_base_url, settings.bailian_tts_api_key,
+             {"video": [settings.bailian_wan_model]}, "unknown"),
             (6, "mock", "local://mock", None, {"image": ["mock-image"]}, "healthy"),
             (7, "mock", "local://mock", None, {"video": ["mock-video"]}, "healthy"),
             (8, "mock", "local://mock", None, {"tts": ["mock-tts"]}, "healthy"),
@@ -163,7 +167,7 @@ async def seed_data() -> None:
 
         # ---------- 3. 逻辑模型（基础四条；image/video/tts 的 mock 备选链指向 mock 渠道 6~8） ----------
         seed_models = [
-            ("llm", "deepseek-flash", True,
+            ("llm", "deepseek-chat", True,
              {"input_per_1k": 1, "output_per_1k": 2},
              "通用文本创作，适用于剧本生成、拆解与对话",
              "https://api-docs.deepseek.com",
@@ -203,10 +207,18 @@ async def seed_data() -> None:
             logger.info("种子逻辑模型 %s/%s 已创建", capability, name)
 
         # ---------- 3.1 逻辑模型扩展（llm 降级链补 Agnes 兜底；image/video/tts 增设真实默认模型） ----------
-        # llm 主模型 deepseek-flash 降级链：DeepSeek(1) → Agnes 文本(2)
+        # llm 主模型 deepseek-chat 降级链：DeepSeek(1) → Agnes 文本(2)；
+        # 兼容旧种子名 deepseek-flash（2026-10-10 实测该模型名网关空回复，现役为 deepseek-chat）
         lm = await session.scalar(
-            select(LogicalModel).where(LogicalModel.capability == "llm", LogicalModel.name == "deepseek-flash")
+            select(LogicalModel).where(LogicalModel.capability == "llm", LogicalModel.name == "deepseek-chat")
         )
+        if lm is None:
+            lm = await session.scalar(
+                select(LogicalModel).where(LogicalModel.capability == "llm", LogicalModel.name == "deepseek-flash")
+            )
+            if lm is not None:
+                lm.name = "deepseek-chat"
+                logger.info("逻辑模型 llm 显示名 deepseek-flash -> deepseek-chat（模型名实测修正）")
         if lm is not None and lm.channel_priority != [1, 2]:
             lm.channel_priority = [1, 2]
             logger.info("逻辑模型 llm/deepseek-flash 降级链已更新为 [1, 2]")
@@ -218,10 +230,13 @@ async def seed_data() -> None:
              {"per_image": 10},
              "Agnes 竖版图像生成，适用于角色定妆与分镜关键帧",
              [3, 6], "https://apihub.agnes-ai.com"),
-            ("video", "agnes-video-2.5-flash", 7,
+            # video 默认：百炼 wan2.7-i2v 图生视频（首帧驱动，本地关键帧以
+            # base64 传入）；Agnes 渠道免费队列高峰常满载（video_queue_full），
+            # 保留为链中备选，mock 兜底
+            ("video", "wan2.7-i2v", 7,
              {"per_second": 20},
-             "Agnes 竖版视频片段生成，适用于分镜动态化",
-             [4, 7], "https://apihub.agnes-ai.com"),
+             "阿里云百炼通义万相图生视频，以分镜关键帧为首帧驱动动态化",
+             [9, 4, 7], None),
             ("tts", "qwen-audio-3.1-tts-flash", 8,
              {"per_100_chars": 5},
              "阿里云百炼语音合成，适用于台词配音",
@@ -430,11 +445,42 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     # Task 4（C-04）：分级处罚——账号状态与违规累计次数（存量行填充默认值）
     ("users", "ALTER TABLE users ADD COLUMN IF NOT EXISTS account_status VARCHAR(20) NOT NULL DEFAULT 'active'"),
     ("users", "ALTER TABLE users ADD COLUMN IF NOT EXISTS violation_count INTEGER NOT NULL DEFAULT 0"),
+    # ---------- 列注释对齐（Alembic 基线引入，Task 3） ----------
+    # 裸 ALTER TABLE 补列不会带 COMMENT ON COLUMN，而 ORM 模型声明了 comment，
+    # autogenerate 的注释比较（alembic 1.20 起内置）会将其识别为 modify_comment
+    # 噪音 diff。此处按 ORM 注释原文逐列补齐（COMMENT ON 幂等，重复执行仅覆盖），
+    # 使存量库与「ORM / create_all / 初始迁移」三方的列注释完全一致。
+    ("agent_threads",
+     "COMMENT ON COLUMN agent_threads.rewind_checkpoint IS "
+     "'回溯目标检查点 ID（一次性，分叉续聊后清空）'"),
+    ("prompts",
+     "COMMENT ON COLUMN prompts.status IS "
+     "'上下架状态：published 已上架 / offline 已下架'"),
+    ("review_records",
+     "COMMENT ON COLUMN review_records.method IS "
+     "'机审方式：keyword 词表 / llm-text 大模型 / gate 闸门聚合（Task 4.1）'"),
+    ("tasks", "COMMENT ON COLUMN tasks.priority IS '调度优先级（0-9，越大越先执行，默认 5）'"),
+    ("tasks",
+     "COMMENT ON COLUMN tasks.next_retry_at IS "
+     "'下次允许重试时间（指数退避；NULL 表示立即可领取）'"),
+    ("tasks",
+     "COMMENT ON COLUMN tasks.dead_letter IS "
+     "'死信标记（重试耗尽仍失败，进入管理端死信队列）'"),
+    ("tasks",
+     "COMMENT ON COLUMN tasks.meta IS "
+     "'任务附加信息：目标资产/提示词/时长等'"),
+    ("users",
+     "COMMENT ON COLUMN users.account_status IS "
+     "'账号状态（C-04 分级处罚）：active/restricted/banned'"),
+    ("users",
+     "COMMENT ON COLUMN users.violation_count IS "
+     "'内容违规累计次数（C-04：1-2 次受限、≥3 次禁用）'"),
     # Task 9（CV-21/19）：节点类型白名单升级——canvas_nodes 增加 plugin/mcp_tool。
     # 存量库旧 CHECK 约束仅含 10 类，需删除后按 12 类重建（NOT VALID 免全表校验，
     # 对新插入/更新行仍生效）。兼容两种约束名：naming_convention 渲染的
-    # ck_canvas_nodes_ck_cn_node_type 与历史上直接命名的 ck_cn_node_type；
-    # DO 块幂等，兼容"create_all 已按新模型建约束"的库。
+    # ck_canvas_nodes_ck_cn_node_type（与 ORM/初始迁移一致，Task 3 起统一用该名重建）
+    # 与历史上直接命名的 ck_cn_node_type；DO 块幂等，兼容"create_all 已按新模型
+    # 建约束"的库。
     ("canvas_nodes", "ALTER TABLE canvas_nodes DROP CONSTRAINT IF EXISTS ck_canvas_nodes_ck_cn_node_type"),
     ("canvas_nodes", "ALTER TABLE canvas_nodes DROP CONSTRAINT IF EXISTS ck_cn_node_type"),
     ("canvas_nodes", """
@@ -444,10 +490,32 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
                 WHERE conrelid = 'canvas_nodes'::regclass
                   AND conname IN ('ck_cn_node_type', 'ck_canvas_nodes_ck_cn_node_type')
             ) THEN
-                ALTER TABLE canvas_nodes ADD CONSTRAINT ck_cn_node_type
+                ALTER TABLE canvas_nodes ADD CONSTRAINT ck_canvas_nodes_ck_cn_node_type
                 CHECK (node_type IN ('text', 'image', 'video', 'audio', 'generate',
                        'asset_ref', 'shot', 'compose', 'logic', 'group', 'plugin', 'mcp_tool'))
                 NOT VALID;
+            END IF;
+        END $$;
+    """),
+    # Task 10（V-01）：操作日志风险等级放开 medium——版本回退等可撤销但
+    # 影响面较大的操作使用 medium（RD-56）。存量库旧 CHECK 仅含 normal/high，
+    # 需删除后按三值重建。兼容两种约束名：naming_convention 渲染的
+    # ck_operation_logs_ck_oplog_risk_level（与 ORM/初始迁移一致）与历史上
+    # 直接命名的 ck_oplog_risk_level；DO 块幂等，兼容「create_all 已按新模型
+    # 建约束」的库。
+    ("operation_logs",
+     "ALTER TABLE operation_logs DROP CONSTRAINT IF EXISTS ck_operation_logs_ck_oplog_risk_level"),
+    ("operation_logs",
+     "ALTER TABLE operation_logs DROP CONSTRAINT IF EXISTS ck_oplog_risk_level"),
+    ("operation_logs", """
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'operation_logs'::regclass
+                  AND conname IN ('ck_oplog_risk_level', 'ck_operation_logs_ck_oplog_risk_level')
+            ) THEN
+                ALTER TABLE operation_logs ADD CONSTRAINT ck_operation_logs_ck_oplog_risk_level
+                CHECK (risk_level IN ('normal', 'medium', 'high'));
             END IF;
         END $$;
     """),

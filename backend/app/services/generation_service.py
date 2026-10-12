@@ -18,6 +18,7 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models import LogicalModel, Project, Storyboard, Task, User, Wallet
 from app.services.billing_service import freeze_points
 
@@ -44,6 +45,10 @@ async def ensure_generation_allowed(db: AsyncSession, user_id: int) -> None:
     - restricted（受限）：当日（自然日）已创建任务数达到上限时 429 限流；
     - active：直接放行。
 
+    开关说明：全局配置 punishment_enabled（默认 False）关闭时直接放行——
+    产品上线前取消生成限制；违规处罚的累计与通知（apply_violation_penalty）
+    不受此开关影响，照常生效，上线后置 True 即恢复拦截。
+
     Args:
         db: 异步数据库会话。
         user_id: 提交用户 ID（用户不存在时静默放行，交由归属校验兜底）。
@@ -54,6 +59,9 @@ async def ensure_generation_allowed(db: AsyncSession, user_id: int) -> None:
     Raises:
         HTTPException: 403 —— 账号已被禁用；429 —— 受限用户当日生成次数已达上限。
     """
+    # 上线前取消生成限制：处罚开关关闭时跳过准入校验（violation 累计照常）
+    if not settings.punishment_enabled:
+        return
     user = await db.get(User, user_id)
     if user is None:
         return

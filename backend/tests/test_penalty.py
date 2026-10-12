@@ -14,6 +14,7 @@ import uuid
 import pytest
 from sqlalchemy import select
 
+from app.core.config import settings
 from app.models import Notification, OperationLog, Task, User
 from app.services.review_service import apply_violation_penalty
 from tests.conftest import (
@@ -23,6 +24,23 @@ from tests.conftest import (
     unique_suffix,
     wait_task_terminal,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_punishment(monkeypatch):
+    """本文件所有用例强制打开处罚开关（内部夹具）。
+
+    全局配置 punishment_enabled 默认 False（上线前取消生成限制），
+    但处罚逻辑本身仍需回归验证——通过 monkeypatch 在用例期间临时置 True，
+    结束后自动恢复，不影响其他测试与默认配置行为。
+
+    Args:
+        monkeypatch: pytest 的属性替换夹具。
+
+    Returns:
+        None。
+    """
+    monkeypatch.setattr(settings, "punishment_enabled", True)
 
 
 async def _project_with_storyboard(client, auth, db, tag: str):
@@ -152,6 +170,40 @@ async def test_restricted_xianliu_429(client, auth, db):
     )
     assert ok.status_code == 200, ok.text
     await wait_task_terminal(client, auth["headers"], ok.json()["tasks"][0]["id"], timeout=30.0)
+
+
+async def test_switch_off_shengcheng_buxianzhi(client, auth, db, monkeypatch):
+    """处罚开关关闭（默认）时：banned 用户提交生成也不被拦截，限制取消。
+
+    全局默认 punishment_enabled=False（产品上线前取消生成限制），本用例
+    显式把开关置回 False，验证 banned 状态不触发 403、任务正常创建执行。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+        monkeypatch: pytest 属性替换夹具（覆盖文件级 autouse 夹具的 True）。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    monkeypatch.setattr(settings, "punishment_enabled", False)
+    pid, sb = await _project_with_storyboard(client, auth, db, unique_suffix())
+    user = await db.get(User, auth["user_id"])
+    user.account_status = "banned"
+    user.violation_count = 3
+    await db.commit()
+
+    resp = await client.post(
+        f"/api/projects/{pid}/storyboards/{sb.id}/keyframes",
+        headers=auth["headers"], json={"phase": "trial"},
+    )
+    # 开关关闭：不拦截，任务照常创建并执行
+    assert resp.status_code == 200, resp.text
+    await wait_task_terminal(client, auth["headers"], resp.json()["tasks"][0]["id"], timeout=30.0)
 
 
 async def test_weigui_renwu_zidong_chufa(client, auth, db):

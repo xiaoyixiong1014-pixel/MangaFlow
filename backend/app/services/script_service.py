@@ -503,6 +503,65 @@ async def extract_entities(db: AsyncSession, project: Project, script: Script) -
     return result
 
 
+async def serialize_project_assets(db: AsyncSession, project_id: int) -> Dict[str, Any]:
+    """序列化项目当前有效资产状态（V-01 版本回退的最小状态载体）。
+
+    仅序列化业务可变字段（name/aliases/description/visual_prompt/category），
+    不含生成态字段（feature_vector/asset_url/face_locked 等）——回退语义是
+    「恢复抽取确认时刻的实体名单与描述」，不回滚生成产物。
+
+    Args:
+        db: 异步数据库会话。
+        project_id: 项目 ID。
+
+    Returns:
+        Dict[str, Any]: 形如 {"entity": "assets", "characters": [...],
+        "scenes": [...], "props": [...]} 的可 JSONB 序列化状态字典，
+        entity 字段标识恢复目标域（回退 API 据此分派恢复逻辑）。
+
+    Raises:
+        Exception: 数据库查询异常向上抛出。
+    """
+    chars = (
+        await db.execute(
+            select(Character).where(
+                Character.project_id == project_id, Character.deleted_at.is_(None)
+            ).order_by(Character.id)
+        )
+    ).scalars().all()
+    scenes = (
+        await db.execute(
+            select(Scene).where(
+                Scene.project_id == project_id, Scene.deleted_at.is_(None)
+            ).order_by(Scene.id)
+        )
+    ).scalars().all()
+    props = (
+        await db.execute(
+            select(Prop).where(
+                Prop.project_id == project_id, Prop.deleted_at.is_(None)
+            ).order_by(Prop.id)
+        )
+    ).scalars().all()
+    return {
+        "entity": "assets",
+        "characters": [
+            {"name": c.name, "aliases": list(c.aliases or []), "description": c.description,
+             "visual_prompt": c.visual_prompt}
+            for c in chars
+        ],
+        "scenes": [
+            {"name": s.name, "description": s.description, "visual_prompt": s.visual_prompt}
+            for s in scenes
+        ],
+        "props": [
+            {"name": p.name, "category": p.category, "description": p.description,
+             "visual_prompt": p.visual_prompt}
+            for p in props
+        ],
+    }
+
+
 async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[str, int]:
     """抽取确认入池：按确认清单建/更 characters / scenes / props 资产行。
 
@@ -601,12 +660,17 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
                 visual_prompt=visual_prompt,
             ))
 
-    # 项目状态推进 + 版本快照（V-01 / RD-08）
+    # 先 flush 使本轮新增/更新的资产行在当前事务内可见，再序列化实体状态
+    await db.flush()
+    assets_state = await serialize_project_assets(db, project.id)
+
+    # 项目状态推进 + 版本快照（V-01 / RD-08；impact_scope 记录实体完整状态，供版本回退恢复）
     project.status = "asset"
     db.add(VersionSnapshot(
         project_id=project.id,
         stage="extract_confirmed",
         summary={"characters": len(req.characters), "scenes": len(req.scenes), "props": len(req.props)},
+        impact_scope=assets_state,
     ))
     await db.commit()
 

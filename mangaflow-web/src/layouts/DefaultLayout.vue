@@ -286,7 +286,8 @@ onBeforeUnmount(() => {
           >
             {{ ui.isMobile ? '☰' : (ui.sidebarCollapsed ? '»' : '«') }}
           </button>
-          <span class="page-title">{{ pageTitle }}</span>
+          <!-- 顶栏标题：独立类名，避免与全局 .page-title（内容区大标题，含 margin-bottom）冲突导致垂直不居中 -->
+          <span class="topbar-title">{{ pageTitle }}</span>
         </template>
 
         <template #right>
@@ -414,8 +415,8 @@ onBeforeUnmount(() => {
   color: var(--mf-text);
 }
 
-/* 页面标题 */
-.page-title {
+/* 顶栏页标题（独立类名：全局 .page-title 为内容区大标题，含 margin，不适用于顶栏） */
+.topbar-title {
   font-size: var(--mf-fs-lg);
   font-weight: var(--mf-fw-semibold);
   color: var(--mf-text);

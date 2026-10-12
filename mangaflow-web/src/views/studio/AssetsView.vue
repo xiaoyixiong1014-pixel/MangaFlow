@@ -3,9 +3,13 @@
 
   对应原型 S-04（资产管理）+ S-05（资产变体面板），路由 /projects/:id/assets。
   功能：
-  - 四 Tab（角色/场景/道具/风格）+ 「生成全部主照」批量按钮（确认框提示张数与积分）；
+  - 四 Tab（角色/场景/道具/风格，各 pane 显式声明 name 与 activeTab 对齐，修复
+    v-model 初值不匹配自动索引导致的内容区空白缺陷 C-BUG-1）+ 「生成全部主照」
+    批量按钮（确认框提示张数与积分）；
   - 角色卡网格：有图 el-image 预览 / 无图占位渐变 + 生成按钮；状态 Tag（pending/
-    generating/done/failed，generating 期间每 3s 轮询刷新直至全部终态）；
+    generating/done/failed，仅 generating（确有生成任务在跑）时每 3s 轮询刷新，
+    直至全部终态或达到轮询上限自动停止；pending 为实体抽取后的初始态、无任务，
+    不触发轮询——修复进入页面即无限循环请求缺陷 C-BUG-1）；
     face_locked 显示 el-icon Lock 徽标；
   - 角色操作：生成定妆照（generateCharacterPortrait→轮询）/确认并锁定（lock→confirm）/
     派生变体（S-05 抽屉，RD-14 继承声明：面部特征必须继承——默认勾选且禁用）/
@@ -43,54 +47,101 @@ const projectId = computed(() => Number(route.params.id))
 
 /** 首屏加载中（骨架屏） */
 const loading = ref(true)
+/** 首屏加载失败（区分「加载失败」与「确实无资产」两种空内容场景，避免误导性空态） */
+const loadError = ref(false)
 /** 四类资产聚合 */
 const assets = ref<AssetsGroup>({ characters: [], scenes: [], props: [], styles: [] })
-/** 当前激活 Tab */
+/** 当前激活 Tab（与 el-tab-pane 显式 name 一一对应） */
 const activeTab = ref<'characters' | 'scenes' | 'props' | 'styles'>('characters')
 
+/** 请求序号（竞态保护：响应返回时若已有更新的请求发出，则丢弃本次过期响应） */
+let loadSeq = 0
+/** 组件是否已卸载（卸载后在途响应禁止回写状态） */
+let disposed = false
+
 /**
- * 拉取四类资产列表（quiet=true 时不切换骨架屏，供轮询使用）。
+ * 拉取四类资产列表（quiet=true 时不切换骨架屏，供轮询与操作后刷新使用）。
+ * 带请求序号竞态保护：仅允许最新一次请求回写状态，丢弃过期响应；
+ * 失败时非静默进入错误兜底态、静默轮询保持旧数据不惊扰用户。
  * @param quiet 是否静默刷新
  * @returns 无
  */
 async function loadAssets(quiet = false): Promise<void> {
-  if (!quiet) loading.value = true
+  const seq = ++loadSeq
+  if (!quiet) {
+    loading.value = true
+    loadError.value = false
+  }
   try {
-    assets.value = await studioApi.listAssets(projectId.value)
+    const group = await studioApi.listAssets(projectId.value)
+    // 过期响应或组件已卸载：直接丢弃，不回写状态
+    if (disposed || seq !== loadSeq) return
+    assets.value = group
+  } catch {
+    // 静默轮询失败保持旧数据；首屏失败进入错误兜底（不吞异常导致骨架屏卡死）
+    if (!quiet && !disposed && seq === loadSeq) loadError.value = true
   } finally {
-    if (!quiet) loading.value = false
+    if (!quiet && !disposed && seq === loadSeq) loading.value = false
   }
 }
 
 /** 轮询定时器句柄（有角色 generating 时每 3s 刷新） */
 let pollTimer: ReturnType<typeof setInterval> | null = null
+/** 轮询间隔（毫秒） */
+const POLL_INTERVAL_MS = 3000
+/** 轮询上限（3s × 100 = 5 分钟；防止后端任务卡死永不终态时无限循环请求） */
+const POLL_MAX_TICKS = 100
 
 /**
- * 若存在生成中的角色则启动 3s 轮询，全部终态后自动停止。
+ * 停止轮询并清理定时器句柄。
  * @returns 无
  */
-function ensurePolling(): void {
-  const busy = assets.value.characters.some(
-    (c) => c.generation_status === 'generating' || c.generation_status === 'pending',
-  )
-  if (busy && !pollTimer) {
-    pollTimer = setInterval(async () => {
-      await loadAssets(true)
-      const stillBusy = assets.value.characters.some(
-        (c) => c.generation_status === 'generating' || c.generation_status === 'pending',
-      )
-      if (!stillBusy && pollTimer) {
-        clearInterval(pollTimer)
-        pollTimer = null
-        ElMessage.success('全部定妆照生成完成')
-      }
-    }, 3000)
+function stopPolling(): void {
+  if (pollTimer) {
+    clearInterval(pollTimer)
+    pollTimer = null
   }
 }
 
+/**
+ * 若存在确有生成任务在跑的角色（generating）则启动 3s 轮询，
+ * 全部终态后自动停止；达到轮询上限自动停止并提示（防止任务卡死导致无限请求）。
+ * 注意：pending 是实体抽取后的初始态（后端 server_default，无关联任务），
+ * 不纳入轮询触发条件——否则刚进入页面就会无限轮询（C-BUG-1 循环请求根因）。
+ * @returns 无
+ */
+function ensurePolling(): void {
+  const busy = assets.value.characters.some((c) => c.generation_status === 'generating')
+  if (!busy || pollTimer) return
+  // 本次轮询周期已执行的 tick 计数（闭包内维护，重启轮询时重新计数）
+  let ticks = 0
+  pollTimer = setInterval(async () => {
+    ticks += 1
+    await loadAssets(true)
+    const stillBusy = assets.value.characters.some((c) => c.generation_status === 'generating')
+    if (!stillBusy && pollTimer) {
+      stopPolling()
+      ElMessage.success('全部定妆照生成完成')
+    } else if (ticks >= POLL_MAX_TICKS && pollTimer) {
+      stopPolling()
+      ElMessage.warning('生成任务长时间未更新，已暂停自动刷新，可稍后手动刷新页面查看结果')
+    }
+  }, POLL_INTERVAL_MS)
+}
+
 onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer)
+  disposed = true
+  stopPolling()
 })
+
+/**
+ * 首屏加载失败后的手动重试（重新拉取并按需恢复轮询）。
+ * @returns 无
+ */
+async function retryLoad(): Promise<void> {
+  await loadAssets()
+  ensurePolling()
+}
 
 // ============================================================
 // 状态 Tag
@@ -517,6 +568,18 @@ onMounted(() => {
     <!-- 首屏骨架 -->
     <el-skeleton v-if="loading" :rows="6" animated />
 
+    <!-- 首屏加载失败兜底：给出明确错误态与重试入口，避免空白/误导性空态 -->
+    <el-result
+      v-else-if="loadError"
+      icon="error"
+      title="资产加载失败"
+      sub-title="网络异常或服务暂不可用，请稍后重试"
+    >
+      <template #extra>
+        <el-button type="primary" @click="retryLoad">重新加载</el-button>
+      </template>
+    </el-result>
+
     <el-empty v-else-if="!assets.characters.length && !assets.scenes.length && !assets.props.length && !assets.styles.length"
       description="还没有资产，请先回到剧本页完成「实体提取确认」"
     >
@@ -527,7 +590,10 @@ onMounted(() => {
 
     <el-tabs v-else v-model="activeTab" type="border-card">
       <!-- ============ 角色 Tab ============ -->
-      <el-tab-pane :label="`角色 (${assets.characters.length})`">
+      <!-- 各 pane 显式声明 name 与 activeTab 对齐：Element Plus 对未命名 pane 自动按序
+           赋 name（'0'/'1'/...），v-model 初值 'characters' 无法匹配会导致全部 pane
+           v-show=false（内容区空白，C-BUG-1 空白根因） -->
+      <el-tab-pane name="characters" :label="`角色 (${assets.characters.length})`">
         <div class="card-grid">
           <el-card v-for="c in assets.characters" :key="c.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
@@ -615,7 +681,7 @@ onMounted(() => {
       </el-tab-pane>
 
       <!-- ============ 场景 Tab ============ -->
-      <el-tab-pane :label="`场景 (${assets.scenes.length})`">
+      <el-tab-pane name="scenes" :label="`场景 (${assets.scenes.length})`">
         <div class="card-grid">
           <el-card v-for="s in assets.scenes" :key="s.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
@@ -654,7 +720,7 @@ onMounted(() => {
       </el-tab-pane>
 
       <!-- ============ 道具 Tab ============ -->
-      <el-tab-pane :label="`道具 (${assets.props.length})`">
+      <el-tab-pane name="props" :label="`道具 (${assets.props.length})`">
         <div class="card-grid">
           <el-card v-for="p in assets.props" :key="p.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
@@ -691,7 +757,7 @@ onMounted(() => {
       </el-tab-pane>
 
       <!-- ============ 风格 Tab ============ -->
-      <el-tab-pane :label="`风格 (${assets.styles.length})`">
+      <el-tab-pane name="styles" :label="`风格 (${assets.styles.length})`">
         <div class="card-grid">
           <el-card v-for="st in assets.styles" :key="st.id" shadow="hover" class="asset-card">
             <div class="img-wrap">

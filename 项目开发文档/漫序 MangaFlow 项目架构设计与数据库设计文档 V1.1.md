@@ -20,7 +20,7 @@
 | 原则 | 说明 |
 | ---- | ---- |
 | 双引擎共享底座 | Studio（流水线）与 Canvas（画布）共用资产 / 提示词 / 模型 / 素材 / 计费 / 审核 / 版本底座 |
-| 三框架分层 | LangGraph 编排、LangChain 组件、Deep Agents 深度任务，职责不重叠（RD-53） |
+| 三框架分层 | LangGraph 编排、LangChain 组件、深度研究任务（自研 Deep Agents 等价实现，不引入 deepagents 依赖），职责不重叠（RD-53）（2026-10-10 修订） |
 | 模型可插拔 | 渠道层与逻辑模型层分离，换厂商不改业务代码（PL-07 / PL-08 / PL-26~PL-29） |
 | 异步优先 | 重任务（视频/合成）全部走队列，前端不阻塞（P-09 / SYS-01） |
 | 资金安全 | 幂等 + 对账 + 资损监控为红线，不可裁剪（RD-55） |
@@ -33,11 +33,11 @@
 | L1 | 接入层 | 流量入口与静态资源 | Nginx 反向代理 + CDN |
 | L2 | 前端层 | 用户界面 | Vue3 创作端（工作台/Studio/Canvas，仓库 `mangaflow-web`）、Vue3 运营管理端（独立仓库 `mangaflow-admin-web`）；两仓共用 `@mangaflow/design` 设计系统（见 §3.1.4，RD-58） |
 | L3 | 网关层 | 统一入口与鉴权 | FastAPI REST API、认证鉴权、WebSocket + SSE |
-| L4 | 智能体层 | AI 编排与协作 | LangGraph 编排引擎、总控 Supervisor、域智能体集群、Deep Agents |
+| L4 | 智能体层 | AI 编排与协作 | LangGraph 编排引擎、总控 Supervisor、域智能体集群、深度研究 Agent（自研 Deep Agents 等价实现） |
 | L5 | 业务服务层 | 领域服务 | 剧本 / 资产 / 分镜 / 生成 / 合成 / 用户 / 计费 / 审核 / 提示词素材服务、工作流编排、画布 DAG 执行器 |
 | L6 | 能力层 | 通用能力 | 模型路由中心、任务调度、合规审核、计费引擎、检查点与长期记忆 |
-| L7 | 数据层 | 持久化与存储 | PostgreSQL 16 + pgvector、Redis 7、对象存储 |
-| L8 | 执行层 | 异步任务 | Celery Worker 集群、优先级队列、死信队列 |
+| L7 | 数据层 | 持久化与存储 | PostgreSQL 16（JSONB 向量基线 + pgvector 双模，见 §1.3）、Redis 7、本地磁盘存储（演进路径：对象存储，见 §1.3） |
+| L8 | 执行层 | 异步任务 | 单实例进程内 asyncio runner（优先级队列、指数退避、死信队列；多实例时演进 Celery，见 §1.3） |
 | L9 | 可观测层 | 监控与追踪 | LangSmith、Prometheus、Grafana、Loki |
 
 ### 1.3 技术选型（与 PRD 第 9 章一致）
@@ -47,14 +47,15 @@
 | 前端 | Vue 3 + Vite + TypeScript + Element Plus + Pinia |
 | 画布引擎 | 自研节点画布内核 |
 | 后端 | Python 3.13 + FastAPI + SQLAlchemy 2.0（异步） |
-| 数据库 | PostgreSQL 16 + pgvector |
-| 缓存 / 队列 | Redis 7.0 + Celery + Flower |
+| 数据库 | PostgreSQL 16；向量存储为 JSONB 基线（零依赖），服务层双模支持 pgvector：扩展可用时自动建 ivfflat 索引走 SQL 余弦（生产镜像 pgvector/pgvector:pg16 开箱即用），不可用自动降级 Python 余弦，接口行为一致（2026-10-10 修订） |
+| 缓存 / 队列 | 单实例进程内 asyncio runner（FOR UPDATE SKIP LOCKED 领取、优先级 0-9、指数退避 2^n、死信队列 + requeue、启动时 running 孤儿任务自动恢复）；多实例水平扩展时演进 Celery + Redis（演进路径预留）（2026-10-10 修订） |
+| 数据库迁移 | Alembic（32 表初始迁移，ALEMBIC_ON_STARTUP 可选自动升级）；开发环境 create_all 兜底（2026-10-10 修订） |
 | 多智能体编排 | LangGraph（最新版） |
 | 组件层 | LangChain（最小化使用） |
-| 深度任务 | Deep Agents |
-| 可观测 | LangSmith + Prometheus + Grafana + Loki |
+| 深度任务 | 自研 Deep Agents 等价实现：plan→Send 并行 exec→reflect→finalize 循环 + 虚拟文件系统笔记存 langgraph_store，不引入 deepagents 依赖（口径对齐实现，2026-10-10 修订） |
+| 可观测 | LangSmith（环境变量接线完成 core/tracing.py，未配置零开销，待密钥启用）+ Prometheus + Grafana + Loki（2026-10-10 修订） |
 | 视频处理 | FFmpeg 6.0 |
-| 对象存储 | 阿里云 OSS / 腾讯云 COS / S3 兼容 |
+| 对象存储 | 当前本地磁盘存储（storage_path() 唯一落盘入口），单机部署；多实例部署时演进对象存储 OSS/COS/S3（2026-10-10 修订） |
 | 部署 | Docker + Nginx |
 
 ---
@@ -82,7 +83,7 @@ flowchart TB
         LG["LangGraph 编排引擎<br/>StateGraph / Checkpointer / Store"]
         SUP["总控 Supervisor"]
         AGENTS["域智能体集群<br/>剧本/资产/分镜/生成/合成/一致性/审核/画布/成本"]
-        DEEP["Deep Agents<br/>深度研究 / 原著解析"]
+        DEEP["深度研究 Agent<br/>自研 Deep Agents 等价实现"]
     end
 
     subgraph 业务服务层
@@ -105,13 +106,13 @@ flowchart TB
     end
 
     subgraph 数据层
-        PG[("PostgreSQL 16 + pgvector")]
+        PG[("PostgreSQL 16<br/>JSONB 向量 / pgvector 双模")]
         REDIS[("Redis 7")]
-        OSS["对象存储"]
+        OSS["本地磁盘存储<br/>（演进：对象存储）"]
     end
 
     subgraph 执行层
-        CELERY["Celery Worker 集群"]
+        CELERY["进程内 asyncio runner<br/>（多实例演进 Celery）"]
         QUEUE["优先级队列"]
         DLQ["死信队列"]
     end
@@ -256,7 +257,7 @@ flowchart TB
 | 画布助手 Agent | 画布上下文理解与节点编排 |
 | 审核 Agent | 文本/图片/视频三重合规检测 |
 | 成本/配额 Agent | 成本估算与配额校验 |
-| 深度研究 Agent（Deep Agents） | 原著长文本解析、世界观/人物关系抽取 |
+| 深度研究 Agent（自研 Deep Agents 等价实现） | 原著长文本解析、世界观/人物关系抽取（plan→Send 并行 exec→reflect→finalize 循环 + 虚拟文件系统笔记存 langgraph_store，不引入 deepagents 依赖，2026-10-10 修订） |
 
 ---
 
@@ -379,7 +380,7 @@ stateDiagram-v2
 | 项 | 规范 |
 | -- | ---- |
 | 数据库 | PostgreSQL 16 |
-| 扩展 | `pgvector`（向量检索，RD-15）、`pg_trgm`（模糊搜索） |
+| 扩展 | `pg_trgm`（模糊搜索）；`pgvector` 可选（向量检索 RD-15，2026-10-10 修订：JSONB 向量存储为基线，服务层双模支持 pgvector——扩展可用自动建 ivfflat 索引走 SQL 余弦，不可用自动降级 Python 余弦，接口行为一致） |
 | 字符集 | UTF8 |
 | 命名 | 表名/字段名小写下划线；外键 `xxx_id` |
 | 主键 | `id BIGSERIAL PRIMARY KEY` |
@@ -897,10 +898,11 @@ erDiagram
 
 | 表 | 关键字段 | 说明 |
 | -- | -------- | ---- |
-| langgraph_store | `namespace`、`key`、`value JSONB`、`embedding vector(1024)`、`updated_at` | LangGraph Store 长期记忆（资产特征 / 提示词 / 风格 / 偏好） |
-| asset_embeddings | `asset_type`、`asset_id`、`embedding vector(1024)`、`model`、`updated_at` | 资产与参考图特征向量，支撑相似检索与一致性比对 |
+| langgraph_store | `namespace`、`key`、`value JSONB`、`embedding JSONB`、`updated_at` | LangGraph Store 长期记忆（资产特征 / 提示词 / 风格 / 偏好） |
+| asset_embeddings | `asset_type`、`asset_id`、`embedding JSONB`、`model`、`updated_at` | 资产与参考图特征向量，支撑相似检索与一致性比对 |
 
-**索引**：`uk_store_ns_key(namespace, key)`、`idx_store_embedding USING ivfflat (embedding vector_cosine_ops)`、`idx_ae_asset(asset_type, asset_id)`
+**索引**：`uk_store_ns_key(namespace, key)`、`idx_ae_asset(asset_type, asset_id)`
+**向量索引（2026-10-10 修订）**：JSONB 向量存储为基线（零依赖）；服务层双模支持 pgvector——扩展可用时自动建 `idx_store_embedding USING ivfflat (embedding vector_cosine_ops)` 并走 SQL 余弦检索（生产镜像 pgvector/pgvector:pg16 开箱即用），扩展不可用时自动降级 Python 余弦，接口行为一致。
 
 ### 5.4 主外键关系汇总
 
@@ -933,7 +935,7 @@ erDiagram
 | 外键索引 | 所有外键字段均建索引，避免 JOIN 与级联删除全表扫描 |
 | 高频查询 | 项目列表 `(user_id, updated_at DESC)`、任务状态 `(status)`、审核队列 `(manual_status)` |
 | 全文 / 模糊 | 标题类字段可后续建 `pg_trgm` GIN 索引 |
-| 向量索引 | `asset_embeddings.embedding` 建 `ivfflat` + `vector_cosine_ops`（RD-15） |
+| 向量索引 | pgvector 扩展可用时 `asset_embeddings.embedding` 自动建 `ivfflat` + `vector_cosine_ops` 走 SQL 余弦；不可用时降级 JSONB 基线 + Python 余弦，接口行为一致（RD-15，2026-10-10 修订） |
 | 部分索引 | `film_outputs` 当前版本、`styles` 默认风格使用 `WHERE` 部分索引，减小索引体积 |
 | 软删除 | 软删表建 `deleted_at` 索引，查询默认过滤 `deleted_at IS NULL` |
 
@@ -961,9 +963,9 @@ erDiagram
 | 性能 | 外键与高频查询索引全覆盖；列表分页；静态资源 CDN；SSE 替代轮询 |
 | 一致性 | 资产锁定强约束 + 生成后相似度校验；分镜强绑资产 ID |
 | 可靠 | 任务幂等 + 失败重试 + 死信队列；检查点支持断点续跑 |
-| 安全 | JWT + 越权校验；API Key AES-256 加密；数据按用户隔离；插件沙箱 |
-| 可观测 | LangSmith 链路追踪；Prometheus 指标；Loki 日志 |
-| 扩展 | 渠道层与逻辑模型层分离，新增模型不改业务；服务与队列水平扩容 |
+| 安全 | JWT + 越权校验；API Key AES-256 加密；数据按用户隔离；插件 SSRF 防护（endpoint_url 校验）+ 运营审查 + 调用留痕（运行时隔离沙箱为已知限制 P2，2026-10-10 修订） |
+| 可观测 | LangSmith 链路追踪（环境变量接线完成 core/tracing.py，未配置零开销，待密钥启用，2026-10-10 修订）；Prometheus 指标；Loki 日志 |
+| 扩展 | 渠道层与逻辑模型层分离，新增模型不改业务；服务无状态可水平扩容；任务队列多实例水平扩展时演进 Celery + Redis（2026-10-10 修订） |
 | 合规 | 三级审核闸门 + 隐形溯源水印；操作审计留痕 |
 
 ---
@@ -979,6 +981,21 @@ erDiagram
 | 平台配置 | model_channels / logical_models / prompts / announcements / review_records | PL-07~PL-15 / PL-26~PL-29 / D-05 / R-08 / C-01~C-04 |
 | 智能体 | agent_threads / langgraph_checkpoints / langgraph_checkpoint_writes / langgraph_store / asset_embeddings | MA-01~MA-20 |
 | 版本 | version_snapshots | V-01 / RD-08 |
+
+---
+
+## 8. 修订记录（R-10 拍板留痕）
+
+> 2026-10-10 依《漫序 MangaFlow 项目进度统计分析报告 V1.1》§2.1 架构偏离收敛拍板（风险登记 R-10：补齐实现 or 修订架构文档），对以下 6 处口径完成修订，使文档与实现一致：
+
+| # | 日期 | 修订项（位置） | 修订内容 | 依据 |
+| - | ---- | -------------- | -------- | ---- |
+| 1 | 2026-10-10 | 任务队列（§1.2 L7/L8 行、§1.3、§2、§6） | 原「Celery + Redis + Flower」→ 单实例进程内 asyncio runner（FOR UPDATE SKIP LOCKED 领取、优先级 0-9、指数退避 2^n、死信队列 + requeue、启动时 running 孤儿任务自动恢复）；多实例水平扩展时演进 Celery + Redis（演进路径预留） | 进度报告 V1.1 §2.1 偏离 #1 |
+| 2 | 2026-10-10 | 向量存储（§1.2、§1.3、§2、§5.1、§5.3.31、§5.5） | 原「PostgreSQL + pgvector」→ JSONB 向量存储为基线（零依赖），服务层双模支持 pgvector：扩展可用自动建 ivfflat 索引走 SQL 余弦（生产镜像 pgvector/pgvector:pg16 开箱即用），不可用自动降级 Python 余弦，接口行为一致 | 进度报告 V1.1 §2.1 偏离 #2 |
+| 3 | 2026-10-10 | 对象存储（§1.2、§1.3、§2） | 原「OSS/COS/S3」→ 当前本地磁盘存储（storage_path() 唯一落盘入口），单机部署；多实例部署时演进对象存储 OSS/COS/S3 | 进度报告 V1.1 §2.1 偏离 #3 |
+| 4 | 2026-10-10 | 数据库迁移（§1.3 新增行） | Alembic 已纳入基线（32 表初始迁移，ALEMBIC_ON_STARTUP 可选自动升级），开发环境 create_all 兜底 | 进度报告 V1.1 §2.1 偏离 #4 |
+| 5 | 2026-10-10 | Deep Agents（§1.1、§1.2、§1.3、§2、§3.3） | 原「引入 deepagents 框架」→ 自研等价实现：plan→Send 并行 exec→reflect→finalize 循环 + 虚拟文件系统笔记存 langgraph_store，不引入 deepagents 依赖（口径对齐实现） | 进度报告 V1.1 §2.1 偏离 #7 |
+| 6 | 2026-10-10 | LangSmith（§1.3、§6） | 更新为环境变量接线完成（core/tracing.py，未配置零开销），待密钥启用 | 进度报告 V1.1 §2.1 偏离 #6 |
 
 ---
 

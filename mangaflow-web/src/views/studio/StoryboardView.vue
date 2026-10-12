@@ -752,6 +752,8 @@ onMounted(loadBoards)
   gap: var(--mf-sp-4);
   position: sticky;
   bottom: 0;
+  /* sticky 吸底时浮于 positioned 内容之上，避免滚动穿透重叠 */
+  z-index: 10;
   padding: var(--mf-sp-3);
   background: var(--mf-surface);
   border: 1px solid var(--mf-border);
