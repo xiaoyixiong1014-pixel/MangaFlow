@@ -349,21 +349,36 @@ async def create_video_task(
     project: Project,
     storyboard: Storyboard,
     use_end_frame: bool,
+    resolution: str = "720p",
+    fps: int = 24,
+    motion_strength: str = "medium",
 ) -> Task:
-    """创建视频片段生成任务（成本 = 每秒单价 × 分镜时长）。
+    """创建视频片段生成任务（成本 = 每秒单价 × 分镜时长，P-12 视频参数）。
+
+    use_end_frame=True 时校验分镜尾帧已生成（storyboards.end_frame_url 非空，
+    为空 400 提示先生成尾帧）；三参数写入 meta.video_params，首尾帧地址写入
+    meta.first_frame / meta.end_frame 供执行器透传给视频渠道。
 
     Args:
         db: 异步数据库会话。
         project: 归属项目。
         storyboard: 目标分镜。
-        use_end_frame: 是否使用尾帧控制（Mock 下仅记录于任务 meta）。
+        use_end_frame: 是否使用尾帧控制（须尾帧已生成）。
+        resolution: 分辨率档位 480p/720p/1080p（缺省 720p）。
+        fps: 帧率 24/30（缺省 24）。
+        motion_strength: 运动幅度 low/medium/high（缺省 medium）。
 
     Returns:
         Task: 已落库的新视频任务。
 
     Raises:
-        HTTPException: 409 —— 积分余额不足。
+        HTTPException: 400 —— 使用尾帧但该分镜尾帧尚未生成；409 —— 积分余额不足。
     """
+    if use_end_frame and not storyboard.end_frame_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该分镜尚未生成尾帧，请先生成尾帧再开启尾帧控制",
+        )
     per_second = await get_video_price(db)
     cost = max(1, int(per_second * (storyboard.duration or 5)))
     prompt = build_prompt(storyboard.prompt_locked, storyboard.prompt_editable, project.style)
@@ -380,8 +395,75 @@ async def create_video_task(
             "duration": storyboard.duration or 5,
             "storyboard_id": storyboard.id,
             "use_end_frame": use_end_frame,
+            # P-12 视频参数（执行器透传给 provider 请求体）
+            "video_params": {
+                "resolution": resolution,
+                "fps": fps,
+                "motion_strength": motion_strength,
+            },
+            # P-03/P-08 首尾帧地址（use_end_frame=False 时 end_frame 记录 None）
+            "first_frame": storyboard.keyframe_url,
+            "end_frame": storyboard.end_frame_url if use_end_frame else None,
         },
         idempotency_key=f"video_{storyboard.id}_{uuid4().hex[:8]}",
+    )
+
+
+async def create_end_frame_task(
+    db: AsyncSession,
+    *,
+    project: Project,
+    storyboard: Storyboard,
+) -> Task:
+    """创建分镜尾帧图像生成任务（P-03/P-08：成本 10 积分/张）。
+
+    复用关键帧图像任务创建路径（type=image），meta 标记 end_frame=True 与
+    target_type=storyboard_end_frame，执行器成功后回写 storyboards.end_frame_url。
+    幂等防重：同分镜已存在排队/进行中的尾帧任务时 409。
+
+    Args:
+        db: 异步数据库会话。
+        project: 归属项目。
+        storyboard: 目标分镜（须已有关键帧，由路由层校验）。
+
+    Returns:
+        Task: 已落库的新尾帧图像任务。
+
+    Raises:
+        HTTPException: 409 —— 同分镜已有进行中的尾帧任务 / 积分余额不足。
+    """
+    # 尾帧任务独立防重：仅检查 meta 带 end_frame 标记的图像任务（与关键帧互不阻塞）
+    cnt = await db.scalar(
+        select(func.count()).select_from(Task).where(
+            Task.type == "image",
+            Task.status.in_(_ACTIVE_STATUS),
+            Task.storyboard_id == storyboard.id,
+            Task.meta["end_frame"].as_boolean().is_(True),
+        )
+    )
+    if cnt:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="该分镜已有进行中的尾帧生成任务，请等待完成或先取消",
+        )
+    total_cost = IMAGE_COST_PER_FRAME
+    await _precheck_balance(db, project.user_id, total_cost)
+    prompt = build_prompt(storyboard.prompt_locked, storyboard.prompt_editable, project.style)
+    return await freeze_and_create_task(
+        db,
+        project=project,
+        task_type="image",
+        phase="full",
+        cost_points=IMAGE_COST_PER_FRAME,
+        storyboard_id=storyboard.id,
+        meta={
+            "prompt": prompt,
+            "target_type": "storyboard_end_frame",
+            "target_id": storyboard.id,
+            "storyboard_id": storyboard.id,
+            "end_frame": True,
+        },
+        idempotency_key=f"endframe_{storyboard.id}_{uuid4().hex[:8]}",
     )
 
 
@@ -441,6 +523,7 @@ async def create_compose_task(
     aspect_ratio: str,
     mode: str,
     storyboard_ids: Optional[List[int]] = None,
+    episode_id: Optional[int] = None,
     subtitles: bool = False,
     subtitle_style: Optional[dict] = None,
     bgm: Optional[dict] = None,
@@ -456,6 +539,8 @@ async def create_compose_task(
         mode: 合成模式 incremental/full（映射为任务 phase）。
         storyboard_ids: 增量合成指定分镜 ID 列表（Task 5.3；仅 incremental 且
             非空时生效，空/None 回退项目全部分镜）。
+        episode_id: 可选剧集 ID（S-06；传入时全量模式仅取该剧集分镜并写入
+            meta，合成产物 film_outputs.episode_id 绑定该剧集）。
         subtitles: 是否烧录字幕（Task 5.1）。
         subtitle_style: 字幕样式 {font_size, color, position}（可空用默认）。
         bgm: 背景音乐 {url, volume}（Task 5.2，可空表示不加）。
@@ -467,14 +552,16 @@ async def create_compose_task(
     Raises:
         HTTPException: 400 —— 项目暂无分镜或增量分镜清单为空；409 —— 积分余额不足。
     """
+    conds = [Storyboard.project_id == project.id]
+    if episode_id is not None:
+        # S-06：按剧集圈定合成范围（episode_id 归属已由调用方校验）
+        conds.append(Storyboard.episode_id == episode_id)
     if mode == "incremental" and storyboard_ids:
         # 增量合成（Task 5.3）：仅拼接指定分镜（调用方已完成归属与顺序校验）
         targets: List[int] = list(storyboard_ids)
     else:
         rows = await db.execute(
-            select(Storyboard)
-            .where(Storyboard.project_id == project.id)
-            .order_by(Storyboard.sequence)
+            select(Storyboard).where(*conds).order_by(Storyboard.sequence)
         )
         targets = [sb.id for sb in rows.scalars().all()]
     if not targets:
@@ -492,6 +579,8 @@ async def create_compose_task(
             "aspect_ratio": aspect_ratio or project.aspect_ratio,
             "mode": mode,
             "storyboard_ids": targets,
+            # S-06：剧集范围（None=全部，compose_service 据此过滤并回写 film_outputs）
+            "episode_id": episode_id,
             # Task 5 合成增强参数（None 项由 compose_service 按缺省处理）
             "subtitles": bool(subtitles),
             "subtitle_style": subtitle_style,

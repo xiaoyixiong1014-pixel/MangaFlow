@@ -362,6 +362,28 @@ export interface ProjectDetail extends Project {
   episode_count: number
   /** 剧本数量 */
   script_count: number
+  /** 剧集摘要数组（按 sequence 升序，S-06 剧集切换器数据源） */
+  episodes: EpisodeSummary[]
+}
+
+/** 剧集摘要（项目详情内嵌，S-06） */
+export interface EpisodeSummary {
+  /** 剧集 ID */
+  id: number
+  /** 剧集标题 */
+  title: string
+  /** 剧集序号 */
+  sequence: number
+  /** 剧集状态 */
+  status: string
+}
+
+/** 剧集完整输出（S-06 剧集 CRUD） */
+export interface Episode extends EpisodeSummary {
+  /** 项目 ID */
+  project_id: number
+  /** 该剧集剧本快照（JSONB，可空） */
+  script_snapshot?: unknown
 }
 
 /** 项目创建请求体 */
@@ -455,6 +477,8 @@ export interface ScriptInputPayload {
   mode: 'idea' | 'novel' | 'outline'
   /** 原始输入文本 */
   raw_text: string
+  /** 可选剧集 ID（S-06；缺省绑定默认剧本行） */
+  episode_id?: number
 }
 
 /** 剧本手动保存请求体 */
@@ -463,6 +487,8 @@ export interface ScriptSavePayload {
   content: ScriptContent
   /** 可选体检结果回写 */
   health_report?: unknown
+  /** 可选剧集 ID（S-06；缺省定位默认剧本行） */
+  episode_id?: number
 }
 
 /** 抽取实体通用条目（角色/场景/道具共用） */
@@ -557,6 +583,10 @@ export interface CharacterAsset {
   face_locked: boolean
   /** 生成状态：pending/generating/done/failed */
   generation_status: string
+  /** 参考图 URL（A-04：生成定妆照时透传图像渠道作参考） */
+  reference_image_url?: string | null
+  /** 资产标签数组（A-05） */
+  tags?: string[]
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */
@@ -579,6 +609,10 @@ export interface SceneAsset {
   asset_url?: string | null
   /** 锁定状态 */
   is_locked: boolean
+  /** 参考图 URL（A-04：生成场景图时透传图像渠道作参考） */
+  reference_image_url?: string | null
+  /** 资产标签数组（A-05） */
+  tags?: string[]
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */
@@ -603,6 +637,8 @@ export interface PropAsset {
   asset_url?: string | null
   /** 锁定状态 */
   is_locked: boolean
+  /** 资产标签数组（A-05） */
+  tags?: string[]
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */
@@ -625,6 +661,8 @@ export interface StyleAsset {
   visual_prompt: string
   /** 是否项目默认风格 */
   is_default: boolean
+  /** 资产标签数组（A-05） */
+  tags?: string[]
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */
@@ -759,6 +797,8 @@ export interface Storyboard {
   prompt_editable?: string | null
   /** 关键帧 URL */
   keyframe_url?: string | null
+  /** 尾帧 URL（尾帧任务完成后由后端回写，视频尾帧控制依赖） */
+  end_frame_url?: string | null
   /** 视频片段 URL */
   video_url?: string | null
   /** 配音 URL（TTS 任务完成后由后端回写，可用于行内试听） */
@@ -855,6 +895,20 @@ export interface GenTask {
   estimated_seconds?: number | null
   /** 创建时间 */
   created_at?: string | null
+  /** 是否为演示占位产物（D3：mock 兜底渠道产物打标，占位任务已计费豁免） */
+  placeholder?: boolean
+}
+
+/** 视频片段生成请求体（P-12 视频参数 + P-03 尾帧控制） */
+export interface VideoCreatePayload {
+  /** 是否使用尾帧控制生成（须该分镜尾帧已生成） */
+  use_end_frame?: boolean
+  /** 分辨率档位（默认 720p） */
+  resolution?: '480p' | '720p' | '1080p'
+  /** 帧率（默认 24） */
+  fps?: 24 | 30
+  /** 运动幅度（默认 medium） */
+  motion_strength?: 'low' | 'medium' | 'high'
 }
 
 /** 关键帧任务创建响应 */
@@ -935,6 +989,8 @@ export interface ComposePayload {
   mode?: 'incremental' | 'full'
   /** 增量合成指定分镜 ID 清单（仅 incremental 生效） */
   storyboard_ids?: number[]
+  /** 可选剧集 ID（S-06；传入时仅合成该剧集分镜，缺省=项目全部） */
+  episode_id?: number
   /** 是否烧录字幕（Task 5.1，缺省关闭） */
   subtitles?: boolean
   /** 字幕样式（可空用默认样式） */
@@ -1247,6 +1303,16 @@ export interface CloneSubtreeResult {
   edges: CanvasEdge[]
 }
 
+/** 画布节点沉淀入资产库结果（对应后端 CanvasSinkResult，A-10/CV-24） */
+export interface CanvasSinkResult {
+  /** 创建（或既有）的资产 ID */
+  asset_id: number
+  /** 资产类型 character/scene/prop */
+  asset_type: 'character' | 'scene' | 'prop'
+  /** 是否重复沉淀（true = 命中幂等，未重复建资产） */
+  duplicated: boolean
+}
+
 // ============================================================
 // 智能体
 // ============================================================
@@ -1553,6 +1619,8 @@ export interface SubtitleStylePayload {
   color?: string
   /** 位置：bottom/middle/top */
   position?: 'bottom' | 'middle' | 'top'
+  /** 是否双语字幕（P-16；原文 + LLM 英文译文，翻译失败自动降级单行） */
+  bilingual?: boolean
 }
 
 /** BGM 参数（对应后端 BgmOption） */

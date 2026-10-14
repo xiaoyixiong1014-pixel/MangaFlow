@@ -74,7 +74,10 @@ async def test_chuangjian_jiaose_moren_muban(client, auth):
 
 
 async def test_shengcheng_dingzhuangzhao_renwu_yu_jijin(client, auth, db):
-    """定妆照生成：任务入队冻结 10 积分 → done 后扣费并回写资产/素材。
+    """定妆照生成：任务入队冻结 10 积分 → done 后按产物性质结算并回写资产/素材。
+
+    测试环境无真实渠道、产物来自 mock 兜底（D3 治理）：占位产物执行扣费
+    豁免——冻结全额退回，余额不变；task.meta.placeholder=True 透出。
 
     Args:
         client: 内存 HTTP 客户端。
@@ -110,9 +113,10 @@ async def test_shengcheng_dingzhuangzhao_renwu_yu_jijin(client, auth, db):
     assert final["status"] == "done", final
     assert final["result_url"]
 
-    # 计费闭环：扣费 10，冻结清零
+    # 计费闭环（D3 豁免语义）：mock 占位产物冻结全额退回，余额不变
+    assert final.get("placeholder") is True
     wallet2 = await get_wallet_model(db, auth["user_id"])
-    assert wallet2.points_balance == 4990
+    assert wallet2.points_balance == 5000
     assert wallet2.frozen_points == 0
 
     # 资产回写：定妆照 URL 与生成状态

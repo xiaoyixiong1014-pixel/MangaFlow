@@ -5,9 +5,9 @@
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
 # 角色资产允许的变体类型（RD-14）
 CHARACTER_VARIANT_TYPES = ("outfit", "age", "other")
@@ -15,6 +15,62 @@ CHARACTER_VARIANT_TYPES = ("outfit", "age", "other")
 SCENE_VARIANT_TYPES = ("lighting",)
 # 道具资产允许的变体类型
 PROP_VARIANT_TYPES = ("other",)
+
+
+def _validate_tags(value: Any) -> Optional[List[str]]:
+    """校验并规范化资产标签数组（A-05）。
+
+    规则：仅接受字符串数组；单项去除首尾空白后 ≤20 字；最多 10 个。
+    校验失败抛 ValueError（由 Pydantic 转为 422）。
+
+    Args:
+        value: 待校验的标签数组（任意入参类型）。
+
+    Returns:
+        Optional[List[str]]: 规范化后的标签数组（None 原样返回，表示不修改）。
+
+    Raises:
+        ValueError: 非数组 / 单项非字符串或为空白 / 单项超 20 字 / 超过 10 个。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("tags 必须为字符串数组")
+    tags: List[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("tags 单项必须为非空字符串")
+        stripped = item.strip()
+        if len(stripped) > 20:
+            raise ValueError("单个标签不能超过 20 字")
+        if stripped not in tags:  # 去重保序
+            tags.append(stripped)
+    if len(tags) > 10:
+        raise ValueError("标签最多 10 个")
+    return tags
+
+
+# 资产标签字段类型（A-05）：可选字符串数组，入参经 _validate_tags 校验规范化
+TagsField = Annotated[Optional[List[str]], BeforeValidator(_validate_tags)]
+
+
+def _coerce_tags_out(value: Any) -> Any:
+    """输出侧 tags 兜底：ORM 列为 NULL（存量行/未打标行）时透出空数组。
+
+    Args:
+        value: from_attributes 读取到的原始属性值。
+
+    Returns:
+        Any: None → []，其余原样返回。
+
+    Raises:
+        无：纯值转换，不产生异常路径。
+    """
+    return [] if value is None else value
+
+
+# 资产标签输出字段类型（A-05）：非空数组语义，NULL 兜底为 []
+TagsOutField = Annotated[List[str], BeforeValidator(_coerce_tags_out)]
 
 
 class CharacterOut(BaseModel):
@@ -30,6 +86,8 @@ class CharacterOut(BaseModel):
         asset_url: 主定妆照 URL。
         face_locked: 面部层锁定。
         generation_status: 生成状态 pending/generating/done/failed。
+        reference_image_url: 参考图 URL（A-04 生成锚点）。
+        tags: 资产标签数组（A-05，缺省 []）。
         created_at / updated_at: 时间戳。
     """
 
@@ -44,6 +102,9 @@ class CharacterOut(BaseModel):
     asset_url: Optional[str] = None
     face_locked: bool = False
     generation_status: str = "pending"
+    source: str = "manual"
+    reference_image_url: Optional[str] = None
+    tags: TagsOutField = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -59,6 +120,8 @@ class SceneOut(BaseModel):
         visual_prompt: 视觉提示词。
         asset_url: 概念图 URL。
         is_locked: 锁定状态。
+        reference_image_url: 参考图 URL（A-04 生成锚点）。
+        tags: 资产标签数组（A-05，缺省 []）。
         created_at / updated_at: 时间戳。
     """
 
@@ -71,6 +134,9 @@ class SceneOut(BaseModel):
     visual_prompt: str
     asset_url: Optional[str] = None
     is_locked: bool = False
+    source: str = "manual"
+    reference_image_url: Optional[str] = None
+    tags: TagsOutField = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -87,6 +153,7 @@ class PropOut(BaseModel):
         visual_prompt: 视觉提示词。
         asset_url: 标准图 URL。
         is_locked: 锁定状态。
+        tags: 资产标签数组（A-05，缺省 []）。
         created_at / updated_at: 时间戳。
     """
 
@@ -100,6 +167,8 @@ class PropOut(BaseModel):
     visual_prompt: str
     asset_url: Optional[str] = None
     is_locked: bool = False
+    source: str = "manual"
+    tags: TagsOutField = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -115,6 +184,7 @@ class StyleOut(BaseModel):
         reference_url: 参考图 URL。
         visual_prompt: 风格提示词。
         is_default: 是否项目默认风格。
+        tags: 资产标签数组（A-05，缺省 []）。
         created_at / updated_at: 时间戳。
     """
 
@@ -127,6 +197,7 @@ class StyleOut(BaseModel):
     reference_url: Optional[str] = None
     visual_prompt: str
     is_default: bool = False
+    tags: TagsOutField = Field(default_factory=list)
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -171,12 +242,17 @@ class CharacterUpdateRequest(BaseModel):
         description: 角色描述。
         visual_prompt: 视觉提示词。
         aliases: 别名列表。
+        reference_image_url: 参考图 URL（A-04：上传后回写，生成时透传渠道）。
+        tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
     description: Optional[str] = None
     visual_prompt: Optional[str] = None
     aliases: Optional[List[str]] = None
+    reference_image_url: Optional[str] = Field(default=None, max_length=500,
+                                               description="参考图 URL（A-04）")
+    tags: TagsField = None
 
 
 class SceneCreateRequest(BaseModel):
@@ -201,12 +277,17 @@ class SceneUpdateRequest(BaseModel):
         description: 场景描述。
         visual_prompt: 视觉提示词。
         is_locked: 锁定状态。
+        reference_image_url: 参考图 URL（A-04：上传后回写，生成时透传渠道）。
+        tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
     description: Optional[str] = None
     visual_prompt: Optional[str] = None
     is_locked: Optional[bool] = None
+    reference_image_url: Optional[str] = Field(default=None, max_length=500,
+                                               description="参考图 URL（A-04）")
+    tags: TagsField = None
 
 
 class PropCreateRequest(BaseModel):
@@ -234,6 +315,7 @@ class PropUpdateRequest(BaseModel):
         description: 描述。
         visual_prompt: 视觉提示词。
         is_locked: 锁定状态。
+        tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -241,6 +323,7 @@ class PropUpdateRequest(BaseModel):
     description: Optional[str] = None
     visual_prompt: Optional[str] = None
     is_locked: Optional[bool] = None
+    tags: TagsField = None
 
 
 class StyleCreateRequest(BaseModel):
@@ -270,6 +353,7 @@ class StyleUpdateRequest(BaseModel):
         reference_url: 参考图 URL。
         visual_prompt: 风格提示词。
         is_default: 是否设为项目默认风格（会清掉其他默认）。
+        tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -277,6 +361,18 @@ class StyleUpdateRequest(BaseModel):
     reference_url: Optional[str] = Field(default=None, max_length=255)
     visual_prompt: Optional[str] = None
     is_default: Optional[bool] = None
+    tags: TagsField = None
+
+
+class AssetBatchDeleteRequest(BaseModel):
+    """资产批量删除请求（A-05）。
+
+    Attributes:
+        ids: 待删除的资产 ID 列表（去重后 1~100 个；数量合法性由路由层校验，
+            越界返回 400）。
+    """
+
+    ids: List[int]
 
 
 class CharacterGenerateRequest(BaseModel):

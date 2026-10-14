@@ -1,0 +1,63 @@
+# Tasks
+
+- [x] Task 1: P0 可信度与合规修复（D1/D2/D3）
+  - [x] 1.1 D1 密钥治理：config.py 5 处 `sk-` 明文默认值（行 85/92/97/102/120）改为 `""` 默认 + 环境变量注入；新建 `.env.example`（含全部渠道密钥占位与注释）；lifespan 启动时对"渠道已启用但密钥为空"输出 WARNING；全仓 grep 确认无 `sk-` 残留
+  - [x] 1.2 D2 占位成片：`_poster_film_url` 重写——有 ffmpeg 时 lavfi 生成 2s 带"演示占位"文字的 MP4（中文字体复用 compose 既有字体探测），无 ffmpeg 时任务置 failed（error 注明"无可用片段且无 ffmpeg"）；film_outputs 不再写入 `.svg` URL
+  - [x] 1.3 D3 mock 打标：image_mock（SVG 内加"演示占位"文字 + 文件名 `placeholder_` 前缀）、video_mock（drawtext 叠加 + 前缀）、tts_mock（文件名前缀）；三处 provider 返回 meta 带 placeholder=true，runner 写入 task.meta.placeholder
+  - [x] 1.4 D3 扣费豁免：runner 确认产物来自 mock（meta.placeholder）时按原流水金额退款，流水备注"演示占位豁免"；task 列表/详情 schema 透出 placeholder 字段
+  - [x] 1.5 前端占位角标：ProductionView/PublishView 产物卡片当 `placeholder=true` 时显示"演示占位"角标（el-tag warning）※移至 Task 4 波次与前端改动合并执行
+  - [x] 1.6 测试：新增 test_placeholder_governance.py（密钥空默认、占位 MP4 可播扩展名、mock 打标、退款豁免）+ 既有 billing/tasks 回归
+- [x] Task 2: S-06 剧集管理落地（P0 核心场景）
+  - [x] 2.1 后端 API：新建 `backend/app/api/episodes.py`——POST/GET 列表/PATCH/DELETE/PUT reorder（挂 `/api/projects/{project_id}/episodes`），归属校验 + 软删；删除时该剧集剧本/分镜置 episode_id=NULL（保留数据）
+  - [x] 2.2 链路适配：script 生成/保存接口透传 episode_id 写入 scripts 表；storyboards 列表/生成按 episode 过滤（默认全部）；compose/publish 按 episode 过滤分镜（storyboards.py:388 的 episode_id=0 占位改为真实剧集）；projects 详情返回 episodes 摘要
+  - [x] 2.3 前端切换器：StudioLayout 步骤条旁增加剧集下拉（当前剧集状态入 project store）；ScriptView 按剧集生成/展示剧本；StoryboardView/ProductionView/PublishView 列表按剧集过滤
+  - [x] 2.4 跨剧集资产复用：AssetsView 增加"从其他剧集/项目复用资产"入口（复用既有跨项目角色总览查询接口）
+  - [x] 2.5 测试：test_episodes.py（CRUD/归属越权/reorder/删除后剧本保留/分镜过滤）+ script/storyboards 回归
+- [x] Task 3: P1 链路补全——剧本同步与参考图（S-08/A-04）
+  - [x] 3.1 S-08 后端：`POST /api/script/send-to-agent`（创建 agent_thread 携带剧本上下文首条消息，幂等键 project_id+script_version）+ `POST /api/script/send-to-canvas`（向项目默认画布写入剧本节点，重复投递返回既有节点 ID）
+  - [x] 3.2 S-08 前端：ScriptView 工具栏"同步到 Agent/投递画布"按钮 + 成功提示跳转
+  - [x] 3.3 A-04 字段与迁移：characters/scenes 加 `reference_image_url` 列（Alembic 迁移 + init_db 补列）；资产 schema 透出
+  - [x] 3.4 A-04 上传落库：AssetsView 上传替换改真实上传（/api/media/upload → PATCH 资产 reference_image_url）；生成定妆照/场景图时 generation_service 将参考图 URL 写入任务 meta 并传给 image_agnes（OpenAI images edits 兼容入参或渠道约定；mock 记录 meta.reference_image_url）
+  - [x] 3.5 测试：test_script_sync.py（幂等/越权）+ test_reference_image.py（上传落库/生成入参透传）
+- [x] Task 4: P1 链路补全——上传替换与视频参数/首尾帧（P-06/P-12/P-03/P-08）
+  - [x] 4.1 P-06 后端：`POST /api/generation/tasks/{id}/replace`（归属校验、图片格式/大小校验、产物落盘 storage/replaced、回写 task.result_url + meta.replaced_from、联动 storyboard 关键帧 URL）
+  - [x] 4.2 P-06 前端：ProductionView 关键帧卡片"上传替换"入口（el-upload）+ 成功后刷新
+  - [x] 4.3 P-12：VideoCreateRequest 扩展 resolution/fps/motion_strength（默认 720P/24fps/中）；create_video_task 写 meta 并透传 video_agnes/video_wan 请求体；mock 记录；前端视频 Tab 三参数配置（分辨率/帧率/运动幅度下拉）
+  - [x] 4.4 P-03/P-08 尾帧：`POST /api/generation/storyboards/{id}/end-frame`（生成尾帧关键帧任务写 storyboards.end_frame_url）；use_end_frame=true 时视频任务 meta 带首尾帧，video_agnes 首尾帧模式入参；前端视频 Tab"指定尾帧"选择（仅当尾帧已生成可选）
+  - [x] 4.5 测试：test_replace_upload.py（归属/格式校验/联动）+ test_video_params.py（schema 默认值/透传/尾帧模式）
+- [x] Task 5: P1 链路补全——画布沉淀回流（A-10/CV-24）
+  - [x] 5.1 后端：`POST /api/canvas/nodes/{id}/sink`（校验节点有产物 → 按类型建 characters/scenes/props 记录，source=canvas 来源标记，LLM 自动补全 visual_prompt（RD-47，失败降级用节点描述）→ 返回资产 ID）
+  - [x] 5.2 前端：画布节点面板"沉淀入资产库"操作（选类型弹窗 + 成功提示资产页跳转）
+  - [x] 5.3 测试：test_canvas_sink.py（无产物 400/类型映射/来源标记/降级描述）
+- [x] Task 6: P2 收尾第一批——资产与工作台（A-05/D-04/D-06）
+  - [x] 6.1 A-05 标签：characters/scenes/props/styles 加 tags JSONB 列（迁移）；PATCH 支持编辑；GET 列表支持 `?tag=` 过滤；AssetsView 标签输入与筛选
+  - [x] 6.2 A-05 批量删除：`POST /api/assets/{type}/batch-delete`（软删，复用引用保护）；AssetsView 多选批量删除
+  - [x] 6.3 D-04：ProjectListView 统计卡展示 images/video_seconds/points_spent（接口已有，仅前端补齐）
+  - [x] 6.4 D-06：项目列表默认按 updated_at 倒序 + "最近编辑"排序标签置顶语义
+  - [x] 6.5 测试：test_asset_tags.py（标签过滤/批量删除/引用保护拦截）
+- [x] Task 7: P2 收尾第二批——分镜增强（SB-06/SB-07/SB-08）
+  - [x] 7.1 SB-08 PDF：`GET /api/storyboards/episodes/{id}/export?format=pdf`（FPDF2 + 中文 TrueType，表格式分镜表：镜号/画面缩略/提示词/台词/时长）；与 Excel 并列
+  - [x] 7.2 SB-06 连续性检查：`POST /api/storyboards/continuity-check`（相邻镜头对：场景切换提示、同镜连续出场角色服装变体冲突、提示词中角色/场景关键词跳变；仅输出高置信度项；storyboard_service 新增 continuity_check）
+  - [x] 7.3 SB-07 自动调整：`POST /api/storyboards/auto-fit-duration`（目标总时长 → 等比缩放各镜预估时长并落库，返回调整摘要）；StoryboardView"按时长自动调整"按钮 + 连续性预警展示
+  - [x] 7.4 测试：test_storyboard_export_pdf.py（PDF 生成与中文不乱码）+ test_continuity.py（冲突命中/无冲突零报告/自动调整落库）
+- [x] Task 8: P2 收尾第三批——发布与生成体验（R-06/R-03/P-16/P-17/S-09）
+  - [x] 8.1 R-06 二维码：PublishView 分享卡片用 qrcode 库（npm 新依赖）渲染分享链接二维码
+  - [x] 8.2 R-03 直连：PublishView 分镜条"重生成"按钮 → 路由跳转 ProductionView 并预选分镜（query 传 storyboard_id）
+  - [x] 8.3 P-16 双语字幕：compose 字幕样式加 bilingual 开关；开启时 LLM 翻译 narration 得译文，ASS 生成双行（原/译）；publish 请求 schema 加 bilingual 字段
+  - [x] 8.4 P-17 转场映射：_xfade_clips 将 type 映射到 xfade 原生名（fade/dissolve/fadeblack→淡入淡出/叠化/闪黑），非法值回退 fade；前端转场选项补齐
+  - [x] 8.5 S-09 三路径：ScriptView 生成失败面板三个显式按钮（重试/换模型——弹渠道选择调既有配置/精简输入——给出裁剪建议并聚焦输入框）
+  - [x] 8.6 测试：test_compose_bilingual.py（双语 ASS 结构）+ test_transition_types.py（映射与回退）
+- [x] Task 9: API 文档与性能保障
+  - [x] 9.1 新建 `backend/docs/api-creation-chain.md`：主链路（episodes/script/assets/storyboards/generation/publish/canvas sink）全部新增与修改接口的 RESTful 文档（方法/路径/参数/响应/错误码/幂等口径）
+  - [x] 9.2 性能核查：episodes/tags 新列补索引评估；新增列表接口分页；README 记录主链路核心接口冒烟响应时间基线（本地 dev 口径）
+- [x] Task 10: 全量回归与验收（主控执行，pytest 任务串行）
+  - [x] 10.1 后端 pytest 全量（新增用例 + 既有 154 例回归）全绿并留存输出证据
+  - [x] 10.2 双前端 vue-tsc type-check + build 通过
+  - [x] 10.3 checklist.md 逐项核验勾选
+
+# Task Dependencies
+- Task 1 独立可先行（config/compose/providers 基础）
+- Task 2（episodes API）→ Task 3.2/4.x 前端按剧集过滤的视图逻辑受益于 Task 2.3 的 store 状态，但不强阻塞；Task 2 与 Task 1 可并行
+- Task 3（参考图迁移）与 Task 6.1（tags 迁移）共用 Alembic 迁移窗口，建议合并为一个迁移版本或按序执行
+- **凡运行 pytest 的任务必须串行执行**（共享测试库 TRUNCATE 互锁教训，见 fix-critical-defects spec）
+- Task 9.1 文档依赖 Task 2-8 接口定稿；Task 10 最后执行

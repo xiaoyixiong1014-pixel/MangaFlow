@@ -82,24 +82,28 @@ class Settings(BaseSettings):
 
     # ---------- LLM（DeepSeek） ----------
     deepseek_base_url: str = "https://api.deepseek.com"
-    deepseek_api_key: str = "sk-461126bcb5944b62a6a6a15137df42eb"
+    # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/DEEPSEEK_API_KEY 注入
+    deepseek_api_key: str = ""
     # 模型名实测（2026-10-10）：deepseek-flash 网关接受但返回空 content（51 tokens 无输出），
     # deepseek-chat 正常回复——现役模型名为 deepseek-chat
     deepseek_model: str = "deepseek-chat"
 
     # ---------- Agnes 文本 LLM（兜底） ----------
     agnes_llm_base_url: str = "https://apihub.agnes-ai.com/v1"
-    agnes_llm_api_key: str = "sk-Z22X73oT8oqyGfIljzYTE8OdfqItU5wXBPT9tNMcZ5qdNT1H"
+    # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/AGNES_LLM_API_KEY 注入
+    agnes_llm_api_key: str = ""
     agnes_llm_model: str = "agnes-3.0-flash"
 
     # ---------- Agnes 图像 ----------
     agnes_image_base_url: str = "https://apihub.agnes-ai.com/v1"
-    agnes_image_api_key: str = "sk-Z22X73oT8oqyGfIljzYTE8OdfqItU5wXBPT9tNMcZ5qdNT1H"
+    # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/AGNES_IMAGE_API_KEY 注入
+    agnes_image_api_key: str = ""
     agnes_image_model: str = "agnes-image-2.5-flash"
 
     # ---------- Agnes 视频 ----------
     agnes_video_base_url: str = "https://apihub.agnes-ai.com/v1"
-    agnes_video_api_key: str = "sk-Z22X73oT8oqyGfIljzYTE8OdfqItU5wXBPT9tNMcZ5qdNT1H"
+    # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/AGNES_VIDEO_API_KEY 注入
+    agnes_video_api_key: str = ""
     agnes_video_model: str = "agnes-video-2.5-flash"
     # 视频生成模式：官方枚举为 text / keyframe / reference（经探测与官方文档确定，
     # 文生视频传 text；带首帧图时 provider 自动改用 keyframe）
@@ -117,7 +121,8 @@ class Settings(BaseSettings):
 
     # ---------- 阿里云百炼 TTS ----------
     bailian_tts_base_url: str = "https://ws-66dgbbhi5gzzll8r.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
-    bailian_tts_api_key: str = "sk-ws-H.PELYYXM.G9wO.MEYCIQC7OSlfz1heRD_p5p18Hyu3U6YnL2lw8Er_ouB9f7mL4QIhALQnDZ-ndYxd0S0t0z6ObC5hs1mV8SwFsTgJ9Hk6LfCh"
+    # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/BAILIAN_TTS_API_KEY 注入
+    bailian_tts_api_key: str = ""
     # 默认模型名：qwen-audio-3.1-tts-flash 仅提供 WebSocket 端点
     # （dashscope.audio.tts_v2.SpeechSynthesizer），不出现在 OpenAI 兼容
     # GET /models 列表中（2026-10-12 实测合成成功，接入详见 tts_bailian.py）

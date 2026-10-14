@@ -23,8 +23,8 @@ export interface ProjectListQuery extends PageQuery {
   search?: string
   /** 项目状态过滤 */
   status?: string
-  /** 排序字段：updated_at / created_at */
-  sort?: 'updated_at' | 'created_at'
+  /** 排序字段：recent（最近编辑，默认）/ updated_at / created_at */
+  sort?: 'recent' | 'updated_at' | 'created_at'
   /** 排序方向 */
   order?: 'desc' | 'asc'
 }

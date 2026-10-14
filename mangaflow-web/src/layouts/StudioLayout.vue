@@ -1,8 +1,12 @@
 <!--
   创作工作区布局（文件级注释）。
-  结构：顶部条（返回 + 项目名 + 五阶段步骤条）+ 路由出口。
+  结构：顶部条（返回 + 项目名 + 剧集切换器 + 五阶段步骤条）+ 路由出口。
   五阶段：①剧本 ②资产 ③分镜 ④生成 ⑤发布，当前路由高亮、可点击互跳。
   进入时拉取项目详情写入 project store，供各阶段页共享。
+  S-06：步骤条旁增加剧集切换器（选项来自项目详情 episodes）——选中剧集写入
+  project store（currentEpisodeId），剧本/分镜/生成/发布等依赖页 watch 后
+  按 episode_id 重新加载；项目无剧集时仅显示「默认剧集」占位项（= 不传
+  episode_id，行为与既有接口一致）。
 -->
 <script setup lang="ts">
 import { computed, onMounted } from 'vue'
@@ -17,6 +21,17 @@ const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前项目剧集列表（项目详情内嵌摘要，S-06） */
+const episodes = computed(() => projectStore.currentProject?.episodes ?? [])
+
+/**
+ * 切换器选中值（展示用）：null 映射为 0（「默认剧集」占位项的选项值）。
+ */
+const selectedEpisode = computed({
+  get: () => projectStore.currentEpisodeId ?? 0,
+  set: (val: number) => projectStore.setCurrentEpisode(val === 0 ? null : val),
+})
 
 /** 五阶段步骤定义（key 对应工作区子路由片段） */
 const steps = [
@@ -61,6 +76,22 @@ onMounted(async () => {
         ←
       </button>
       <span class="project-name">{{ projectStore.currentProject?.title ?? '加载中…' }}</span>
+
+      <!-- 剧集切换器（S-06）：默认剧集 = 不传 episode_id，行为与既有接口一致 -->
+      <el-select
+        v-model="selectedEpisode"
+        class="episode-select"
+        size="small"
+        aria-label="剧集切换"
+      >
+        <el-option :value="0" label="默认剧集" />
+        <el-option
+          v-for="ep in episodes"
+          :key="ep.id"
+          :value="ep.id"
+          :label="`第${ep.sequence}集 · ${ep.title}`"
+        />
+      </el-select>
 
       <!-- 五阶段步骤条 -->
       <nav class="stage-bar" aria-label="创作阶段">
@@ -126,6 +157,12 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 280px;
+}
+
+/* 剧集切换器（S-06） */
+.episode-select {
+  width: 180px;
+  flex-shrink: 0;
 }
 
 /* 步骤条 */

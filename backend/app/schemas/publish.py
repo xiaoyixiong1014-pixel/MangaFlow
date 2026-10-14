@@ -17,11 +17,14 @@ class SubtitleStyle(BaseModel):
         font_size: 字号（ASS FontSize，10~72）。
         color: 主字幕颜色（ASS PrimaryColour，&HBBGGRR 格式，缺省白色）。
         position: 字幕位置 bottom 底部 / middle 居中 / top 顶部。
+        bilingual: 是否双语字幕（P-16；True 时原文在上 + 英文译文在下，
+            LLM 翻译失败自动降级为单行原文，不影响合成任务成功）。
     """
 
     font_size: int = Field(default=24, ge=10, le=72)
     color: str = Field(default="&H00FFFFFF", max_length=16)
     position: Literal["bottom", "middle", "top"] = "bottom"
+    bilingual: bool = False
 
 
 class BgmOption(BaseModel):
@@ -58,6 +61,8 @@ class ComposeCreateRequest(BaseModel):
         aspect_ratio: 画幅比例 9:16/16:9/1:1（缺省沿用项目配置）。
         mode: 合成模式 incremental（增量）/ full（全量），映射为任务 phase。
         storyboard_ids: 增量合成指定分镜 ID 清单（仅 incremental 生效，Task 5.3）。
+        episode_id: 可选剧集 ID（S-06；传入时仅合成该剧集的分镜并将成片版本
+            绑定该剧集，缺省为项目全部分镜，行为与既有接口一致）。
         subtitles: 是否烧录字幕（Task 5.1，缺省关闭）。
         subtitle_style: 字幕样式（可空用默认样式）。
         bgm: 背景音乐参数（可空表示不加）。
@@ -68,6 +73,7 @@ class ComposeCreateRequest(BaseModel):
     aspect_ratio: Optional[Literal["9:16", "16:9", "1:1"]] = None
     mode: Literal["incremental", "full"] = "full"
     storyboard_ids: Optional[List[int]] = Field(default=None, max_length=200)
+    episode_id: Optional[int] = None
     subtitles: bool = False
     subtitle_style: Optional[SubtitleStyle] = None
     bgm: Optional[BgmOption] = None

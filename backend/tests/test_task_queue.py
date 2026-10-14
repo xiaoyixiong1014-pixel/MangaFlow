@@ -18,6 +18,7 @@
 外部网络依赖）。
 """
 
+import asyncio
 import uuid
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
@@ -62,11 +63,22 @@ async def patched_runner(test_engine):
     original_notification = notification_mod.SessionLocal
     runner_mod.SessionLocal = factory
     notification_mod.SessionLocal = factory
+    # 独占领取：会话级 task_runner 的常驻 worker 与本组用例的手动
+    # _process_one 共用测试库（SKIP LOCKED 并发领取），全量运行机器负载高时
+    # worker 会在断言间隙抢走低优先级任务，导致领取顺序断言误报——
+    # 进入本夹具先取消全部后台 worker，结束后重建恢复会话级执行能力。
+    stale = [t for t in list(runner_mod._RUNNER_TASKS) if not t.done()]
+    for t in stale:
+        t.cancel()
+    if stale:
+        await asyncio.gather(*stale, return_exceptions=True)
+    runner_mod._RUNNER_TASKS.clear()
     try:
         yield runner_mod
     finally:
         runner_mod.SessionLocal = original_runner
         notification_mod.SessionLocal = original_notification
+        await runner_mod.start_runner(test_engine)
 
 
 async def _make_user_with_wallet(db: AsyncSession, frozen_points: int = 0) -> User:

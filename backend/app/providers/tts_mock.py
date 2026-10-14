@@ -4,6 +4,9 @@
 16kHz 单声道 16bit WAV 音频——整体为静音，按规律插入低幅（0.02 振幅）
 正弦发声段，模拟"有声音"的波形；时长按文本长度估算（RD-31 回写依据）。
 
+打标约定（D3）：产物文件名统一携带 placeholder_ 前缀，返回结果 meta
+携带 placeholder=True 标记（执行器平铺进任务 meta 供 API 透出与计费豁免）。
+
 函数签名与真实 TTS 渠道对齐（text + voice + out_dir → url + duration_sec），
 日后接入真实渠道仅需替换本模块实现。
 """
@@ -40,8 +43,9 @@ async def generate_tts(text: str, voice: str, out_dir: Path) -> Optional[Dict]:
 
     Returns:
         Optional[Dict]: 成功返回
-            {"url": "/storage/generated/tts_{ts}_{hash}.wav",
-             "duration_sec": 实际音频时长（秒，浮点）}；
+            {"url": "/storage/generated/placeholder_tts_{ts}_{hash}.wav",
+             "duration_sec": 实际音频时长（秒，浮点）,
+             "meta": {"mock": True, "placeholder": True}}；
             写盘失败等异常场景返回 None。
 
     Raises:
@@ -59,9 +63,9 @@ async def generate_tts(text: str, voice: str, out_dir: Path) -> Optional[Dict]:
             else:
                 value = 0
             frames += struct.pack("<h", value)
-        # 文件名：时间戳 + 文本摘要，保证唯一
+        # 文件名：时间戳 + 文本摘要，保证唯一；D3 打标统一带 placeholder_ 前缀
         digest = hashlib.md5((text or "").encode("utf-8")).hexdigest()[:8]
-        filename = f"tts_{int(time.time())}_{digest}.wav"
+        filename = f"placeholder_tts_{int(time.time())}_{digest}.wav"
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / filename
         with wave.open(str(path), "wb") as wf:
@@ -72,6 +76,7 @@ async def generate_tts(text: str, voice: str, out_dir: Path) -> Optional[Dict]:
         return {
             "url": f"{_URL_PREFIX}/{filename}",
             "duration_sec": round(n_samples / _SAMPLE_RATE, 2),
+            "meta": {"mock": True, "placeholder": True},
         }
     except Exception:
         return None

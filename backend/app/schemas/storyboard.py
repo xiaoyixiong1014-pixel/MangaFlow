@@ -41,6 +41,7 @@ class StoryboardOut(BaseModel):
         prompt_locked: 提示词系统锁定层（RD-04）。
         prompt_editable: 提示词用户可编辑层。
         keyframe_url: 关键帧 URL。
+        end_frame_url: 尾帧 URL（P-03/P-08：尾帧任务完成后由执行器回写）。
         video_url: 视频片段 URL。
         audio_url: 配音 URL（TTS 任务完成后回写，可用于行内试听播放）。
         status: 状态 pending/generating/done/failed。
@@ -60,6 +61,7 @@ class StoryboardOut(BaseModel):
     prompt_locked: Optional[str] = None
     prompt_editable: Optional[str] = None
     keyframe_url: Optional[str] = None
+    end_frame_url: Optional[str] = None
     video_url: Optional[str] = None
     audio_url: Optional[str] = None
     status: str = "pending"
@@ -196,3 +198,85 @@ class DeliverCanvasOut(BaseModel):
     """
 
     canvas_id: int
+
+
+class ContinuityCheckRequest(BaseModel):
+    """连续性检查请求（SB-06）。
+
+    Attributes:
+        episode_id: 剧集过滤（可空；None = 项目全部分镜）。
+    """
+
+    episode_id: Optional[int] = None
+
+
+class ContinuityItem(BaseModel):
+    """单条连续性问题（SB-06）。
+
+    Attributes:
+        storyboard_id: 关联分镜 ID（取问题镜头，供前端定位）。
+        type: 问题类型 scene_jump / outfit_conflict / prompt_missing。
+        message: 问题描述。
+        confidence: 置信级别 info（信息提示）/ suspect（疑似冲突）。
+    """
+
+    storyboard_id: Optional[int] = None
+    type: str
+    message: str
+    confidence: str
+
+
+class ContinuityCheckOut(BaseModel):
+    """连续性检查汇总输出（SB-06）。
+
+    Attributes:
+        items: 问题列表（无问题时为空数组）。
+        checked_pairs: 检查的相邻镜头对数量。
+    """
+
+    items: List[ContinuityItem] = Field(default_factory=list)
+    checked_pairs: int
+
+
+class AutoFitDurationRequest(BaseModel):
+    """目标时长自动调整请求（SB-07）。
+
+    Attributes:
+        target_seconds: 目标总时长（秒，1~3600，越界由服务层返回 400）。
+        episode_id: 剧集过滤（可空；None = 项目全部分镜）。
+    """
+
+    target_seconds: int
+    episode_id: Optional[int] = None
+
+
+class AutoFitShotDiff(BaseModel):
+    """单镜时长调整前后对比（SB-07）。
+
+    Attributes:
+        id: 分镜 ID。
+        before: 调整前时长（秒）。
+        after: 调整后时长（秒）。
+    """
+
+    id: int
+    before: int
+    after: int
+
+
+class AutoFitDurationOut(BaseModel):
+    """目标时长自动调整摘要输出（SB-07）。
+
+    Attributes:
+        before_total: 调整前总时长（秒）。
+        after_total: 调整后总时长（秒，受每镜保底 1 秒影响，≈ 目标值）。
+        target_seconds: 目标总时长（秒）。
+        changed: 实际发生变化的镜头数。
+        per_shot: 每镜调整前后对比列表。
+    """
+
+    before_total: int
+    after_total: int
+    target_seconds: int
+    changed: int
+    per_shot: List[AutoFitShotDiff] = Field(default_factory=list)

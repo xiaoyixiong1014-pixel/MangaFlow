@@ -43,6 +43,11 @@ SHOT_DURATION_WARN = 10
 TOTAL_DURATION_TOLERANCE = 0.15
 # 重生成次数达到该值时建议进入画布精修（RD-25）
 REGEN_SUGGEST_THRESHOLD = 3
+# 连续性检查（SB-06）场景跳变 suspect 判定的强连续词白名单：
+# 两镜分属不同场景资产、但画面描述仍含连续词时，提示「疑似误拆场景」
+_SCENE_CONTINUITY_WORDS = ("接着", "随后", "同一", "继续", "紧接", "仍然", "依旧")
+# 目标时长自动调整（SB-07）的合法目标范围上限（秒）
+AUTO_FIT_TARGET_MAX = 3600
 
 # LLM 单场景拆解系统提示词（要求仅输出严格 JSON）
 _SHOTS_SYSTEM_PROMPT = (
@@ -310,6 +315,7 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
             "prompt_locked": sb.prompt_locked,
             "prompt_editable": sb.prompt_editable,
             "keyframe_url": sb.keyframe_url,
+            "end_frame_url": sb.end_frame_url,
             "video_url": sb.video_url,
             "audio_url": sb.audio_url,
             "status": sb.status,
@@ -748,6 +754,213 @@ async def storyboard_warnings(db: AsyncSession, project: Project) -> Dict[str, A
         "target_duration": target,
         "over_ratio": over_ratio,
         "warnings": warnings,
+    }
+
+
+async def continuity_check(
+    db: AsyncSession, project: Project, episode_id: Optional[int] = None
+) -> Dict[str, Any]:
+    """分镜连续性检查（SB-06，RD-23「宁可漏报不误报」的窄口径规则）。
+
+    检查规则（全部基于 sequence 相邻镜头对）：
+    a) 场景切换提示：相邻两镜 scene_id 均非空且不同 → info 提示；仅当两镜
+       画面描述含强连续词（_SCENE_CONTINUITY_WORDS 白名单）时升级 suspect
+       （疑似同一地点被误拆到不同场景资产）；
+    b) 服装变体冲突：同一角色在相邻出现的镜头（中间无该角色出现间隔）
+       绑定的服装变体不同（两侧均非空才判定，未绑变体不判）→ suspect；
+    c) 提示词关键词缺失：镜 N 提示词包含某角色名、镜 N+1 对白明确点名
+       该角色（行首 "角色名：" 格式）但镜 N+1 提示词不包含 → info 提示
+       （仅做「出现/缺席」二元判断）。
+
+    故意不做的规则（误报风险高）：道具连续性、时间线/光照冲突、跨场景
+    服装变更（换场换装合理）、别名扩展匹配等。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+        episode_id: 剧集过滤（可空，None = 项目全部分镜；口径与列表接口一致）。
+
+    Returns:
+        Dict[str, Any]: {"items": [{storyboard_id, type, message, confidence}],
+            "checked_pairs": 检查的相邻镜头对数量}；无问题时 items 为空数组。
+
+    Raises:
+        无：查询失败等异常向上抛出（由全局异常处理兜底）。
+    """
+    conds = [Storyboard.project_id == project.id]
+    if episode_id is not None:
+        conds.append(Storyboard.episode_id == episode_id)
+    sbs = (
+        await db.execute(
+            select(Storyboard).where(*conds).order_by(Storyboard.sequence.asc())
+        )
+    ).scalars().all()
+    items: List[Dict[str, Any]] = []
+    if not sbs:
+        return {"items": items, "checked_pairs": 0}
+
+    # 场景名映射（提示文案用；场景行已删时回退显示 ID）
+    scene_ids = {sb.scene_id for sb in sbs if sb.scene_id}
+    scene_names: Dict[int, str] = {}
+    if scene_ids:
+        rows = (
+            await db.execute(select(Scene.id, Scene.name).where(Scene.id.in_(scene_ids)))
+        ).all()
+        scene_names = {sid: name for sid, name in rows}
+
+    # 项目未删除角色资产（规则 b 文案 / 规则 c 名字白名单，避免对白误匹配非资产名）
+    char_rows = (
+        await db.execute(
+            select(Character).where(
+                Character.project_id == project.id, Character.deleted_at.is_(None))
+        )
+    ).scalars().all()
+    char_names = {ch.id: ch.name for ch in char_rows}
+
+    # ---- 规则 a / c：相邻镜头对循环 ----
+    for prev, cur in zip(sbs, sbs[1:]):
+        # a) 场景切换（两镜均强绑场景且不同）
+        if prev.scene_id and cur.scene_id and prev.scene_id != cur.scene_id:
+            text = (prev.visual_description or "") + (cur.visual_description or "")
+            suspect = any(w in text for w in _SCENE_CONTINUITY_WORDS)
+            items.append({
+                "storyboard_id": cur.id,
+                "type": "scene_jump",
+                "message": (
+                    f"镜 #{prev.sequence}→#{cur.sequence} 场景切换："
+                    f"{scene_names.get(prev.scene_id, prev.scene_id)} → "
+                    f"{scene_names.get(cur.scene_id, cur.scene_id)}"
+                    + ("，但画面描述含连续词，请确认是否误拆场景" if suspect else "")
+                ),
+                "confidence": "suspect" if suspect else "info",
+            })
+        # c) 提示词缺失（镜 N 提示词含角色名 → 镜 N+1 对白点名但提示词缺席）
+        prev_prompt = (prev.prompt_locked or "") + "\n" + (prev.prompt_editable or "")
+        cur_prompt = (cur.prompt_locked or "") + "\n" + (cur.prompt_editable or "")
+        if cur.dialogue:
+            for ch in char_rows:
+                name = ch.name
+                if not name or name in cur_prompt or name not in prev_prompt:
+                    continue
+                named = any(
+                    ln.strip().startswith(f"{name}：") or ln.strip().startswith(f"{name}:")
+                    for ln in cur.dialogue.splitlines()
+                )
+                if named:
+                    items.append({
+                        "storyboard_id": cur.id,
+                        "type": "prompt_missing",
+                        "message": (
+                            f"镜 #{cur.sequence} 对白明确点名角色「{name}」，"
+                            f"但其提示词未包含该角色（镜 #{prev.sequence} 提示词包含）"
+                        ),
+                        "confidence": "info",
+                    })
+
+    # ---- 规则 b：同一角色相邻出现镜头的服装变体冲突 ----
+    link_rows = (
+        await db.execute(
+            select(StoryboardCharacter).where(
+                StoryboardCharacter.storyboard_id.in_([sb.id for sb in sbs]))
+        )
+    ).scalars().all()
+    seq_by_id = {sb.id: sb.sequence for sb in sbs}
+    # character_id -> [(sequence, storyboard_id, variant_id)]（按出现顺序整理）
+    appear: Dict[int, List[Tuple[int, int, Optional[int]]]] = {}
+    for link in link_rows:
+        seq = seq_by_id.get(link.storyboard_id)
+        if seq is not None:
+            appear.setdefault(link.character_id, []).append(
+                (seq, link.storyboard_id, link.variant_id)
+            )
+    # 变体名映射（文案可读性；变体已删时回退显示 ID）
+    variant_ids = {v for lst in appear.values() for (_, _, v) in lst if v}
+    variant_names: Dict[int, str] = {}
+    if variant_ids:
+        vrows = (
+            await db.execute(
+                select(AssetVariant.id, AssetVariant.name).where(AssetVariant.id.in_(variant_ids))
+            )
+        ).all()
+        variant_names = {vid: name for vid, name in vrows}
+    for char_id, lst in appear.items():
+        lst.sort(key=lambda t: t[0])
+        for (seq_a, sb_a, var_a), (seq_b, sb_b, var_b) in zip(lst, lst[1:]):
+            if var_a and var_b and var_a != var_b:
+                items.append({
+                    "storyboard_id": sb_b,
+                    "type": "outfit_conflict",
+                    "message": (
+                        f"角色「{char_names.get(char_id, char_id)}」在镜 #{seq_a} 与 "
+                        f"#{seq_b} 绑定的服装变体不同（{variant_names.get(var_a, var_a)} → "
+                        f"{variant_names.get(var_b, var_b)}），请确认服装连续性"
+                    ),
+                    "confidence": "suspect",
+                })
+
+    return {"items": items, "checked_pairs": max(0, len(sbs) - 1)}
+
+
+async def auto_fit_duration(
+    db: AsyncSession, project: Project, target_seconds: int,
+    episode_id: Optional[int] = None,
+) -> Dict[str, Any]:
+    """目标时长自动调整（SB-07）：分镜时长按比例等比缩放至目标总时长。
+
+    - 每镜新时长 = max(1, round(原时长 × target / 当前合计))（单镜保底 1 秒，
+      因此缩放后合计 ≈ 目标值而非严格相等）；
+    - 直接改写 storyboards.duration 落库（actual_duration 不动）；
+    - 目标值须在 1~3600 秒，否则 400。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+        target_seconds: 目标总时长（秒）。
+        episode_id: 剧集过滤（可空，None = 项目全部分镜）。
+
+    Returns:
+        Dict[str, Any]: {"before_total", "after_total", "target_seconds",
+            "changed", "per_shot": [{id, before, after}]}。
+
+    Raises:
+        HTTPException: 400 —— target_seconds 越界（1~3600 之外）或项目/剧集
+            下无分镜可调整。
+    """
+    if not (1 <= target_seconds <= AUTO_FIT_TARGET_MAX):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"target_seconds 须在 1~{AUTO_FIT_TARGET_MAX} 秒之间",
+        )
+    conds = [Storyboard.project_id == project.id]
+    if episode_id is not None:
+        conds.append(Storyboard.episode_id == episode_id)
+    sbs = (
+        await db.execute(
+            select(Storyboard).where(*conds).order_by(Storyboard.sequence.asc())
+        )
+    ).scalars().all()
+    if not sbs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="暂无分镜，无法调整时长"
+        )
+
+    before_total = sum(sb.duration for sb in sbs)
+    scale = target_seconds / before_total
+    per_shot: List[Dict[str, Any]] = []
+    changed = 0
+    for sb in sbs:
+        after = max(1, round(sb.duration * scale))
+        if after != sb.duration:
+            changed += 1
+        per_shot.append({"id": sb.id, "before": sb.duration, "after": after})
+        sb.duration = after
+    await db.commit()
+    return {
+        "before_total": before_total,
+        "after_total": sum(p["after"] for p in per_shot),
+        "target_seconds": target_seconds,
+        "changed": changed,
+        "per_shot": per_shot,
     }
 
 

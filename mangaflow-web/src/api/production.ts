@@ -21,6 +21,7 @@ import type {
   ReviewRecord,
   ShareInfo,
   TaskProgressEvent,
+  VideoCreatePayload,
 } from '@/types'
 
 // ============================================================
@@ -48,16 +49,47 @@ export function keyframes(
  * 生成分镜视频片段。
  * @param projectId 项目 ID
  * @param storyboardId 分镜 ID
- * @param payload 是否使用尾帧控制
+ * @param payload 视频参数（P-12 分辨率/帧率/运动幅度）与尾帧控制（P-03）
  * @returns 新建任务
  */
 export function video(
   projectId: number,
   storyboardId: number,
-  payload: { use_end_frame?: boolean },
+  payload: VideoCreatePayload = {},
 ): Promise<GenTask> {
   return client
     .post(`/projects/${projectId}/storyboards/${storyboardId}/video`, payload)
+    .then((r) => r.data)
+}
+
+/**
+ * 生成分镜尾帧图像（P-03/P-08：任务完成后由后端回写 storyboards.end_frame_url）。
+ * @param projectId 项目 ID
+ * @param storyboardId 分镜 ID（须已有关键帧）
+ * @returns 新建图像任务
+ * @throws 400 分镜尚无关键帧；409 已有进行中的尾帧任务
+ */
+export function endFrame(projectId: number, storyboardId: number): Promise<GenTask> {
+  return client
+    .post(`/projects/${projectId}/storyboards/${storyboardId}/end-frame`)
+    .then((r) => r.data)
+}
+
+/**
+ * 上传替换生成结果（P-06：multipart 一步上传）。
+ * 仅 image 任务且状态 done 可替换；png/jpg/jpeg/webp 且 ≤10MB。
+ * @param taskId 目标图像任务 ID
+ * @param file 替换图片文件
+ * @returns 更新后的任务（result_url 为新地址，关键帧任务已联动分镜回写）
+ * @throws 400 任务类型/状态不符或文件非法；403 任务不属于当前用户
+ */
+export function replaceResult(taskId: number, file: File): Promise<GenTask> {
+  const form = new FormData()
+  form.append('file', file)
+  return client
+    .post(`/tasks/${taskId}/replace`, form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    })
     .then((r) => r.data)
 }
 

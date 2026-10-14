@@ -23,13 +23,19 @@ class KeyframeCreateRequest(BaseModel):
 
 
 class VideoCreateRequest(BaseModel):
-    """视频片段生成请求。
+    """视频片段生成请求（P-12 视频参数配置）。
 
     Attributes:
-        use_end_frame: 是否使用尾帧控制生成（Mock 下仅记录于任务 meta）。
+        use_end_frame: 是否使用尾帧控制生成（须该分镜尾帧已生成，否则 400）。
+        resolution: 输出分辨率档位（480p/720p/1080p，默认 720p）。
+        fps: 帧率（24/30，默认 24）。
+        motion_strength: 运动幅度（low/medium/high，默认 medium）。
     """
 
     use_end_frame: bool = False
+    resolution: Literal["480p", "720p", "1080p"] = "720p"
+    fps: Literal[24, 30] = 24
+    motion_strength: Literal["low", "medium", "high"] = "medium"
 
 
 class TtsCreateRequest(BaseModel):
@@ -64,6 +70,8 @@ class TaskOut(BaseModel):
         cost_points: 冻结/消耗积分。
         estimated_seconds: 预估剩余秒数。
         created_at: 创建时间。
+        placeholder: 是否为演示占位产物（D3：mock 兜底渠道产物打标，
+            从任务 meta 提取；True 时对应任务已执行计费豁免）。
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -82,6 +90,7 @@ class TaskOut(BaseModel):
     cost_points: int = 0
     estimated_seconds: Optional[int] = None
     created_at: Optional[datetime] = None
+    placeholder: bool = False
 
     @classmethod
     def from_task(cls, task) -> "TaskOut":
@@ -91,7 +100,7 @@ class TaskOut(BaseModel):
             task: Task ORM 对象。
 
         Returns:
-            TaskOut: 任务输出模型实例。
+            TaskOut: 任务输出模型实例（placeholder 从 meta 提取，缺省 False）。
 
         Raises:
             无：字段均为简单映射，不产生异常路径。
@@ -111,6 +120,7 @@ class TaskOut(BaseModel):
             cost_points=task.cost_points,
             estimated_seconds=task.estimated_seconds,
             created_at=task.created_at,
+            placeholder=bool((task.meta or {}).get("placeholder")),
         )
 
 

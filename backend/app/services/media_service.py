@@ -4,6 +4,8 @@
 - 上传目录：{storage_dir}/uploads/{yyyy-mm}/{uuid}.{ext}
 - 大小限制：50MB（超限中断写盘并抛出 HTTPException）
 - 媒体类型：优先使用调用方显式传入的表单值，否则按文件扩展名推断
+- 生成结果替换上传（P-06）：{storage_dir}/replaced/{yyyy-mm}/{uuid}.{ext}，
+  仅允许 png/jpg/jpeg/webp 且 ≤10MB
 """
 
 import uuid
@@ -17,6 +19,12 @@ from app.core.config import settings
 
 # 上传文件大小上限（50MB）
 MAX_UPLOAD_SIZE = 50 * 1024 * 1024
+
+# 生成结果替换上传大小上限（10MB，P-06）
+MAX_REPLACE_SIZE = 10 * 1024 * 1024
+
+# 生成结果替换上传允许的扩展名（P-06：关键帧替换仅接受常见位图格式）
+REPLACE_ALLOWED_EXTS = ("png", "jpg", "jpeg", "webp")
 
 # 扩展名 -> 媒体类型映射（用于无法显式指定 media_type 时的推断）
 _EXT_TYPE_MAP = {
@@ -132,3 +140,71 @@ async def save_upload_file(file: UploadFile, media_type: str) -> Tuple[str, int]
             pass
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件为空")
     return rel_url, size
+
+
+async def save_replace_file(file: UploadFile) -> Tuple[str, int]:
+    """将关键帧替换上传文件落盘到 replaced 目录（P-06，内部复用上传流式写盘模式）。
+
+    目录规则：{storage_dir}/replaced/{yyyy-mm}/{uuid}.{ext}；仅允许
+    png/jpg/jpeg/webp 扩展名，累计字节数超过 10MB 立即中断并清理半成品文件。
+
+    Args:
+        file: FastAPI 上传文件对象（≤10MB，扩展名须命中 REPLACE_ALLOWED_EXTS）。
+
+    Returns:
+        Tuple[str, int]: (静态访问 URL, 文件字节数)。URL 形如
+            "/storage/replaced/2026-10/xxxx.png"（main.py 已将 storage 目录
+            mount 到 /storage，可直接作为任务 result_url 与分镜关键帧回写值）。
+
+    Raises:
+        HTTPException: 400 —— 文件为空 / 超过 10MB 限制 / 扩展名非法或缺失。
+        OSError: 磁盘写入失败时向上抛出（由全局异常处理器兜底）。
+    """
+    original_name = file.filename or ""
+    if "." not in original_name:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="文件名缺少扩展名")
+    ext = original_name.rsplit(".", 1)[-1].lower()
+    if ext not in REPLACE_ALLOWED_EXTS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"仅支持 {'/'.join(REPLACE_ALLOWED_EXTS)} 格式的图片文件",
+        )
+
+    now = datetime.now(timezone.utc)
+    month_dir = now.strftime("%Y-%m")
+    store_name = f"{uuid.uuid4().hex}.{ext}"
+    abs_dir = settings.storage_path() / "replaced" / month_dir
+    abs_dir.mkdir(parents=True, exist_ok=True)
+    abs_path = abs_dir / store_name
+
+    size = 0
+    try:
+        async with aiofiles.open(abs_path, "wb") as out:
+            while True:
+                chunk = await file.read(1024 * 1024)  # 1MB 分块读取
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_REPLACE_SIZE:
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="文件大小超过 10MB 限制",
+                    )
+                await out.write(chunk)
+    except HTTPException:
+        # 超限时清理已写入的半成品文件后再抛出
+        try:
+            abs_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    finally:
+        await file.close()
+
+    if size == 0:
+        try:
+            abs_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="上传文件为空")
+    return f"/storage/replaced/{month_dir}/{store_name}", size

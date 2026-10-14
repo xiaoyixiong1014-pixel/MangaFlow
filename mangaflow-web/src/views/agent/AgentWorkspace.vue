@@ -9,7 +9,7 @@
 -->
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { MfButton, MfCard, MfTag } from '@mangaflow/design'
 import { useAgentStore } from '@/stores/agent'
@@ -26,6 +26,7 @@ import type {
 import NewProjectDialog from '@/components/NewProjectDialog.vue'
 
 const router = useRouter()
+const route = useRoute()
 const agentStore = useAgentStore()
 
 // ---------- 意图承接条 ----------
@@ -434,6 +435,10 @@ async function refreshProjects(): Promise<void> {
 
 // 页面进入：并发拉取会话与项目（输入区不被阻塞）+ 渠道健康
 onMounted(() => {
+  // S-08：剧本页「同步到 Agent」跳转携带 thread_id query —— 接管该会话，
+  // 后续输入框发送的消息将延续该线程（chat/stream 传同 thread_id）
+  const qThread = route.query.thread_id
+  if (typeof qThread === 'string' && qThread) threadId.value = qThread
   refreshThreads()
   refreshProjects()
   void fetchHealth()

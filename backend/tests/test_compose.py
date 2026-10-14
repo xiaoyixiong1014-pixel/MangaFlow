@@ -207,7 +207,10 @@ async def test_hecheng_canshu_touchuan_yu_zhamen_jilu(client, auth, db):
 
     task = await db.get(Task, task_id)
     assert task.meta["subtitles"] is True
-    assert task.meta["subtitle_style"] == {"font_size": 32, "color": "&H00201080", "position": "top"}
+    # P-16 双语字幕：SubtitleStyle 新增 bilingual 字段（未传时缺省 False）
+    assert task.meta["subtitle_style"] == {
+        "font_size": 32, "color": "&H00201080", "position": "top", "bilingual": False,
+    }
     assert task.meta["bgm"] == {"url": "/storage/bgm/theme.mp3", "volume": 0.4}
     assert task.meta["transition"] == {"type": "smoothleft", "duration": 0.8}
     # 全量模式：meta 携带项目全部分镜（2 条）

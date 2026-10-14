@@ -77,6 +77,7 @@ async def generate_image_real(
     out_dir: Path,
     seed: int,
     channel: ResolvedChannel,
+    reference_image_url: Optional[str] = None,
 ) -> Optional[Dict]:
     """调用 Agnes 渠道真实生成一张竖版图像。
 
@@ -85,6 +86,11 @@ async def generate_image_real(
         out_dir: 输出目录（storage/generated 的绝对路径）。
         seed: 随机种子（一般传任务 ID，保证文件名唯一）。
         channel: 已解析的候选渠道（含 base_url/api_key/model）。
+        reference_image_url: 可选参考图 URL（A-04 资产一致性锚点；传入时放入
+            请求体 image 字段透传——OpenAI images 兼容网关的参考图入参字段名
+            存在实现差异（image / image_url / extra_body 均有），本渠道约定
+            待验证，当前按「image 字段直传 URL」处理；网关不识别时一般忽略
+            该字段按纯文本提示词生成，不影响主流程）。
 
     Returns:
         Optional[Dict]: 成功返回
@@ -99,6 +105,9 @@ async def generate_image_real(
         endpoint = _build_endpoint(channel.base_url)
         headers = {"Authorization": f"Bearer {channel.api_key}"}
         payload: Dict = {"model": channel.model, "prompt": prompt, "n": 1, "size": "720x1280"}
+        # A-04：参考图参考入参透传（渠道约定待验证，见 docstring 说明）
+        if reference_image_url:
+            payload["image"] = reference_image_url
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(endpoint, headers=headers, json=payload)

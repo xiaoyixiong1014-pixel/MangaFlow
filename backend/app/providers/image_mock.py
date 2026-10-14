@@ -1,8 +1,12 @@
 """图像生成 Mock 提供方模块（文件级说明）。
 
 无真实图像生成渠道时的占位实现：生成一张竖版 SVG 占位图（深灰底 +
-墨青装饰边框 + 提示词文本 + 基于 seed 的伪随机几何图案），落盘到
-storage/generated 目录，返回可被 /storage 静态挂载直接访问的 URL。
+墨青装饰边框 + 「演示占位」标注 + 提示词文本 + 基于 seed 的伪随机几何
+图案），落盘到 storage/generated 目录，返回可被 /storage 静态挂载直接
+访问的 URL。
+
+打标约定（D3）：产物文件名统一携带 placeholder_ 前缀，返回结果 meta
+携带 placeholder=True 标记（执行器平铺进任务 meta 供 API 透出与计费豁免）。
 
 函数签名与真实图像渠道对齐（prompt + out_dir + seed → url + meta），
 日后接入真实渠道仅需替换本模块实现，调用方无需改动。
@@ -32,12 +36,12 @@ def render_placeholder_svg(
     width: int = 720,
     height: int = 1280,
 ) -> str:
-    """渲染占位 SVG 字符串（公共函数，供图像/视频/成片占位复用）。
+    """渲染占位 SVG 字符串（公共函数，供图像/视频占位复用）。
 
     Args:
         text: 需要展示的提示词文本（取前 40 字，自动做 XML 转义）。
         seed: 随机种子，决定几何图案（圆/三角）的位置与颜色深浅。
-        label: 顶部标注文字（如"视频占位"/"成片占位"，可空）。
+        label: 顶部标注文字（如「演示占位」/「演示占位·视频」，可空）。
         width: 画布宽度（像素）。
         height: 画布高度（像素）。
 
@@ -114,18 +118,26 @@ def _write_svg(out_dir: Path, filename: str, content: str) -> Path:
     return path
 
 
-async def generate_image(prompt: str, out_dir: Path, seed: int) -> Optional[Dict]:
+async def generate_image(
+    prompt: str,
+    out_dir: Path,
+    seed: int,
+    reference_image_url: Optional[str] = None,
+) -> Optional[Dict]:
     """生成一张 SVG 占位关键帧图（Mock 图像渠道，可插拔）。
 
     Args:
         prompt: 图像提示词（取前 40 字渲染到图上）。
         out_dir: 输出目录（storage/generated 的绝对路径）。
         seed: 随机种子（一般传任务 ID，保证同名任务结果可复现且文件名唯一）。
+        reference_image_url: 可选参考图 URL（A-04：与真实渠道签名对齐；
+            mock 不消费参考图内容，仅在 meta 中留痕供溯源断言）。
 
     Returns:
         Optional[Dict]: 成功返回
-            {"url": "/storage/generated/keyframe_{seed}_{ts}.svg",
-             "meta": {"mock": True, "format": "svg"}}；
+            {"url": "/storage/generated/placeholder_keyframe_{seed}_{ts}.svg",
+             "meta": {"mock": True, "format": "svg", "placeholder": True,
+                      "reference_image_url": 参考图（传入时才有）}}；
             写盘失败等异常场景返回 None（由调用方按平台错误处理）。
 
     Raises:
@@ -133,12 +145,17 @@ async def generate_image(prompt: str, out_dir: Path, seed: int) -> Optional[Dict
     """
     try:
         ts = int(time.time())
-        filename = f"keyframe_{seed}_{ts}.svg"
-        content = render_placeholder_svg(prompt, seed)
+        # D3 打标：文件名统一带 placeholder_ 前缀，画面显著标注「演示占位」
+        filename = f"placeholder_keyframe_{seed}_{ts}.svg"
+        content = render_placeholder_svg(prompt, seed, label="演示占位")
         _write_svg(out_dir, filename, content)
+        meta: Dict = {"mock": True, "format": "svg", "placeholder": True}
+        # A-04：收到参考图时在 meta 留痕（不影响 placeholder 打标与计费豁免语义）
+        if reference_image_url:
+            meta["reference_image_url"] = reference_image_url
         return {
             "url": f"{_URL_PREFIX}/{filename}",
-            "meta": {"mock": True, "format": "svg"},
+            "meta": meta,
         }
     except Exception:
         return None

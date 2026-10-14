@@ -76,9 +76,10 @@ async def test_guanjianzhen_shiyan_wancheng_koufei(client, auth, db):
     assert final["status"] == "done", final
     assert final["progress"] == 100
 
-    # 计费闭环：5000 - 10 = 4990，冻结清零
+    # 计费闭环（D3 豁免语义）：mock 占位产物冻结全额退回，余额保持 5000
+    assert final.get("placeholder") is True
     wallet = await get_wallet_model(db, auth["user_id"])
-    assert wallet.points_balance == 4990
+    assert wallet.points_balance == 5000
     assert wallet.frozen_points == 0
 
     # 分镜关键帧回写

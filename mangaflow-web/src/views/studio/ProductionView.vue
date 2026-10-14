@@ -5,38 +5,60 @@
   功能：
   - 顶部积分消耗条：billing.wallet 的可用 / 冻结积分；
   - 三个 Tab（el-tabs）：
-    ① 关键帧：分镜网格卡（keyframe_url 图或占位 + 状态角标）；「打样第一镜」
-      keyframes(phase=trial)；「全量生成」确认框（将生成 N 张、预计 N×10 积分）后
-      keyframes(phase=full)；任务提交后不阻塞，由任务面板跟踪；
-    ② 视频：每镜行（首帧缩略 + video_url 播放器或占位 + 「生成视频片段」video()）；
+    ① 关键帧：分镜网格卡（keyframe_url 图或占位 + 状态角标 + D3「演示占位」角标）；
+      「打样第一镜」keyframes(phase=trial)；「全量生成」确认框（将生成 N 张、
+      预计 N×10 积分）后 keyframes(phase=full)；已完成关键帧卡片提供
+      「上传替换」入口（P-06：multipart 一步上传调 /tasks/{id}/replace，
+      成功后刷新分镜与任务列表）；任务提交后不阻塞，由任务面板跟踪；
+    ② 视频：参数配置区（P-12：分辨率 480p/720p/1080p、帧率 24/30、运动幅度
+      低/中/高，随每次提交携带）；每镜行（首帧缩略 + video_url 播放器或占位 +
+      「使用尾帧」开关（P-03/P-08：仅 end_frame_url 已回写的分镜可开启，
+      未生成时提供「先生成尾帧」按钮调 end-frame 接口并轮询回写）+
+      「生成视频片段」video()）；
     ③ 配音与合成（S-08）：角色音色映射表（音色 Select + 试听按钮 disabled 占位）、
       每镜「生成配音」tts()；已配音行（后端回写 audio_url）在操作列展示行内
       播放/暂停试听图标，未配音行显示「未生成」占位；时长差异处理三选一
       （缩短台词 / 延长镜头 / 重新配音）——
       仅「重新配音」真实调用 tts，其余为前端演示提示（说明见注释）；
-      BGM（曲库下拉 + 音量 + 上传自定义）/ 字幕（开关 + 字号/颜色/位置）/
-      转场（开关 + 类型 + 时长）—— 配置随 compose 请求体提交（Task 10.4）；
+      BGM（曲库下拉 + 音量 + 上传自定义）/ 字幕（开关 + 字号/颜色/位置 +
+      P-16 双语字幕开关）/ 转场（开关 + P-17 四类转场类型 + 时长）——
+      配置随 compose 请求体提交（Task 10.4）；
+  - R-03 重生成直连：发布页分镜条「重生成」携带 query.storyboard_id 跳入时，
+    onMounted 预选该分镜（关键帧卡片高亮 + 滚动到可见 + 定位提示）；
   - 全局任务面板：右侧常驻抽屉；初始 taskList 拉取最近任务，taskStream（GET SSE）
-    实时更新类型/状态/进度/结果链接，支持单任务重试（taskRetry）/取消（taskCancel）；
+    实时更新类型/状态/进度/结果链接，支持单任务重试（taskRetry）/取消（taskCancel），
+    任务命中演示占位标记时展示「演示占位」角标；
   - 底部「全部完成，进入合成」：compose() 提交合成任务并轮询 taskDetail，
     完成后确认跳转发布页。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import type { UploadRequestOptions } from 'element-plus'
+import { Upload as UploadIcon, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import * as productionApi from '@/api/production'
 import * as billingApi from '@/api/billing'
 import * as bgmApi from '@/api/bgm'
 import * as studioApi from '@/api/studio'
+import { useProjectStore } from '@/stores/project'
 import type { BgmItem, ComposePayload, GenTask, Storyboard, Wallet, CharacterAsset } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
+const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前选中剧集 ID（S-06 剧集切换器；null = 默认剧集，列表不传 episode_id） */
+const currentEpisodeId = computed(() => projectStore.currentEpisodeId)
+
+/**
+ * R-03 重生成直连：发布页分镜条「重生成」跳转携带的 query.storyboard_id
+ * 命中的目标分镜 ID（命中时该镜关键帧卡片高亮并滚动到可见）
+ */
+const highlightSbId = ref<number | null>(null)
 
 // ============================================================
 // 基础数据
@@ -53,13 +75,14 @@ const activeTab = ref('keyframes')
 
 /**
  * 拉取分镜与角色资产。
+ * S-06：分镜按当前选中剧集过滤（默认剧集 = 不传 episode_id，返回全部）。
  * @returns 无
  */
 async function loadBase(): Promise<void> {
   loading.value = true
   try {
     const [sb, assets, walletRes] = await Promise.all([
-      studioApi.listStoryboard(projectId.value),
+      studioApi.listStoryboard(projectId.value, currentEpisodeId.value ?? undefined),
       studioApi.listAssets(projectId.value),
       billingApi.wallet().catch(() => null),
     ])
@@ -73,6 +96,11 @@ async function loadBase(): Promise<void> {
     loading.value = false
   }
 }
+
+// 切换剧集（S-06）后按新剧集重新加载分镜
+watch(currentEpisodeId, () => {
+  void loadBase()
+})
 
 // ============================================================
 // 积分消耗条
@@ -105,8 +133,26 @@ const panelVisible = ref(false)
 const tasks = ref<GenTask[]>([])
 /** 非终态任务数（SSE progress 摘要） */
 const runningCount = ref(0)
+/** 分镜占位标记映射（分镜 ID → 最新已完成关键帧任务是否为演示占位，D3 角标） */
+const sbPlaceholderMap = ref<Record<number, boolean>>({})
 /** SSE 中止控制器 */
 let taskAbort: AbortController | null = null
+
+/**
+ * 依据任务列表构建「分镜 → 演示占位」映射（D3 打标：mock 兜底产物角标）。
+ * 取每个分镜最新一条已完成 image 任务的 placeholder 标记。
+ * @param items 最近任务列表
+ * @returns 无
+ */
+function buildPlaceholderMap(items: GenTask[]): void {
+  const map: Record<number, boolean> = {}
+  for (const t of items) {
+    if (t.type !== 'image' || !t.storyboard_id || t.status !== 'done') continue
+    // 列表按创建时间倒序，首个命中即最新
+    if (!(t.storyboard_id in map)) map[t.storyboard_id] = !!t.placeholder
+  }
+  sbPlaceholderMap.value = map
+}
 
 /**
  * 拉取最近任务列表（面板初始与 SSE done 后刷新）。
@@ -116,6 +162,7 @@ async function refreshTasks(): Promise<void> {
   try {
     const page = await productionApi.taskList(projectId.value, { page: 1, page_size: 20 })
     tasks.value = page.items
+    buildPlaceholderMap(page.items)
   } catch {
     /* 拉取失败不打断主流程 */
   }
@@ -154,9 +201,11 @@ function startTaskStream(): void {
         } else if (event === 'done') {
           runningCount.value = 0
           void refreshTasks()
-          void studioApi.listStoryboard(projectId.value).then((sb) => {
-            boards.value = sb
-          })
+          void studioApi
+            .listStoryboard(projectId.value, currentEpisodeId.value ?? undefined)
+            .then((sb) => {
+              boards.value = sb
+            })
           void refreshWallet()
         }
       },
@@ -293,15 +342,86 @@ async function fullKeyframes(): Promise<void> {
   }
 }
 
+/**
+ * 查询某分镜最新一条已完成的关键帧任务 ID（P-06 上传替换的目标任务）。
+ * @param b 目标分镜
+ * @returns 任务 ID（查不到返回 null）
+ */
+async function findKeyframeTaskId(b: Storyboard): Promise<number | null> {
+  try {
+    const page = await productionApi.taskList(projectId.value, {
+      page: 1,
+      page_size: 50,
+      type: 'image',
+      status: 'done',
+    })
+    const hit = page.items.find((t) => t.storyboard_id === b.id)
+    return hit?.id ?? null
+  } catch {
+    return null
+  }
+}
+
+/** 正在上传替换的分镜 ID 集合（防重复点击） */
+const replaceBusyIds = ref<number[]>([])
+
+/**
+ * el-upload 自定义上传：替换该分镜关键帧（P-06 一步 multipart 上传）。
+ * 先定位该镜最新已完成关键帧任务，再调 replace 接口；成功后刷新分镜列表
+ * （关键帧卡片立即显示新图）并提示。
+ * @param options el-upload 上传上下文（file 为所选图片）
+ * @param b 目标分镜
+ * @returns 无
+ */
+async function replaceKeyframe(options: UploadRequestOptions, b: Storyboard): Promise<void> {
+  const file = options.file as File
+  if (!file || replaceBusyIds.value.includes(b.id)) return
+  replaceBusyIds.value = [...replaceBusyIds.value, b.id]
+  try {
+    const taskId = await findKeyframeTaskId(b)
+    if (!taskId) {
+      ElMessage.warning('未找到该分镜的关键帧任务，无法替换')
+      return
+    }
+    await productionApi.replaceResult(taskId, file)
+    ElMessage.success(`#${String(b.sequence).padStart(2, '0')} 镜关键帧已替换`)
+    // 刷新分镜列表（后端已联动回写 keyframe_url）与任务列表（result_url 变更）
+    const sb = await studioApi.listStoryboard(projectId.value, currentEpisodeId.value ?? undefined)
+    boards.value = sb
+    void refreshTasks()
+  } catch {
+    /* 错误已由拦截器提示（400 类型/状态/文件非法、403 越权） */
+  } finally {
+    replaceBusyIds.value = replaceBusyIds.value.filter((i) => i !== b.id)
+  }
+}
+
 // ============================================================
 // 视频 Tab
 // ============================================================
 
+/** 视频参数配置（P-12：分辨率 / 帧率 / 运动幅度，随每次视频任务提交携带） */
+const videoConfig = reactive<{
+  resolution: '480p' | '720p' | '1080p'
+  fps: 24 | 30
+  motion_strength: 'low' | 'medium' | 'high'
+}>({
+  resolution: '720p',
+  fps: 24,
+  motion_strength: 'medium',
+})
+
+/** 每镜「使用尾帧」开关状态（分镜 ID → 是否启用；仅尾帧已生成的分镜可用） */
+const useEndFrameMap = reactive<Record<number, boolean>>({})
+
 /** 视频任务提交中的分镜 ID 集合（防重复点击） */
 const videoBusyIds = ref<number[]>([])
 
+/** 尾帧任务生成中的分镜 ID 集合（防重复点击 + 按钮 loading） */
+const endFrameBusyIds = ref<number[]>([])
+
 /**
- * 生成单镜视频片段。
+ * 生成单镜视频片段（P-12：携带分辨率/帧率/运动幅度；P-03：按开关携带尾帧控制）。
  * @param b 目标分镜
  * @returns 无
  */
@@ -309,13 +429,62 @@ async function genVideo(b: Storyboard): Promise<void> {
   if (videoBusyIds.value.includes(b.id)) return
   videoBusyIds.value = [...videoBusyIds.value, b.id]
   try {
-    const task = await productionApi.video(projectId.value, b.id, {})
+    const task = await productionApi.video(projectId.value, b.id, {
+      resolution: videoConfig.resolution,
+      fps: videoConfig.fps,
+      motion_strength: videoConfig.motion_strength,
+      use_end_frame: !!useEndFrameMap[b.id],
+    })
     ElMessage.success(`视频任务 #${task.id} 已提交`)
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
   } finally {
     videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
+  }
+}
+
+/**
+ * 生成单镜尾帧图像（P-03/P-08）：创建尾帧任务并轮询至终态，完成后刷新分镜
+ * 列表（取回 end_frame_url，解锁该镜「使用尾帧」开关）。
+ * @param b 目标分镜
+ * @returns 无
+ */
+async function genEndFrame(b: Storyboard): Promise<void> {
+  if (endFrameBusyIds.value.includes(b.id)) return
+  endFrameBusyIds.value = [...endFrameBusyIds.value, b.id]
+  try {
+    const task = await productionApi.endFrame(projectId.value, b.id)
+    ElMessage.success(`尾帧任务 #${task.id} 已提交`)
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+    // 轮询该任务直到终态；完成后刷新分镜列表以取回后端回写的 end_frame_url
+    const timer = setInterval(async () => {
+      try {
+        const t = await productionApi.taskDetail(task.id)
+        if (t.status === 'done') {
+          clearInterval(timer)
+          const sb = await studioApi.listStoryboard(
+            projectId.value,
+            currentEpisodeId.value ?? undefined,
+          )
+          boards.value = sb
+          ElMessage.success(`#${String(b.sequence).padStart(2, '0')} 镜尾帧生成完成`)
+        } else if (t.status !== 'failed' && t.status !== 'canceled') {
+          return // 仍在排队/生成中，保持 loading，下一轮继续轮询
+        } else {
+          ElMessage.warning(`#${String(b.sequence).padStart(2, '0')} 镜尾帧任务未成功（${t.status}）`)
+        }
+        endFrameBusyIds.value = endFrameBusyIds.value.filter((i) => i !== b.id)
+      } catch {
+        clearInterval(timer)
+        endFrameBusyIds.value = endFrameBusyIds.value.filter((i) => i !== b.id)
+      }
+    }, 2000)
+  } catch {
+    /* 错误已由拦截器提示（400 无关键帧 / 409 已有尾帧任务） */
+    endFrameBusyIds.value = endFrameBusyIds.value.filter((i) => i !== b.id)
   }
 }
 
@@ -404,7 +573,10 @@ async function genTts(b: Storyboard): Promise<void> {
         const t = await productionApi.taskDetail(task.id)
         if (t.status === 'done') {
           clearInterval(timer)
-          const sb = await studioApi.listStoryboard(projectId.value)
+          const sb = await studioApi.listStoryboard(
+            projectId.value,
+            currentEpisodeId.value ?? undefined,
+          )
           boards.value = sb
           ElMessage.success(`#${b.sequence} 镜配音完成`)
         } else if (t.status === 'failed' || t.status === 'canceled') {
@@ -465,16 +637,17 @@ const bgmFileRef = ref<HTMLInputElement>()
 
 /** 是否烧录字幕 */
 const subtitleEnabled = ref(false)
-/** 字幕样式（字号/颜色/位置，颜色为 #RRGGBB，提交时转 ASS 格式） */
+/** 字幕样式（字号/颜色/位置/双语，颜色为 #RRGGBB，提交时转 ASS 格式） */
 const subtitleStyle = reactive({
   font_size: 24,
   color: '#FFFFFF',
   position: 'bottom' as 'bottom' | 'middle' | 'top',
+  bilingual: false,
 })
 
 /** 是否启用转场 */
 const transitionEnabled = ref(false)
-/** 转场类型（当前后端按 fade 处理） */
+/** 转场类型（P-17：fade/dissolve/fadeblack/fadewhite，后端白名单映射） */
 const transitionType = ref('fade')
 /** 转场时长（秒，0.1~3.0） */
 const transitionDuration = ref(0.5)
@@ -545,6 +718,8 @@ function buildMixPayload(): ComposePayload {
       font_size: subtitleStyle.font_size,
       color: hexToAssColor(subtitleStyle.color),
       position: subtitleStyle.position,
+      // P-16 双语字幕：原文在上 + LLM 英文译文在下（翻译失败后端自动降级单行）
+      bilingual: subtitleStyle.bilingual,
     }
   }
   if (transitionEnabled.value) {
@@ -571,8 +746,13 @@ async function composeFilm(): Promise<void> {
   composing.value = true
   composeProgress.value = 0
   try {
-    // 并入 BGM / 字幕 / 转场配置（Task 10.4，字段对齐后端 ComposeCreateRequest）
-    const task = await productionApi.compose(projectId.value, { mode: 'full', ...buildMixPayload() })
+    // 并入 BGM / 字幕 / 转场配置（Task 10.4，字段对齐后端 ComposeCreateRequest）；
+    // S-06：携带当前剧集 ID，仅合成该剧集分镜（默认剧集 = 不传，合成全部）
+    const task = await productionApi.compose(projectId.value, {
+      mode: 'full',
+      ...buildMixPayload(),
+      episode_id: currentEpisodeId.value ?? undefined,
+    })
     ElMessage.success(`合成任务 #${task.id} 已提交`)
     panelVisible.value = true
     startTaskStream()
@@ -613,6 +793,23 @@ onMounted(async () => {
   void fetchBgmList()
   // 进入页面即建立一次 SSE 流：无任务时服务端立即 done 结束，有任务时实时跟踪
   startTaskStream()
+  // R-03 重生成直连：发布页分镜条携带 query.storyboard_id 跳入时定位该分镜
+  const targetSbId = Number(route.query.storyboard_id)
+  if (Number.isInteger(targetSbId) && targetSbId > 0) {
+    const hit = boards.value.find((b) => b.id === targetSbId)
+    if (hit) {
+      highlightSbId.value = targetSbId
+      activeTab.value = 'keyframes'
+      void nextTick(() => {
+        document
+          .getElementById(`kf-card-${targetSbId}`)
+          ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+      ElMessage.info(`已定位到分镜 #${String(hit.sequence).padStart(2, '0')}，可重新发起生成`)
+    } else {
+      ElMessage.warning('未在当前剧集范围找到该分镜，请检查剧集切换器后重试')
+    }
+  }
 })
 
 onBeforeUnmount(() => {
@@ -669,7 +866,14 @@ onBeforeUnmount(() => {
           <span class="kf-tip">提示：先打样确认风格，再放开全量批量（打样任务在右侧任务面板跟踪）</span>
         </div>
         <div class="kf-grid">
-          <el-card v-for="b in boards" :key="b.id" shadow="hover" class="kf-card">
+          <el-card
+            v-for="b in boards"
+            :id="`kf-card-${b.id}`"
+            :key="b.id"
+            shadow="hover"
+            class="kf-card"
+            :class="{ 'kf-card--target': highlightSbId === b.id }"
+          >
             <div class="kf-img-wrap">
               <el-image
                 v-if="b.keyframe_url"
@@ -692,13 +896,67 @@ onBeforeUnmount(() => {
                 {{ b.keyframe_url ? '已完成' : b.status === 'failed' ? '失败' : '待生成' }}
               </el-tag>
             </div>
-            <div class="kf-caption">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
+            <div class="kf-caption">
+              <span>#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</span>
+              <!-- D3 演示占位角标：该镜最新关键帧任务命中 mock 兜底渠道 -->
+              <el-tag
+                v-if="sbPlaceholderMap[b.id]"
+                size="small"
+                type="warning"
+                effect="light"
+                class="ph-tag"
+              >
+                演示占位
+              </el-tag>
+              <!-- P-06 上传替换入口：仅已完成的关键帧可替换 -->
+              <el-upload
+                v-if="b.keyframe_url"
+                :show-file-list="false"
+                accept=".png,.jpg,.jpeg,.webp"
+                :http-request="(opt: UploadRequestOptions) => replaceKeyframe(opt, b)"
+                class="kf-replace"
+              >
+                <el-button
+                  link
+                  type="primary"
+                  size="small"
+                  :loading="replaceBusyIds.includes(b.id)"
+                  title="上传替换关键帧（png/jpg/webp，≤10MB）"
+                >
+                  <el-icon v-if="!replaceBusyIds.includes(b.id)"><UploadIcon /></el-icon>
+                  替换
+                </el-button>
+              </el-upload>
+            </div>
           </el-card>
         </div>
       </template>
 
       <!-- ============ 视频 Tab ============ -->
       <template v-else-if="activeTab === 'videos'">
+        <!-- P-12 视频参数配置区（随每次「生成视频片段」提交携带） -->
+        <el-card shadow="never" class="video-config-card">
+          <div class="video-config">
+            <span class="vc-label">分辨率</span>
+            <el-select v-model="videoConfig.resolution" size="small" style="width: 96px">
+              <el-option label="480p" value="480p" />
+              <el-option label="720p" value="720p" />
+              <el-option label="1080p" value="1080p" />
+            </el-select>
+            <span class="vc-label">帧率</span>
+            <el-select v-model="videoConfig.fps" size="small" style="width: 76px">
+              <el-option label="24" :value="24" />
+              <el-option label="30" :value="30" />
+            </el-select>
+            <span class="vc-label">运动幅度</span>
+            <el-select v-model="videoConfig.motion_strength" size="small" style="width: 88px">
+              <el-option label="低" value="low" />
+              <el-option label="中" value="medium" />
+              <el-option label="高" value="high" />
+            </el-select>
+            <span class="vc-tip">以上参数随每次「生成视频片段」提交生效</span>
+          </div>
+        </el-card>
         <div class="video-rows">
           <el-card v-for="b in boards" :key="b.id" shadow="never" class="video-row">
             <div class="video-row-body">
@@ -725,6 +983,30 @@ onBeforeUnmount(() => {
               <div class="video-side">
                 <div class="video-title">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
                 <div class="video-desc">{{ b.visual_description || '（无画面描述）' }}</div>
+                <!-- P-03/P-08 尾帧控制：仅尾帧已生成的分镜可开启 -->
+                <div class="endframe-line">
+                  <el-switch
+                    v-model="useEndFrameMap[b.id]"
+                    size="small"
+                    :disabled="!b.end_frame_url"
+                  />
+                  <span class="endframe-label">使用尾帧</span>
+                  <el-tag v-if="b.end_frame_url" size="small" type="success" effect="plain">
+                    尾帧就绪
+                  </el-tag>
+                  <el-button
+                    v-else
+                    size="small"
+                    text
+                    type="primary"
+                    :loading="endFrameBusyIds.includes(b.id)"
+                    :disabled="!b.keyframe_url"
+                    title="先生成关键帧，再生成尾帧"
+                    @click="genEndFrame(b)"
+                  >
+                    先生成尾帧
+                  </el-button>
+                </div>
                 <el-button
                   type="primary"
                   plain
@@ -910,15 +1192,25 @@ onBeforeUnmount(() => {
                   <el-option label="居中" value="middle" />
                   <el-option label="顶部" value="top" />
                 </el-select>
+                <!-- P-16 双语字幕开关：原文在上 + 英文译文在下 -->
+                <el-checkbox
+                  v-model="subtitleStyle.bilingual"
+                  size="small"
+                  style="margin-left: 12px"
+                >
+                  双语字幕（中英）
+                </el-checkbox>
               </template>
             </el-form-item>
             <el-form-item label="转场">
               <el-switch v-model="transitionEnabled" />
               <template v-if="transitionEnabled">
+                <!-- P-17：转场类型对齐后端 xfade 白名单（非法值后端回退 fade） -->
                 <el-select v-model="transitionType" size="small" style="width: 130px; margin-left: 8px">
                   <el-option label="淡入淡出" value="fade" />
-                  <el-option label="擦除" value="wipeleft" />
-                  <el-option label="滑动" value="slideleft" />
+                  <el-option label="叠化" value="dissolve" />
+                  <el-option label="闪黑" value="fadeblack" />
+                  <el-option label="闪白" value="fadewhite" />
                 </el-select>
                 <span class="mix-inline-label">时长 {{ transitionDuration.toFixed(1) }}s</span>
                 <el-slider
@@ -959,6 +1251,10 @@ onBeforeUnmount(() => {
             <el-tag size="small" effect="plain">{{ taskTypeLabel[t.type] ?? t.type }}</el-tag>
             <el-tag size="small" :type="taskStatusType[t.status] ?? 'info'">
               {{ { queued: '排队中', running: '生成中', done: '已完成', failed: '失败', canceled: '已取消' }[t.status] ?? t.status }}
+            </el-tag>
+            <!-- D3 演示占位角标：mock 兜底渠道产物（已计费豁免） -->
+            <el-tag v-if="t.placeholder" size="small" type="warning" effect="light">
+              演示占位
             </el-tag>
             <span v-if="t.storyboard_id" class="task-sb">镜 #{{ t.storyboard_id }}</span>
             <div class="task-ops">
@@ -1038,6 +1334,11 @@ onBeforeUnmount(() => {
 .kf-card :deep(.el-card__body) {
   padding: 0;
 }
+/* R-03 重生成直连：发布页跳入时目标分镜卡片高亮边框 */
+.kf-card--target {
+  border: 2px solid var(--mf-brand);
+  box-shadow: 0 0 0 3px rgba(64, 158, 255, 0.18);
+}
 .kf-img-wrap {
   position: relative;
   height: 220px;
@@ -1064,6 +1365,48 @@ onBeforeUnmount(() => {
 }
 .kf-caption {
   padding: var(--mf-sp-2) var(--mf-sp-3);
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+/* P-06 上传替换入口（关键帧卡片下方，右对齐） */
+.kf-replace {
+  margin-left: auto;
+  display: inline-flex;
+}
+/* D3 演示占位角标通用间距 */
+.ph-tag {
+  flex-shrink: 0;
+}
+/* P-12 视频参数配置区 */
+.video-config-card {
+  margin-bottom: var(--mf-sp-3);
+}
+.video-config {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+  flex-wrap: wrap;
+}
+.vc-label {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+}
+.vc-tip {
+  margin-left: auto;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
+/* P-03/P-08 尾帧控制行（视频行操作区） */
+.endframe-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: var(--mf-sp-2);
+}
+.endframe-label {
   color: var(--mf-text-2);
   font-size: var(--mf-fs-sm);
 }

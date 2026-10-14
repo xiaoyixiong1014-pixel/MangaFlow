@@ -14,6 +14,7 @@
 import client from './client'
 import { ssePost } from './sse'
 import { downloadBlob, filenameFromDisposition } from '@/utils/download'
+import { ElMessage } from 'element-plus'
 import type {
   AssetsGroup,
   AssetVariant,
@@ -44,10 +45,13 @@ import type {
 /**
  * 获取剧本（当前内容与原始输入）。
  * @param projectId 项目 ID
+ * @param episodeId 可选剧集 ID（S-06；缺省=默认剧本行，不传 episode_id）
  * @returns 剧本输出
  */
-export function getInput(projectId: number): Promise<ScriptOut> {
-  return client.get(`/projects/${projectId}/script`).then((r) => r.data)
+export function getInput(projectId: number, episodeId?: number): Promise<ScriptOut> {
+  return client
+    .get(`/projects/${projectId}/script`, { params: episodeId ? { episode_id: episodeId } : undefined })
+    .then((r) => r.data)
 }
 
 /**
@@ -67,14 +71,17 @@ export function saveInput(projectId: number, payload: ScriptInputPayload): Promi
  * @param body 生成参数（模式/原文等，透传后端）
  * @param onEvent 每个事件帧回调
  * @param signal 中止信号（用户停止生成）
+ * @param episodeId 可选剧集 ID（S-06；缺省=默认剧本行）
  */
 export async function generateStream(
   projectId: number,
   body: Record<string, unknown>,
   onEvent: (event: string, data: unknown) => void,
   signal?: AbortSignal,
+  episodeId?: number,
 ): Promise<void> {
-  await ssePost(`/api/projects/${projectId}/script/generate/stream`, body, onEvent, signal)
+  const query = episodeId ? `?episode_id=${episodeId}` : ''
+  await ssePost(`/api/projects/${projectId}/script/generate/stream${query}`, body, onEvent, signal)
 }
 
 /**
@@ -121,6 +128,38 @@ export function confirmExtract(
   return client.post(`/projects/${projectId}/script/extract/confirm`, payload).then((r) => r.data)
 }
 
+/**
+ * 剧本一键同步 Agent 会话（S-08，后端幂等：同剧本版本返回既有会话）。
+ * @param projectId 项目 ID
+ * @param payload 可选参数（thread_id 复用既有会话；episode_id 按剧集同步）
+ * @returns 会话 ID 与是否命中幂等
+ * @throws 400 剧本内容为空；404 项目/剧本/会话不存在
+ */
+export function sendScriptToAgent(
+  projectId: number,
+  payload?: { thread_id?: string; episode_id?: number },
+): Promise<{ thread_id: string; duplicated: boolean }> {
+  return client
+    .post(`/projects/${projectId}/script/send-to-agent`, payload ?? {})
+    .then((r) => r.data)
+}
+
+/**
+ * 剧本一键投递画布（S-08，后端幂等：同剧本版本返回既有节点）。
+ * @param projectId 项目 ID
+ * @param payload 可选参数（canvas_id 指定目标画布；episode_id 按剧集投递）
+ * @returns 画布 ID、text 节点 ID 与是否命中幂等
+ * @throws 400 剧本内容为空；404 项目/剧本/画布不存在
+ */
+export function sendScriptToCanvas(
+  projectId: number,
+  payload?: { canvas_id?: number; episode_id?: number },
+): Promise<{ canvas_id: number; node_id: number; duplicated: boolean }> {
+  return client
+    .post(`/projects/${projectId}/script/send-to-canvas`, payload ?? {})
+    .then((r) => r.data)
+}
+
 // ============================================================
 // assets 资产
 // ============================================================
@@ -128,10 +167,73 @@ export function confirmExtract(
 /**
  * 查询项目四类资产聚合。
  * @param projectId 项目 ID
+ * @param params 可选查询参数（tag：按标签过滤，A-05）
  * @returns 角色/场景/道具/风格列表
  */
-export function listAssets(projectId: number): Promise<AssetsGroup> {
-  return client.get(`/projects/${projectId}/assets`).then((r) => r.data)
+export function listAssets(projectId: number, params?: { tag?: string }): Promise<AssetsGroup> {
+  return client
+    .get(`/projects/${projectId}/assets`, { params })
+    .then((r) => r.data)
+}
+
+/** 资产列表的类别键（对应批量删除路由 asset_type 复数形式） */
+export type AssetKind = 'characters' | 'scenes' | 'props' | 'styles'
+
+/** 指定类别列表响应（GET /projects/{id}/assets?type=x） */
+export interface AssetTypePage<T> {
+  /** 当前页资产列表 */
+  items: T[]
+  /** 总数 */
+  total: number
+  /** 页码 */
+  page: number
+  /** 每页条数 */
+  page_size: number
+}
+
+/** AssetKind → 后端 type 查询参数（单数形式）的映射 */
+const KIND_TO_TYPE: Record<AssetKind, string> = {
+  characters: 'character',
+  scenes: 'scene',
+  props: 'prop',
+  styles: 'style',
+}
+
+/**
+ * 按类别查询资产分页列表（A-05 标签过滤数据源：后端 ?tag= JSONB 包含匹配）。
+ * @param projectId 项目 ID
+ * @param kind 资产类别（characters/scenes/props/styles）
+ * @param tag 可选标签过滤
+ * @returns 分页列表响应
+ */
+export function listAssetsByType(
+  projectId: number,
+  kind: AssetKind,
+  tag?: string,
+): Promise<AssetTypePage<CharacterAsset | SceneAsset | PropAsset | StyleAsset>> {
+  return client
+    .get(`/projects/${projectId}/assets`, {
+      params: { type: KIND_TO_TYPE[kind], tag: tag || undefined, page_size: 200 },
+    })
+    .then((r) => r.data)
+}
+
+/**
+ * 批量软删除资产（A-05）：逐条复用单删语义，未命中的 ID 进入 skipped。
+ * @param projectId 项目 ID
+ * @param kind 资产类别（characters/scenes/props/styles）
+ * @param ids 待删除资产 ID 列表（1~100 个）
+ * @returns { deleted, skipped: [{id, reason}] }
+ * @throws 400 asset_type 非法或 ids 数量越界；404 项目不存在/非本人
+ */
+export function batchDeleteAssets(
+  projectId: number,
+  kind: AssetKind,
+  ids: number[],
+): Promise<{ deleted: number; skipped: Array<{ id: number; reason: string }> }> {
+  return client
+    .post(`/projects/${projectId}/assets/${kind}/batch-delete`, { ids })
+    .then((r) => r.data)
 }
 
 /**
@@ -221,6 +323,58 @@ export function overviewCharacters(): Promise<CrossProjectAsset[]> {
   return client.get('/characters').then((r) => r.data)
 }
 
+/** 跨项目资产总览查询参数 */
+export interface CrossProjectAssetQuery {
+  /** 名称/描述模糊搜索关键字 */
+  search?: string
+  /** 页码（从 1 开始） */
+  page?: number
+  /** 每页条数 */
+  page_size?: number
+}
+
+/** 跨项目资产总览分页响应（GET /characters 实际返回结构） */
+export interface CrossProjectAssetPage {
+  /** 当前页行列表 */
+  items: CrossProjectAsset[]
+  /** 总数 */
+  total: number
+  /** 页码 */
+  page: number
+  /** 每页条数 */
+  page_size: number
+}
+
+/**
+ * 跨项目资产总览（分页 + 搜索，S-06「复用资产」对话框数据源）。
+ * @param params 搜索/分页参数
+ * @returns 分页总览响应
+ */
+export function crossProjectAssets(
+  params?: CrossProjectAssetQuery,
+): Promise<CrossProjectAssetPage> {
+  return client.get('/characters', { params }).then((r) => r.data)
+}
+
+/**
+ * 复用资产：把其他项目的资产复制到当前项目（S-06）。
+ * 副本名称追加" (副本)"；角色生成状态重置为 pending、变体不继承；
+ * 风格副本不抢占默认。
+ * @param projectId 目标项目 ID
+ * @param assetType 资产类型 character/scene/prop/style
+ * @param assetId 源资产 ID
+ * @returns 新建资产（结构随类型为 CharacterOut/SceneOut/PropOut/StyleOut）
+ */
+export function copyAsset(
+  projectId: number,
+  assetType: 'character' | 'scene' | 'prop' | 'style',
+  assetId: number,
+): Promise<Record<string, unknown>> {
+  return client
+    .post(`/projects/${projectId}/assets/${assetType}/${assetId}/copy`)
+    .then((r) => r.data)
+}
+
 // ============================================================
 // storyboard 分镜
 // ============================================================
@@ -239,12 +393,17 @@ export function decompose(
 }
 
 /**
- * 查询项目全部分镜（按 sequence 升序）。
+ * 查询分镜列表（按 sequence 升序）。
  * @param projectId 项目 ID
+ * @param episodeId 可选剧集 ID（S-06；缺省=全部，向后兼容）
  * @returns 分镜列表
  */
-export function listStoryboard(projectId: number): Promise<Storyboard[]> {
-  return client.get(`/projects/${projectId}/storyboards`).then((r) => r.data)
+export function listStoryboard(projectId: number, episodeId?: number): Promise<Storyboard[]> {
+  return client
+    .get(`/projects/${projectId}/storyboards`, {
+      params: episodeId ? { episode_id: episodeId } : undefined,
+    })
+    .then((r) => r.data)
 }
 
 /**
@@ -348,19 +507,24 @@ export function deliverToCanvas(
 }
 
 /**
- * 导出分镜表（xlsx / csv，Task 10.4）。
- * episode_id=0 为「项目全部分镜」全量导出（普通创作流分镜不绑剧集）。
+ * 导出分镜表（xlsx / csv / pdf，Task 10.4 + SB-08）。
+ * episodeId 传真实剧集 ID 时按该剧集导出（S-06 剧集切换器）；缺省/0 为
+ * 「项目全部分镜」全量导出（普通创作流分镜不绑剧集，向后兼容）。
+ * pdf 由后端 fpdf2 生成（A4 横向表格）；字体缺失时后端自动降级英文兜底版
+ * 并在响应头 X-PDF-Font-Fallback 标记，前端仅提示不改下载行为。
  * @param projectId 项目 ID
- * @param format 导出格式：xlsx 或 csv
+ * @param format 导出格式：xlsx / csv / pdf
+ * @param episodeId 可选剧集 ID（缺省导出全部分镜）
  * @returns 触发浏览器下载（无返回数据）
- * @throws 404 项目不存在/非本人；422 format 非法
+ * @throws 400 format 非法；404 项目/剧集不存在/非本人
  */
 export async function exportStoryboardSheet(
   projectId: number,
-  format: 'xlsx' | 'csv',
+  format: 'xlsx' | 'csv' | 'pdf',
+  episodeId?: number,
 ): Promise<void> {
   const resp = await client.get(
-    `/projects/${projectId}/storyboards/episodes/0/export`,
+    `/projects/${projectId}/storyboards/episodes/${episodeId ?? 0}/export`,
     { params: { format }, responseType: 'blob' },
   )
   const fallback = `storyboards_all.${format}`
@@ -368,7 +532,95 @@ export async function exportStoryboardSheet(
     resp.headers['content-disposition'] as string | undefined,
     fallback,
   )
+  // SB-08：字体缺失降级提示（不影响下载，仅告知 PDF 内中文以 ? 呈现）
+  if (format === 'pdf' && resp.headers['x-pdf-font-fallback']) {
+    ElMessage.warning('未找到可用中文字体，PDF 已按英文兜底版生成（中文以 ? 占位）')
+  }
   downloadBlob(resp.data as Blob, filename)
+}
+
+// ============================================================
+// 连续性检查（SB-06）/ 目标时长自动调整（SB-07）
+// ============================================================
+
+/** 单条连续性问题（后端 ContinuityItem） */
+export interface ContinuityItem {
+  /** 关联分镜 ID（取问题镜头，供前端定位卡片） */
+  storyboard_id: number | null
+  /** 问题类型：scene_jump / outfit_conflict / prompt_missing */
+  type: string
+  /** 问题描述 */
+  message: string
+  /** 置信级别：info 信息提示 / suspect 疑似冲突 */
+  confidence: 'info' | 'suspect'
+}
+
+/** 连续性检查响应（RD-23 宁可漏报不误报，无问题 items 为空） */
+export interface ContinuityCheckResult {
+  /** 问题列表 */
+  items: ContinuityItem[]
+  /** 检查的相邻镜头对数量 */
+  checked_pairs: number
+}
+
+/** 单镜时长调整前后对比（SB-07） */
+export interface AutoFitShotDiff {
+  /** 分镜 ID */
+  id: number
+  /** 调整前时长（秒） */
+  before: number
+  /** 调整后时长（秒） */
+  after: number
+}
+
+/** 目标时长自动调整响应摘要（SB-07） */
+export interface AutoFitDurationResult {
+  /** 调整前总时长（秒） */
+  before_total: number
+  /** 调整后总时长（秒，受单镜保底 1s 影响 ≈ 目标值） */
+  after_total: number
+  /** 目标总时长（秒） */
+  target_seconds: number
+  /** 实际发生变化的镜头数 */
+  changed: number
+  /** 每镜调整前后对比 */
+  per_shot: AutoFitShotDiff[]
+}
+
+/**
+ * 连续性检查（SB-06）：相邻镜头的场景跳变 / 服装变体冲突 / 提示词缺失。
+ * @param projectId 项目 ID
+ * @param episodeId 可选剧集 ID（缺省检查全部分镜）
+ * @returns 问题列表与检查的相邻镜头对数量
+ * @throws 404 项目/剧集不存在/非本人
+ */
+export function continuityCheck(projectId: number, episodeId?: number): Promise<ContinuityCheckResult> {
+  return client
+    .post(`/projects/${projectId}/storyboards/continuity-check`, {
+      episode_id: episodeId ?? null,
+    })
+    .then((r) => r.data)
+}
+
+/**
+ * 目标时长自动调整（SB-07）：分镜时长等比缩放至目标总时长并落库。
+ * @param projectId 项目 ID
+ * @param targetSeconds 目标总时长（秒，1~3600，越界后端 400）
+ * @param episodeId 可选剧集 ID（缺省调整全部分镜）
+ * @returns 调整摘要（前后对比）
+ * @throws 400 目标越界或无分镜；404 项目/剧集不存在/非本人
+ */
+export function autoFitDuration(
+  projectId: number,
+  targetSeconds: number,
+  episodeId?: number,
+): Promise<AutoFitDurationResult> {
+  return client
+    .post(`/projects/${projectId}/storyboards/auto-fit-duration`, {
+      target_seconds: targetSeconds,
+      episode_id: episodeId ?? null,
+    })
+    .then((r) => r.data)
 }
 
 // ============================================================
@@ -398,13 +650,20 @@ export function generateCharacterPortrait(
  * 更新角色资产（仅传入字段生效；改名时后端校验项目内唯一）。
  * @param projectId 项目 ID
  * @param characterId 角色 ID
- * @param payload 名称/描述/提示词/别名（可空字段不更新）
+ * @param payload 名称/描述/提示词/别名/参考图（可空字段不更新）
  * @returns 更新后的角色
  */
 export function updateCharacter(
   projectId: number,
   characterId: number,
-  payload: { name?: string; description?: string; visual_prompt?: string; aliases?: string[] },
+  payload: {
+    name?: string
+    description?: string
+    visual_prompt?: string
+    aliases?: string[]
+    reference_image_url?: string | null
+    tags?: string[]
+  },
 ): Promise<CharacterAsset> {
   return client
     .put(`/projects/${projectId}/assets/characters/${characterId}`, payload)
@@ -422,7 +681,7 @@ export function deleteCharacter(projectId: number, characterId: number): Promise
 }
 
 /**
- * 更新场景资产（名称/描述/提示词/锁定）。
+ * 更新场景资产（名称/描述/提示词/锁定/参考图）。
  * @param projectId 项目 ID
  * @param sceneId 场景 ID
  * @param payload 更新字段
@@ -431,7 +690,14 @@ export function deleteCharacter(projectId: number, characterId: number): Promise
 export function updateScene(
   projectId: number,
   sceneId: number,
-  payload: { name?: string; description?: string; visual_prompt?: string; is_locked?: boolean },
+  payload: {
+    name?: string
+    description?: string
+    visual_prompt?: string
+    is_locked?: boolean
+    reference_image_url?: string | null
+    tags?: string[]
+  },
 ): Promise<SceneAsset> {
   return client
     .put(`/projects/${projectId}/assets/scenes/${sceneId}`, payload)
@@ -454,6 +720,7 @@ export function updateProp(
     description?: string
     visual_prompt?: string
     is_locked?: boolean
+    tags?: string[]
   },
 ): Promise<PropAsset> {
   return client
@@ -477,6 +744,7 @@ export function updateStyle(
     reference_url?: string
     visual_prompt?: string
     is_default?: boolean
+    tags?: string[]
   },
 ): Promise<StyleAsset> {
   return client

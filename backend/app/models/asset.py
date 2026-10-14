@@ -45,6 +45,9 @@ class Character(Base):
         face_locked: 面部层锁定（RD-12 锁定分层）。
         outfit_variant_id: 当前服饰变体 ID（RD-12，外键 SET NULL）。
         generation_status: 生成状态 pending/generating/done/failed。
+        source: 资产来源 manual/canvas（A-10/CV-24 画布沉淀）。
+        reference_image_url: 参考图 URL（A-04 生成锚点：生成定妆照时透传给图像渠道）。
+        tags: 资产标签数组（A-05 标签搜索）。
         deleted_at: 软删除时间。
     """
 
@@ -74,6 +77,13 @@ class Character(Base):
         comment="当前服饰变体 ID（RD-12）")
     generation_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="pending",
                                                    comment="生成状态：pending/generating/done/failed")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual",
+                                        comment="资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）")
+    # A-04 参考图锚点：用户上传的角色参考图，生成定妆照时作为 image 参考入参透传渠道
+    reference_image_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True, comment="参考图 URL（A-04：生成定妆照时透传图像渠道作参考）")
+    # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
+    tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
 
@@ -89,6 +99,9 @@ class Scene(Base):
         asset_url: 概念图 URL（允许为空场景，RD-19）。
         space_signature: 空间布局签名（空间一致性校验，RD-19，JSONB）。
         is_locked: 锁定状态。
+        source: 资产来源 manual/canvas（A-10/CV-24 画布沉淀）。
+        reference_image_url: 参考图 URL（A-04 生成锚点：生成场景图时透传给图像渠道）。
+        tags: 资产标签数组（A-05 标签搜索）。
         deleted_at: 软删除时间。
     """
 
@@ -107,6 +120,13 @@ class Scene(Base):
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="概念图 URL（空场景允许为空）")
     space_signature: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="空间布局签名（RD-19）")
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", comment="锁定状态")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual",
+                                        comment="资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）")
+    # A-04 参考图锚点：用户上传的场景参考图，生成场景概念图时作为 image 参考入参透传渠道
+    reference_image_url: Mapped[Optional[str]] = mapped_column(
+        String(500), nullable=True, comment="参考图 URL（A-04：生成场景图时透传图像渠道作参考）")
+    # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
+    tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
 
@@ -123,6 +143,8 @@ class Prop(Base):
         asset_url: 标准图 URL。
         ownership: 归属关系（持有者/出现场次/换手记录，RD-18，JSONB）。
         is_locked: 锁定状态。
+        source: 资产来源 manual/canvas（A-10/CV-24 画布沉淀）。
+        tags: 资产标签数组（A-05 标签搜索）。
         deleted_at: 软删除时间。
     """
 
@@ -142,6 +164,10 @@ class Prop(Base):
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="标准图 URL")
     ownership: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="归属关系（RD-18）")
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", comment="锁定状态")
+    source: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual",
+                                        comment="资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）")
+    # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
+    tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
 
@@ -156,6 +182,7 @@ class Style(Base):
         reference_url: 参考图 URL。
         visual_prompt: 风格提示词（全局锚点）。
         is_default: 是否项目默认风格（部分唯一索引 uk_styles_default）。
+        tags: 资产标签数组（A-05 标签搜索）。
     """
 
     __tablename__ = "styles"
@@ -173,6 +200,8 @@ class Style(Base):
     visual_prompt: Mapped[str] = mapped_column(Text, nullable=False, comment="风格提示词（全局锚点）")
     is_default: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false",
                                              comment="是否项目默认风格")
+    # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
+    tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
 
 
 class AssetVariant(Base):

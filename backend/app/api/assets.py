@@ -12,6 +12,7 @@
 - POST   /api/projects/{project_id}/assets/characters/{id}/variants   角色变体（RD-14）
 - GET    /api/projects/{project_id}/assets/characters/{id}/variants   变体列表
 - ...    /assets/scenes|props|styles 同构（scenes 变体为 lighting，RD-19）
+- POST   /api/projects/{project_id}/assets/{asset_type}/batch-delete  批量软删除（A-05，复数类型路由）
 - POST   /api/projects/{project_id}/assets/consistency-check    一致性校验（embedding 余弦真实算法）
 - GET    /api/assets/search                                     资产语义搜索（跨自己项目 TopK）
 
@@ -30,6 +31,7 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models import Character, Project, Prop, Scene, Style, User
 from app.schemas.asset import (
+    AssetBatchDeleteRequest,
     AssetSearchItem,
     AssetSearchOut,
     AssetsGroupOut,
@@ -75,6 +77,11 @@ router = APIRouter(tags=["assets"])
 # GET /assets 支持的 type 过滤取值
 _ASSET_TYPES = ("character", "scene", "prop", "style")
 
+# A-05 批量删除路由的资产类型取值（复数形式，与单删路由 /assets/characters/{id} 同风格）
+_BATCH_ASSET_TYPES = ("characters", "scenes", "props", "styles")
+# 批量删除：单次允许的 ID 数量上下限
+_BATCH_IDS_MIN, _BATCH_IDS_MAX = 1, 100
+
 
 @router.get("/api/characters", response_model=None)
 async def list_cross_project_characters(
@@ -115,6 +122,8 @@ async def list_cross_project_characters(
 async def list_assets(
     project_id: int,
     type: Optional[str] = Query(default=None, alias="type"),
+    tag: Optional[str] = Query(default=None, max_length=20,
+                               description="按标签过滤（A-05：JSONB 数组包含匹配 @>）"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1),
     user: User = Depends(get_current_user),
@@ -125,6 +134,7 @@ async def list_assets(
     Args:
         project_id: 项目 ID。
         type: 资产类型 character/scene/prop/style（可空）。
+        tag: 标签过滤（A-05，可空；命中条件为 tags JSONB 数组包含该标签）。
         page: 页码（仅指定 type 时生效）。
         page_size: 每页条数（仅指定 type 时生效）。
         user: 当前用户。
@@ -141,29 +151,39 @@ async def list_assets(
     page, page_size = normalize_pagination(page, page_size)
 
     if type is None:
-        # 四类资产聚合返回（各自全量，软删行除外）
+        # 四类资产聚合返回（各自全量，软删行除外；tag 过滤对四类同时生效）
+        tag_conds = {"characters": Character.tags.contains([tag]),
+                     "scenes": Scene.tags.contains([tag]),
+                     "props": Prop.tags.contains([tag]),
+                     "styles": Style.tags.contains([tag])} if tag else {}
         chars = (
             await db.execute(
                 select(Character)
-                .where(Character.project_id == project.id, Character.deleted_at.is_(None))
+                .where(Character.project_id == project.id, Character.deleted_at.is_(None),
+                       *([tag_conds["characters"]] if tag_conds else []))
                 .order_by(Character.id.asc())
             )
         ).scalars().all()
         scenes = (
             await db.execute(
-                select(Scene).where(Scene.project_id == project.id).order_by(Scene.id.asc())
+                select(Scene).where(Scene.project_id == project.id,
+                                    *([tag_conds["scenes"]] if tag_conds else []))
+                .order_by(Scene.id.asc())
             )
         ).scalars().all()
         props = (
             await db.execute(
                 select(Prop)
-                .where(Prop.project_id == project.id, Prop.deleted_at.is_(None))
+                .where(Prop.project_id == project.id, Prop.deleted_at.is_(None),
+                       *([tag_conds["props"]] if tag_conds else []))
                 .order_by(Prop.id.asc())
             )
         ).scalars().all()
         styles = (
             await db.execute(
-                select(Style).where(Style.project_id == project.id).order_by(Style.id.asc())
+                select(Style).where(Style.project_id == project.id,
+                                    *([tag_conds["styles"]] if tag_conds else []))
+                .order_by(Style.id.asc())
             )
         ).scalars().all()
         group = AssetsGroupOut(
@@ -182,6 +202,9 @@ async def list_assets(
     conds = [cls.project_id == project.id]
     if type != "style":
         conds.append(cls.deleted_at.is_(None))  # style 无软删字段
+    if tag:
+        # A-05 标签包含匹配：JSONB @>（等价 tags @> '["tag"]'::jsonb）
+        conds.append(cls.tags.contains([tag]))
     total = (
         await db.execute(select(func.count()).select_from(cls).where(*conds))
     ).scalar_one_or_none() or 0
@@ -281,6 +304,12 @@ async def update_character(
         character.visual_prompt = req.visual_prompt
     if req.aliases is not None:
         character.aliases = req.aliases
+    if req.reference_image_url is not None:
+        # A-04 参考图锚点：上传替换后回写，生成定妆照时透传图像渠道
+        character.reference_image_url = req.reference_image_url
+    if req.tags is not None:
+        # A-05 标签：数组整体替换（Pydantic 已校验/去重/规范化）
+        character.tags = req.tags
     await db.commit()
     await db.refresh(character)
     # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新资产向量（幂等 upsert）
@@ -538,6 +567,12 @@ async def update_scene(
         scene.visual_prompt = req.visual_prompt
     if req.is_locked is not None:
         scene.is_locked = req.is_locked
+    if req.reference_image_url is not None:
+        # A-04 参考图锚点：上传替换后回写，生成场景图时透传图像渠道
+        scene.reference_image_url = req.reference_image_url
+    if req.tags is not None:
+        # A-05 标签：数组整体替换（Pydantic 已校验/去重/规范化）
+        scene.tags = req.tags
     await db.commit()
     await db.refresh(scene)
     # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新场景向量
@@ -707,6 +742,9 @@ async def update_prop(
             setattr(prop, field, value.strip() if field == "name" else value)
     if req.is_locked is not None:
         prop.is_locked = req.is_locked
+    if req.tags is not None:
+        # A-05 标签：数组整体替换（Pydantic 已校验/去重/规范化）
+        prop.tags = req.tags
     await db.commit()
     await db.refresh(prop)
     # 向量化接线（Task 6.1）：visual_prompt/description 变更后刷新道具向量
@@ -887,6 +925,9 @@ async def update_style(
         await set_default_style(db, project.id, style)
     elif req.is_default is False:
         style.is_default = False
+    if req.tags is not None:
+        # A-05 标签：数组整体替换（Pydantic 已校验/去重/规范化）
+        style.tags = req.tags
     await db.commit()
     await db.refresh(style)
     # 向量化接线（Task 6.1）：visual_prompt 变更后刷新风格向量
@@ -895,6 +936,75 @@ async def update_style(
         " ".join(x for x in (style.name, style.visual_prompt) if x),
     )
     return StyleOut.model_validate(style)
+
+
+# ---------------------------------------------------------------------------
+# 资产批量删除（A-05）
+# ---------------------------------------------------------------------------
+
+@router.post("/api/projects/{project_id}/assets/{asset_type}/batch-delete")
+async def batch_delete_assets(
+    project_id: int,
+    asset_type: str,
+    req: AssetBatchDeleteRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """批量软删除资产（A-05），逐条复用单删语义。
+
+    与单条删除行为完全一致（单删无引用保护，仅置 deleted_at=now）：
+    - 命中（属于当前项目且未软删）→ 软删除计入 deleted；
+    - 未命中（不存在/不属于当前项目/已软删）→ 不中断整体操作，计入
+      skipped 并给出原因（等价于单删的 404 场景）。
+    例外：styles 无软删字段（也不存在单删端点），命中时按物理删除处理
+    （styles 表无外键引用，删除安全）。
+
+    Args:
+        project_id: 项目 ID。
+        asset_type: 资产类型 characters/scenes/props/styles（复数，与单删路由同风格）。
+        req: 批量删除请求（ids 去重后 1~100 个，越界 400）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"deleted": 成功删除条数, "skipped": [{"id", "reason"}]}。
+
+    Raises:
+        HTTPException: 400 —— asset_type 非法或 ids 数量为 0/超 100；
+            404 —— 项目不存在/非本人项目。
+    """
+    if asset_type not in _BATCH_ASSET_TYPES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="asset_type 仅支持 characters/scenes/props/styles")
+    # 去重保序后校验数量（1~100，越界 400；空列表按需求返回 400 而非 422）
+    ids = list(dict.fromkeys(req.ids))
+    if len(ids) < _BATCH_IDS_MIN or len(ids) > _BATCH_IDS_MAX:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="ids 数量须在 1~100 之间")
+
+    project = await get_owned_project(db, project_id, user.id)
+    cls = {"characters": Character, "scenes": Scene, "props": Prop, "styles": Style}[asset_type]
+    has_soft_delete = asset_type != "styles"  # style 无软删字段 → 物理删除
+
+    deleted = 0
+    skipped: list = []
+    now = datetime.now(timezone.utc)
+    for asset_id in ids:
+        conds = [cls.id == asset_id, cls.project_id == project.id]
+        if has_soft_delete:
+            conds.append(cls.deleted_at.is_(None))  # 已软删行视为未命中（单删此时 404）
+        row = (await db.execute(select(cls).where(*conds))).scalar_one_or_none()
+        if row is None:
+            skipped.append({"id": asset_id,
+                            "reason": "资产不存在、不属于当前项目或已删除"})
+            continue
+        if has_soft_delete:
+            row.deleted_at = now  # 与单删一致：仅置 deleted_at，不做引用保护
+        else:
+            await db.delete(row)  # style：无软删列，物理删除
+        deleted += 1
+    await db.commit()
+    return {"deleted": deleted, "skipped": skipped}
 
 
 # ---------------------------------------------------------------------------
@@ -966,3 +1076,104 @@ async def search_assets_semantic(
     rows = await semantic_search_assets(db, user.id, q, type, limit)
     items = [AssetSearchItem.model_validate(r) for r in rows]
     return AssetSearchOut(items=items, total=len(items))
+
+
+# ---------------------------------------------------------------------------
+# 跨项目资产复用（S-06：选中他人/自己项目的资产复制到当前项目）
+# ---------------------------------------------------------------------------
+
+@router.post("/api/projects/{project_id}/assets/{asset_type}/{asset_id}/copy")
+async def copy_asset_to_project(
+    project_id: int,
+    asset_type: str,
+    asset_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """把一个已有资产复制到当前项目（S-06「复用资产」）。
+
+    规则：
+    - 源资产须属于当前用户自己的未删除项目（跨用户复制一律 404）；
+    - 复制为新行（新 ID），名称追加 " (副本)"，项目内同名 409；
+    - 角色 generation_status 重置为 pending（未生成态）、outfit_variant_id
+      清空（变体归属源项目）；asset_url 保留以复用已有形象图；
+    - 风格副本 is_default=False。
+
+    Args:
+        project_id: 目标项目 ID。
+        asset_type: 资产类型 character/scene/prop/style。
+        asset_id: 源资产 ID。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: 新建资产的输出（对应 CharacterOut/SceneOut/PropOut/StyleOut 结构）。
+
+    Raises:
+        HTTPException: 400 —— asset_type 非法；404 —— 目标项目/源资产不存在
+            或源资产不属于当前用户；409 —— 目标项目存在同名资产。
+    """
+    out_map = {
+        "character": (Character, CharacterOut),
+        "scene": (Scene, SceneOut),
+        "prop": (Prop, PropOut),
+        "style": (Style, StyleOut),
+    }
+    if asset_type not in out_map:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type 仅支持 character/scene/prop/style")
+    src_cls, out_cls = out_map[asset_type]
+
+    project = await get_owned_project(db, project_id, user.id)
+
+    # 源资产归属链校验：资产 → 源项目 → 当前用户（任一失败统一 404）
+    src = await db.get(src_cls, asset_id)
+    if src is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="源资产不存在")
+    src_project = await db.get(Project, src.project_id)
+    if src_project is None or src_project.user_id != user.id or src_project.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="源资产不存在")
+
+    new_name = f"{src.name} (副本)"
+    if asset_type == "style":
+        # style 无 deleted_at 字段，ensure_unique_name 不覆盖，手动查重
+        existed = await db.scalar(
+            select(func.count()).select_from(Style).where(
+                Style.project_id == project.id, Style.name == new_name)
+        )
+        if existed:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同名 style 资产已存在")
+    else:
+        await ensure_unique_name(db, project.id, asset_type, new_name)
+
+    # 四类资产共有列：project_id / name / description / visual_prompt
+    # （asset_url 仅 character/scene/prop 有，style 为 reference_url，分支内赋值）
+    dup = src_cls(
+        project_id=project.id,
+        name=new_name,
+        description=src.description,
+        visual_prompt=src.visual_prompt,
+    )
+    if asset_type == "character":
+        dup.aliases = src.aliases
+        dup.face_locked = src.face_locked
+        dup.feature_vector = getattr(src, "feature_vector", None)
+        dup.asset_url = src.asset_url
+        dup.generation_status = "pending"  # 生成状态置回未生成
+        dup.outfit_variant_id = None  # 变体归属源项目，副本不继承
+    elif asset_type == "scene":
+        dup.asset_url = src.asset_url
+        dup.space_signature = getattr(src, "space_signature", None)
+        dup.is_locked = False
+    elif asset_type == "prop":
+        dup.asset_url = src.asset_url
+        dup.category = src.category
+        dup.ownership = src.ownership
+        dup.is_locked = False
+    else:  # style
+        dup.preset_code = src.preset_code
+        dup.reference_url = src.reference_url
+        dup.is_default = False  # 副本不抢占默认风格
+    db.add(dup)
+    await db.commit()
+    await db.refresh(dup)
+    return out_cls.model_validate(dup).model_dump()

@@ -14,6 +14,9 @@
   task_status=SUCCEEDED 后取 output.video_url 下载落盘；
 - 首帧来源：本地关键帧文件（storage/generated/keyframe_*.png）读取后转
   base64 data URI；官方图片限制 JPEG/PNG/BMP/WEBP、宽高 [240,8000]、≤20MB。
+- P-12/P-08 扩展：video_params.resolution 映射 parameters.resolution；
+  fps 透传 parameters.fps（渠道约定待验证）；尾帧以 input.media 追加
+  {type: "last_frame", url} 条目传入（渠道约定待验证）。
 
 任何失败返回 None（不抛出），由调用方（tasks/runner.py）降级到下一渠道。
 channel 为 model_router.ResolvedChannel（protocol="dashscope"，base_url 为
@@ -56,6 +59,8 @@ async def generate_video_wan(
     seed: int,
     channel: ResolvedChannel,
     first_frame_path: Optional[Path] = None,
+    video_params: Optional[Dict] = None,
+    end_frame_path: Optional[Path] = None,
 ) -> Optional[Dict]:
     """调用百炼 wan2.7-i2v 渠道以首帧图驱动生成一段竖版视频片段。
 
@@ -67,6 +72,11 @@ async def generate_video_wan(
         channel: 已解析的候选渠道（protocol="dashscope"，base_url 为实例根域名）。
         first_frame_path: 首帧图片本地路径（关键帧 PNG）；缺失或读取失败时
             返回 None（wan2.7-i2v 必须有首帧，无法文生视频）。
+        video_params: 视频参数（P-12，可空）：resolution 映射 parameters.resolution
+            （大写档位）；fps 透传 parameters.fps（渠道约定待验证）；
+            motion_strength 无 wan 对应字段，不透传（仅在任务 meta 溯源）。
+        end_frame_path: 尾帧图片本地路径（P-08，可空）；传入时以 input.media
+            追加 {type: "last_frame", url} 条目实现首尾帧控制（渠道约定待验证）。
 
     Returns:
         Optional[Dict]: 成功返回
@@ -88,6 +98,18 @@ async def generate_video_wan(
             return None
         data_uri = f"data:{_FIRST_FRAME_MIME};base64,{base64.b64encode(img_bytes).decode()}"
 
+        # media 条目：首帧必带；尾帧（P-08）有本地文件时追加 last_frame 条目
+        media_items: list = [{"type": "first_frame", "url": data_uri}]
+        if end_frame_path and end_frame_path.is_file():
+            end_bytes = end_frame_path.read_bytes()
+            if end_bytes:
+                end_uri = f"data:{_FIRST_FRAME_MIME};base64,{base64.b64encode(end_bytes).decode()}"
+                # P-08 首尾帧控制：last_frame 条目字段名（渠道约定待验证）
+                media_items.append({"type": "last_frame", "url": end_uri})
+            else:
+                logger.warning("渠道 %s 尾帧图片为空，忽略尾帧控制：%s",
+                               channel.name, end_frame_path)
+
         root = channel.base_url.rstrip("/")
         # 创建与轮询请求头分离：X-DashScope-Async 仅用于创建（轮询 GET 携带会 403）
         headers = {
@@ -96,19 +118,29 @@ async def generate_video_wan(
             "X-DashScope-Async": "enable",
         }
         poll_headers = {"Authorization": f"Bearer {channel.api_key}"}
+        # parameters：分辨率档位可由 video_params 覆盖（大写映射），其余保持官方契约
+        params_block: Dict = {
+            "resolution": _RESOLUTION,
+            "duration": min(max(int(duration_sec or 5), _DURATION_MIN), _DURATION_MAX),
+            # 分镜提示词已含完整画面/运镜描述，关闭重写降低时延
+            "prompt_extend": False,
+            "watermark": False,
+        }
+        if video_params:
+            resolution = str(video_params.get("resolution") or "").upper()
+            if resolution:
+                params_block["resolution"] = resolution
+            fps = video_params.get("fps")
+            if fps:
+                # P-12 帧率透传：parameters.fps（渠道约定待验证）
+                params_block["fps"] = int(fps)
         payload: Dict = {
             "model": channel.model,
             "input": {
                 "prompt": prompt,
-                "media": [{"type": "first_frame", "url": data_uri}],
+                "media": media_items,
             },
-            "parameters": {
-                "resolution": _RESOLUTION,
-                "duration": min(max(int(duration_sec or 5), _DURATION_MIN), _DURATION_MAX),
-                # 分镜提示词已含完整画面/运镜描述，关闭重写降低时延
-                "prompt_extend": False,
-                "watermark": False,
-            },
+            "parameters": params_block,
         }
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:

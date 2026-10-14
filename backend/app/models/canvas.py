@@ -79,6 +79,7 @@ class CanvasNode(Base):
         is_dirty: 脏节点标记（RD-45 DAG 增量）。
         cache_ref: 缓存结果引用（RD-45）。
         loop_config: 逻辑节点循环语义（RD-48，JSONB）。
+        meta: 节点扩展元数据（A-10/CV-24 画布沉淀：sinked_asset_type/sinked_asset_id，JSONB）。
         status: 节点状态 idle/queued/running/done/failed。
         parent_group_id: 分组父节点 ID（自引用外键 SET NULL）。
     """
@@ -113,6 +114,10 @@ class CanvasNode(Base):
                                            comment="脏节点标记（RD-45）")
     cache_ref: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="缓存结果引用（RD-45）")
     loop_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="逻辑节点循环语义（RD-48）")
+    # A-10/CV-24 画布沉淀幂等元数据：记录该节点已沉淀的资产类型与 ID
+    meta: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True,
+        comment="节点扩展元数据（A-10/CV-24 沉淀：sinked_asset_type/sinked_asset_id）")
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="idle", comment="节点状态")
     # 自引用外键：分组父节点，分组节点删除时子节点脱离分组
     parent_group_id: Mapped[Optional[int]] = mapped_column(

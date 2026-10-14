@@ -50,6 +50,7 @@ from app.schemas.common import PageResult
 from app.schemas.project import (
     PROJECT_STATUSES,
     FIDELITY_VALUES,
+    EpisodeSummaryOut,
     ProjectCreateRequest,
     ProjectDetailOut,
     ProjectOut,
@@ -61,8 +62,12 @@ from app.services import normalize_pagination
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
-# 列表排序字段白名单
-_SORT_COLUMNS = {"updated_at": Project.updated_at, "created_at": Project.created_at}
+# 列表排序字段白名单（D-06：recent 为 updated_at 的语义别名，默认排序即最近编辑倒序）
+_SORT_COLUMNS = {
+    "updated_at": Project.updated_at,
+    "created_at": Project.created_at,
+    "recent": Project.updated_at,
+}
 
 
 async def get_owned_project(db: AsyncSession, project_id: int, user: User) -> Project:
@@ -99,7 +104,7 @@ async def list_projects(
     page_size: int = Query(default=10, ge=1),
     search: Optional[str] = Query(default=None, max_length=100),
     status_filter: Optional[str] = Query(default=None, alias="status"),
-    sort: str = Query(default="updated_at"),
+    sort: str = Query(default="recent"),
     order: str = Query(default="desc"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -111,7 +116,8 @@ async def list_projects(
         page_size: 每页条数（1~100）。
         search: 标题模糊搜索关键字（可空）。
         status_filter: 项目状态过滤（可空；非法值返回 400）。
-        sort: 排序字段（updated_at / created_at，非法值返回 400）。
+        sort: 排序字段（recent=最近编辑 / updated_at / created_at，非法值返回 400；
+            recent 为 updated_at 别名，默认 recent + desc 即最近编辑倒序，D-06）。
         order: 排序方向（desc / asc，非法值返回 400）。
         user: 当前用户。
         db: 请求级异步数据库会话。
@@ -125,7 +131,8 @@ async def list_projects(
     if status_filter is not None and status_filter not in PROJECT_STATUSES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="status 取值非法")
     if sort not in _SORT_COLUMNS:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="sort 仅支持 updated_at/created_at")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="sort 仅支持 recent/updated_at/created_at")
     if order not in ("desc", "asc"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="order 仅支持 desc/asc")
 
@@ -212,9 +219,18 @@ async def get_project(
     script_count = await db.scalar(
         select(func.count()).select_from(Script).where(Script.project_id == project.id)
     )
+    # 剧集摘要数组（S-06）：按 sequence 升序，供工作区剧集切换器直接消费
+    episode_rows = await db.execute(
+        select(Episode)
+        .where(Episode.project_id == project.id)
+        .order_by(Episode.sequence.asc(), Episode.id.asc())
+    )
     detail = ProjectDetailOut.model_validate(project)
     detail.episode_count = episode_count or 0
     detail.script_count = script_count or 0
+    detail.episodes = [
+        EpisodeSummaryOut.model_validate(e) for e in episode_rows.scalars().all()
+    ]
     return detail
 
 

@@ -519,6 +519,60 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
             END IF;
         END $$;
     """),
+    # ---------- A-10/CV-24：画布沉淀回流（资产来源标记 + 节点沉淀幂等元数据） ----------
+    # 三张资产表补 source 列（存量行填充默认值 manual，标识手工创建）
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+    ("scenes",
+     "ALTER TABLE scenes ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+    ("props",
+     "ALTER TABLE props ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.source IS "
+     "'资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）'"),
+    ("scenes",
+     "COMMENT ON COLUMN scenes.source IS "
+     "'资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）'"),
+    ("props",
+     "COMMENT ON COLUMN props.source IS "
+     "'资产来源：manual 手工创建 / canvas 画布沉淀（A-10/CV-24）'"),
+    # canvas_nodes 补 meta 列（可空 JSONB）：沉淀幂等——记录 sinked_asset_type/sinked_asset_id
+    ("canvas_nodes", "ALTER TABLE canvas_nodes ADD COLUMN IF NOT EXISTS meta JSONB"),
+    ("canvas_nodes",
+     "COMMENT ON COLUMN canvas_nodes.meta IS "
+     "'节点扩展元数据（A-10/CV-24 沉淀：sinked_asset_type/sinked_asset_id）'"),
+    # ---------- A-04：参考图锚点（characters/scenes 各补 reference_image_url） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS reference_image_url VARCHAR(500)"),
+    ("scenes",
+     "ALTER TABLE scenes ADD COLUMN IF NOT EXISTS reference_image_url VARCHAR(500)"),
+    ("characters",
+     "COMMENT ON COLUMN characters.reference_image_url IS "
+     "'参考图 URL（A-04：生成定妆照时透传图像渠道作参考）'"),
+    ("scenes",
+     "COMMENT ON COLUMN scenes.reference_image_url IS "
+     "'参考图 URL（A-04：生成场景图时透传图像渠道作参考）'"),
+    # ---------- A-05：资产标签（四张资产表各补 tags JSONB，可空） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS tags JSONB"),
+    ("scenes",
+     "ALTER TABLE scenes ADD COLUMN IF NOT EXISTS tags JSONB"),
+    ("props",
+     "ALTER TABLE props ADD COLUMN IF NOT EXISTS tags JSONB"),
+    ("styles",
+     "ALTER TABLE styles ADD COLUMN IF NOT EXISTS tags JSONB"),
+    ("characters",
+     "COMMENT ON COLUMN characters.tags IS "
+     "'资产标签数组（A-05 标签搜索）'"),
+    ("scenes",
+     "COMMENT ON COLUMN scenes.tags IS "
+     "'资产标签数组（A-05 标签搜索）'"),
+    ("props",
+     "COMMENT ON COLUMN props.tags IS "
+     "'资产标签数组（A-05 标签搜索）'"),
+    ("styles",
+     "COMMENT ON COLUMN styles.tags IS "
+     "'资产标签数组（A-05 标签搜索）'"),
 ]
 
 
@@ -534,6 +588,10 @@ async def _add_missing_columns() -> None:
     - review_records.method：机审方式 keyword/llm-text/gate（Task 4.1）。
     - users.account_status：分级处罚账号状态 active/restricted/banned（Task 4.3，C-04）。
     - users.violation_count：内容违规累计次数（Task 4.3，C-04）。
+    - characters.reference_image_url / scenes.reference_image_url：
+      A-04 参考图锚点（生成资产图时透传图像渠道作参考）。
+    - characters/scenes/props/styles.tags：
+      A-05 资产标签数组（JSONB 可空，列表接口 ?tag= 包含匹配）。
 
     Returns:
         None。

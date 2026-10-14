@@ -8,12 +8,14 @@
 5. DELETE /{canvas_id}               —— 软删除画布
 6. PUT    /{canvas_id}/graph         —— 自动保存全量同步（upsert + 删除未提交项 +
                                         脏标记 + 自环/成环校验，RD-45/RD-48）
-7. POST   /{canvas_id}/export        —— 画布 JSON 导出（前端下载）
-8. POST   /import                    —— 画布 JSON 导入（成环校验同图同步）
-9. POST   /{canvas_id}/nodes/{node_id}/execute —— 单节点执行
+7. POST  /{canvas_id}/export        —— 画布 JSON 导出（前端下载）
+8. POST  /import                    —— 画布 JSON 导入（成环校验同图同步）
+9. POST  /{canvas_id}/nodes/{node_id}/execute —— 单节点执行
 10. POST  /{canvas_id}/execute       —— DAG 增量执行（all/dirty/node，RD-45）
 11. GET   /{canvas_id}/stream        —— SSE 实时推送节点状态与任务进度
 12. POST  /{canvas_id}/assistant/chat —— 画布助手对话（LLM 失败离线降级）
+13. POST  /api/canvas/nodes/{node_id}/sink —— 节点沉淀入资产库（A-10/CV-24，
+        挂载于独立 sink_router，prefix=/api/canvas）
 
 注意：LangGraph 全局对话由并行任务实现，本模块画布助手直接调用
 providers.llm.chat 获取结构化画布操作指令。
@@ -21,6 +23,7 @@ providers.llm.chat 获取结构化画布操作指令。
 
 import asyncio
 import json
+import re
 from datetime import datetime, timezone
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
@@ -31,7 +34,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.sse import sse_event, sse_stream
 from app.core.security import get_current_user
-from app.models import Canvas, CanvasEdge, CanvasNode, Task, User
+from app.models import Canvas, CanvasEdge, CanvasNode, CanvasPlugin, Character, Prop, Scene, Task, User
 from app.providers import llm as llm_provider
 from app.schemas.canvas import (
     AssistantChatRequest,
@@ -46,6 +49,8 @@ from app.schemas.canvas import (
     CanvasListResponse,
     CanvasNodeOut,
     CanvasOut,
+    CanvasSinkRequest,
+    CanvasSinkResult,
     CanvasUpdateRequest,
     CloneSubtreeRequest,
     CloneSubtreeResult,
@@ -721,3 +726,247 @@ async def assistant_chat(
         nodes=[CanvasNodeOut.model_validate(n) for n in out_nodes],
         edges=[CanvasEdgeOut.model_validate(e) for e in out_edges],
     )
+
+
+# ---------------------------------------------------------------------------
+# 画布沉淀回流（A-10/CV-24：画布 → 资产库）
+# ---------------------------------------------------------------------------
+# 节点级沉淀路由独立成 router（prefix=/api/canvas）：既有画布路由均以
+# canvas_id 为路径前缀（/{canvas_id}/...），而沉淀以节点为操作主体，
+# 归属经由 node → canvas → user 链路校验，无需客户端传画布 ID。
+sink_router = APIRouter(prefix="/api/canvas", tags=["canvases"])
+
+# 沉淀支持的资产类型白名单 → ORM 模型映射
+_SINK_ASSET_MODELS = {"character": Character, "scene": Scene, "prop": Prop}
+
+# 产物 URL 判定：http(s) 绝对地址或站内根路径（/storage/... 等）
+_ARTIFACT_URL_RE = re.compile(r"^(https?://|/)")
+
+# 视觉描述 LLM 补全超时（秒，RD-47：超时不阻断沉淀）
+_VISUAL_PROMPT_TIMEOUT = 15.0
+
+
+def _extract_artifact_url(node: CanvasNode) -> Optional[str]:
+    """从图像节点中提取产物 URL（内部函数）。
+
+    与前端 previewUrl 口径一致：优先取 data.output（执行产出），
+    其次取 data.url（手动填写），仅接受 http(s):// 或 / 开头的字符串。
+
+    Args:
+        node: 画布节点 ORM 对象。
+
+    Returns:
+        Optional[str]: 产物 URL（无产物或格式不符时返回 None）。
+    """
+    data = node.data if isinstance(node.data, dict) else {}
+    for key in ("output", "url"):
+        val = data.get(key)
+        if isinstance(val, str) and _ARTIFACT_URL_RE.match(val.strip()):
+            return val.strip()
+    return None
+
+
+def _node_description_text(node: CanvasNode) -> str:
+    """从节点 data/config 中提取描述类文本（内部函数，LLM 降级兜底用）。
+
+    依次尝试 data.description / data.text / data.prompt，均缺失时回退
+    label（data.label 优先，config.label 次之）。
+
+    Args:
+        node: 画布节点 ORM 对象。
+
+    Returns:
+        str: 描述文本（可能为空串）。
+    """
+    data = node.data if isinstance(node.data, dict) else {}
+    config = node.config if isinstance(node.config, dict) else {}
+    for src in (data.get("description"), data.get("text"), data.get("prompt"),
+                data.get("label"), config.get("label")):
+        if isinstance(src, str) and src.strip():
+            return src.strip()
+    return ""
+
+
+async def _generate_visual_prompt(node: CanvasNode, name: str) -> str:
+    """生成资产标准化视觉描述（RD-47 特征描述自动补全，内部函数）。
+
+    调用 providers.llm.chat 依据名称与节点描述生成中文视觉描述；
+    LLM 失败 / 超时（15s）时降级为节点描述或 label 文本，保证
+    visual_prompt（NOT NULL 列）始终有值且不阻断沉淀主流程。
+
+    Args:
+        node: 画布节点 ORM 对象（提取描述上下文）。
+        name: 资产名称。
+
+    Returns:
+        str: 视觉描述提示词（非空）。
+
+    Raises:
+        无：内部捕获全部 LLM 异常并降级。
+    """
+    desc_text = _node_description_text(node)
+    fallback = desc_text or f"画布图像「{name}」：漫画风格，构图完整，光影统一。"
+    try:
+        raw = await asyncio.wait_for(
+            llm_provider.chat(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是漫序 MangaFlow 的资产整理助手，负责为资产库生成"
+                            "标准化的中文视觉描述提示词。只输出一段视觉描述本身，"
+                            "不要任何解释、引号或前后缀。"
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"资产名称：{name}\n节点描述：{desc_text or '（无）'}\n"
+                            "请生成 80 字以内、可直接用于漫画风格图像生成的"
+                            "标准化视觉描述（涵盖外观/构图/光影/风格要素）。"
+                        ),
+                    },
+                ],
+                temperature=0.4,
+            ),
+            timeout=_VISUAL_PROMPT_TIMEOUT,
+        )
+        return (raw or "").strip() or fallback
+    except Exception:  # noqa: BLE001 —— RD-47：LLM 失败/超时统一降级，不阻断沉淀
+        return fallback
+
+
+async def _dedupe_asset_name(db: AsyncSession, model: type, project_id: int, name: str) -> str:
+    """为资产名称去重（内部函数）：项目内同名时追加数字后缀。
+
+    characters/scenes 存在 (project_id, name) 唯一索引，重名插入会触发
+    IntegrityError，故沉淀前主动探测并生成可用名称（name 列 String(50)）。
+
+    Args:
+        db: 异步数据库会话。
+        model: 资产 ORM 模型（Character/Scene/Prop）。
+        project_id: 目标项目 ID。
+        name: 期望名称。
+
+    Returns:
+        str: 项目内未占用的名称（长度不超过 50）。
+
+    Raises:
+        无：探测冲突自动加后缀重试。
+    """
+    base = name[:46]
+    candidate, seq = name, 1
+    while await db.scalar(select(model.id).where(model.project_id == project_id, model.name == candidate)):
+        seq += 1
+        candidate = f"{base}_{seq}"[:50]
+    return candidate
+
+
+@sink_router.post("/nodes/{node_id}/sink", response_model=CanvasSinkResult, status_code=201)
+async def sink_node_to_asset(
+    node_id: int,
+    req: CanvasSinkRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CanvasSinkResult:
+    """画布节点沉淀入资产库（A-10/CV-24 画布 → 资产库回流通道）。
+
+    流程：归属校验（node → canvas → user）→ 类型与产物校验 → 幂等检查
+    （canvas_nodes.meta.sinked_asset_*）→ RD-47 视觉描述 LLM 补全（15s 超时
+    降级为节点描述/label）→ 按 asset_type 建 characters/scenes/props 记录
+    （asset_url 指向画布产物，source='canvas'）→ 回写节点 meta → 提交。
+
+    Args:
+        node_id: 画布节点 ID。
+        req: 沉淀请求（asset_type 必填；name 可选，缺省取节点 label 或
+            "[画布] 节点{id}"）。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CanvasSinkResult: {asset_id, asset_type, duplicated}；重复沉淀时
+            duplicated=True 并返回既有资产 ID，不重复建资产。
+
+    Raises:
+        HTTPException: 400 —— 资产类型非法 / 非 image 节点 / 节点无产物 /
+            独立画布未关联项目；404 —— 节点不存在或画布不属于当前用户；
+            401 —— 未登录。
+    """
+    model = _SINK_ASSET_MODELS.get(req.asset_type)
+    if model is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="资产类型非法，须为 character/scene/prop 之一")
+
+    # 归属校验：节点 join 画布，画布须归属当前用户且未软删除
+    row = (
+        await db.execute(
+            select(CanvasNode, Canvas)
+            .join(Canvas, CanvasNode.canvas_id == Canvas.id)
+            .where(
+                CanvasNode.id == node_id,
+                Canvas.user_id == user.id,
+                Canvas.deleted_at.is_(None),
+            )
+        )
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="节点不存在或无权访问")
+    node, canvas = row
+
+    if node.node_type != "image":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="仅图像（image）类型节点支持沉淀入资产库")
+
+    artifact_url = _extract_artifact_url(node)
+    if artifact_url is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="该图像节点暂无产物 URL，无法沉淀入资产库")
+
+    if canvas.project_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="独立画布暂不支持沉淀，请先将画布关联到项目")
+
+    # 幂等：meta 已记录同类型沉淀且资产仍存在 → 直接返回既有 ID
+    meta = dict(node.meta) if isinstance(node.meta, dict) else {}
+    sinked_type = meta.get("sinked_asset_type")
+    sinked_id = meta.get("sinked_asset_id")
+    if sinked_type == req.asset_type and isinstance(sinked_id, int):
+        existing = await db.get(model, sinked_id)
+        if existing is not None and getattr(existing, "deleted_at", None) is None:
+            return CanvasSinkResult(asset_id=sinked_id, asset_type=req.asset_type, duplicated=True)
+
+    # 名称：请求指定 > 节点 label（data/config）> "[画布] 节点{id}"；项目内去重
+    data = node.data if isinstance(node.data, dict) else {}
+    config = node.config if isinstance(node.config, dict) else {}
+    label = data.get("label") if isinstance(data.get("label"), str) else None
+    label = label or (config.get("label") if isinstance(config.get("label"), str) else None)
+    name = (req.name or (label.strip() if label and label.strip() else "") or f"[画布] 节点{node.id}").strip()[:50]
+    name = await _dedupe_asset_name(db, model, canvas.project_id, name)
+
+    # RD-47：视觉描述 LLM 补全（失败/超时降级为节点描述或 label，不阻断）
+    visual_prompt = await _generate_visual_prompt(node, name)
+    desc_text = _node_description_text(node)
+
+    # 建资产记录：主照指向画布产物 URL，来源标记 canvas
+    if req.asset_type == "character":
+        asset = Character(
+            project_id=canvas.project_id, name=name, visual_prompt=visual_prompt,
+            asset_url=artifact_url, description=desc_text or None, source="canvas",
+        )
+    elif req.asset_type == "scene":
+        asset = Scene(
+            project_id=canvas.project_id, name=name, visual_prompt=visual_prompt,
+            asset_url=artifact_url, description=desc_text or None, source="canvas",
+        )
+    else:
+        asset = Prop(
+            project_id=canvas.project_id, name=name, visual_prompt=visual_prompt,
+            asset_url=artifact_url, description=desc_text or None, source="canvas",
+        )
+    db.add(asset)
+    await db.flush()  # 取资产真实 ID 供 meta 回写
+
+    # 幂等落点：整 dict 重新赋值确保 JSONB 变更被 ORM 跟踪
+    node.meta = {**meta, "sinked_asset_type": req.asset_type, "sinked_asset_id": asset.id}
+    await db.commit()
+    return CanvasSinkResult(asset_id=asset.id, asset_type=req.asset_type, duplicated=False)

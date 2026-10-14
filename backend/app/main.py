@@ -91,6 +91,20 @@ async def lifespan(app: FastAPI):
         # 降级启动：数据库不可达时服务仍可拉起，接口层面再暴露错误
         logger.exception("数据库初始化失败，服务将以降级模式启动")
 
+    # ---------- 模型渠道 API Key 启动检查（D1 密钥治理） ----------
+    # 5 个模型渠道密钥逐个检查：为空说明该渠道未配置真实 Key（密钥一律经
+    # 环境变量/.env 注入，不落代码），对应能力将沿降级链走本地 mock 演示
+    # 占位（产物带 placeholder 标记并免计费）。仅告警不阻断启动。
+    for _channel, _key in (
+        ("deepseek", settings.deepseek_api_key),
+        ("agnes-llm", settings.agnes_llm_api_key),
+        ("agnes-image", settings.agnes_image_api_key),
+        ("agnes-video", settings.agnes_video_api_key),
+        ("bailian-tts", settings.bailian_tts_api_key),
+    ):
+        if not (_key or "").strip():
+            logger.warning("模型渠道 %s 未配置 API Key，对应能力将走演示降级链", _channel)
+
     try:
         # pgvector 双模向量检索（Task 6）：create_all 之后、恢复/启动 worker 之前
         # 探测扩展可用性并幂等 ensure 影子向量列 + ivfflat 索引；失败仅告警降级，
@@ -194,6 +208,7 @@ def create_app() -> FastAPI:
         billing,
         canvas_plugins,
         canvases,
+        episodes,
         generation,
         mcp,
         media,
@@ -213,6 +228,8 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(users.router)
     app.include_router(projects.router)
+    # 剧集管理（S-06）：项目内剧集 CRUD / 重排（挂 /api/projects/{project_id}/episodes）
+    app.include_router(episodes.router)
     app.include_router(versions.router)
     app.include_router(billing.router)
     app.include_router(prompts.router)
@@ -228,6 +245,8 @@ def create_app() -> FastAPI:
     app.include_router(generation.router)
     app.include_router(publish.router)
     app.include_router(canvases.router)
+    # 画布沉淀回流：节点 → 资产库（A-10/CV-24，独立 prefix=/api/canvas）
+    app.include_router(canvases.sink_router)
     app.include_router(agent_chat.router)
     app.include_router(memories.router)
     # 画布插件市场：列表/安装/审查/启停/手动调用（CV-20/21/22，登录用户 + 运营方审查）

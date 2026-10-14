@@ -22,6 +22,12 @@ image/video/tts 任务执行时先经 model_router.resolve_channels_chain 解析
 链尾固定追加本地 mock 哨兵渠道（channel_id=0）兜底：逐候选调用，成功即止，
 每次尝试回写渠道健康状态，失败原因累积进任务 meta.fallback_chain 供溯源。
 
+演示占位治理（D3）：mock 兜底产物打 placeholder 标记——provider 返回 meta
+携带 placeholder=True（文件名统一带 placeholder_ 前缀、画面/音频可感知占位），
+执行器平铺进任务 meta 并在命中 mock 哨兵渠道时兜底补写；任务成功且
+placeholder=True 时执行计费豁免（冻结积分全额退款，幂等键前缀 ph-refund-，
+备注含「演示占位豁免」），占位产物不向用户收费。
+
 生成产物内容机审（Task 7 / R-08、C-01）：图像生成成功后先做**真实视觉机审**
 （providers/vision_review.py 调 Agnes 视觉模型审画面实际内容，method=vision），
 失败降级 LLM 纯文本机审（method=llm-text）→ 纯词表（method=keyword）；视频
@@ -192,6 +198,28 @@ def request_cancel(task_id: int) -> None:
         event = asyncio.Event()
         CANCEL_EVENTS[task_id] = event
     event.set()
+
+
+def _is_placeholder_result(result: Optional[Dict], used_channel: Optional[ResolvedChannel]) -> bool:
+    """判定生成结果是否为演示占位产物（D3 打标，内部辅助）。
+
+    判定来源（满足其一即占位）：
+    - provider 返回 meta.placeholder=True（三个 mock provider 均携带）；
+    - 实际使用渠道为 mock 哨兵渠道（channel_id=0，降级链尾兜底）。
+
+    Args:
+        result: provider 生成结果 dict（可空）。
+        used_channel: 实际使用的渠道（可空）。
+
+    Returns:
+        bool: 演示占位产物返回 True。
+
+    Raises:
+        无：纯属性/键值判定，不产生异常路径。
+    """
+    if bool((result or {}).get("meta", {}).get("placeholder")):
+        return True
+    return bool(used_channel is not None and used_channel.channel_id == 0)
 
 
 async def _worker_loop(worker_id: int) -> None:
@@ -418,8 +446,16 @@ async def _fail_task(db, task: Task, user_id: int, code: str, message: str, bear
 async def _succeed_task(db, task: Task, user_id: int) -> None:
     """任务成功落库：冻结扣费 + 状态/进度终态（RD-28 闭环）+ 通知中心推送。
 
-    扣费后检查钱包可用余额，低于配额预警线（低余额阈值 * 0.2，当日去重）
-    时推送 quota_warning 通知；任务完成通知经通知服务独立会话发送，
+    计费闭环分两路（D3 演示占位治理）：
+    - 任务 meta 命中 placeholder 标记（mock 兜底演示占位产物）时执行豁免：
+      不扣费，冻结积分全额退回可用余额（退款幂等键用独立前缀
+      "ph-refund-{task_id}"，与失败退款 "task_{id}_refund" 互不冲突），
+      流水备注含「演示占位豁免」；仅对实际冻结了积分（cost_points>0）的
+      任务执行；
+    - 其余任务照常 consume_frozen 扣费。
+
+    扣费/退款后检查钱包可用余额，低于配额预警线（低余额阈值 * 0.2，当日
+    去重）时推送 quota_warning 通知；任务完成通知经通知服务独立会话发送，
     异常内部吞掉，不影响任务主流程。
 
     Args:
@@ -431,16 +467,28 @@ async def _succeed_task(db, task: Task, user_id: int) -> None:
         None
 
     Raises:
-        Exception: 扣费/提交异常向上抛出。
+        Exception: 扣费/退款/提交异常向上抛出。
     """
-    await consume_frozen(
-        db,
-        user_id=user_id,
-        amount=task.cost_points,
-        ref_task_id=task.id,
-        idempotency_key=f"task_{task.id}_consume",
-        remark=f"任务 {task.id}（{task.type}）成功扣费",
-    )
+    if (task.meta or {}).get("placeholder") and (task.cost_points or 0) > 0:
+        # 演示占位豁免：占位产物免计费，冻结积分全额退回可用余额（平台承担）
+        await refund_frozen(
+            db,
+            user_id=user_id,
+            amount=task.cost_points,
+            ref_task_id=task.id,
+            idempotency_key=f"ph-refund-{task.id}",
+            bear="platform",
+            remark=f"演示占位豁免：任务 {task.id}（{task.type}）产物为演示占位，冻结积分退回",
+        )
+    else:
+        await consume_frozen(
+            db,
+            user_id=user_id,
+            amount=task.cost_points,
+            ref_task_id=task.id,
+            idempotency_key=f"task_{task.id}_consume",
+            remark=f"任务 {task.id}（{task.type}）成功扣费",
+        )
     task.status = "done"
     task.progress = 100
     await db.commit()
@@ -839,6 +887,8 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         无：provider 异常被捕获后走失败流程。
     """
     prompt = meta.get("prompt", "")
+    # A-04 参考图锚点：任务 meta 携带参考图时透传给 provider（资产图一致性锚定）
+    reference_image_url: Optional[str] = meta.get("reference_image_url")
     # 机审闸门一：违规词命中直接拦截（不调用 provider）
     if await _check_violation(db, task, user_id, prompt, "image"):
         return
@@ -857,8 +907,10 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
             无（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
         if channel.channel_id == 0:
-            return await generate_image(prompt, out_dir, seed=task.id)
-        return await generate_image_real(prompt, out_dir, task.id, channel)
+            return await generate_image(
+                prompt, out_dir, seed=task.id, reference_image_url=reference_image_url)
+        return await generate_image_real(
+            prompt, out_dir, task.id, channel, reference_image_url=reference_image_url)
 
     result, used_channel, fallback = await _generate_with_fallback(db, "image", _generate)
     if result is None:
@@ -866,9 +918,16 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         return
     task.result_url = result["url"]
     # provider meta 合并进任务 meta（JSONB 整体重新赋值以触发变更检测）；
-    # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）
+    # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）；
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
-    task.meta = {**meta, **(result.get("meta") or {}), "fallback_chain": fallback, "provider": provider}
+    task.meta = {
+        **meta,
+        **(result.get("meta") or {}),
+        "fallback_chain": fallback,
+        "provider": provider,
+        "placeholder": _is_placeholder_result(result, used_channel),
+    }
 
     # 内容复审（Task 4.1 图像审核链）：LLM 机审优先，失败降级词表；
     # violate 时任务置 failed 退款并触发分级处罚（先于资产回写执行）
@@ -904,6 +963,11 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         if sb:
             sb.keyframe_url = result["url"]
             sb.status = "done"
+    elif target_type == "storyboard_end_frame" and target_id:
+        # P-03/P-08 尾帧任务：回写分镜尾帧地址（不影响关键帧与分镜状态）
+        sb = await db.get(Storyboard, target_id)
+        if sb:
+            sb.end_frame_url = result["url"]
 
     # 媒体素材入库（studio 来源，记录任务溯源）
     db.add(MediaAsset(
@@ -936,15 +1000,24 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     prompt = meta.get("prompt", "")
     # duration/resolution 参数保持与既有 meta 兼容
     duration = int(meta.get("duration", 5) or 5)
+    # P-12 视频参数（resolution/fps/motion_strength，创建时写入 meta.video_params）
+    video_params: Optional[Dict] = meta.get("video_params") or None
     out_dir = settings.storage_path() / "generated"
     # 首帧本地路径（wan2.7-i2v 图生视频需要关键帧驱动；本地文件以 base64 上传，
     # 无公网 URL 依赖）。取分镜关键帧 URL 的文件名拼接 storage 路径。
     first_frame_path: Optional[Path] = None
+    # P-03/P-08 尾帧本地路径（use_end_frame 时驱动 wan 首尾帧控制）
+    end_frame_path: Optional[Path] = None
     storyboard_id = meta.get("storyboard_id")
     if storyboard_id:
         sb_for_frame = await db.get(Storyboard, int(storyboard_id))
         if sb_for_frame and sb_for_frame.keyframe_url:
             first_frame_path = settings.storage_path() / "generated" / Path(sb_for_frame.keyframe_url).name
+        # 尾帧路径优先取任务 meta 记录的地址（创建时快照），缺省回退分镜当前值
+        if sb_for_frame:
+            end_frame_src = meta.get("end_frame") or sb_for_frame.end_frame_url
+            if end_frame_src:
+                end_frame_path = settings.storage_path() / "generated" / Path(end_frame_src).name
     # 机审闸门一：视频提示词违规直接拦截（Task 4.1 补齐 video 目标机审）
     if await _check_violation(db, task, user_id, prompt, "video"):
         return
@@ -963,12 +1036,23 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
             无其他（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
         if channel.channel_id == 0:
-            return await generate_video(prompt, duration, out_dir, seed=task.id)
+            return await generate_video(
+                prompt, duration, out_dir, seed=task.id,
+                video_params=video_params,
+                first_frame_url=meta.get("first_frame"),
+                end_frame_url=meta.get("end_frame"),
+            )
         if channel.protocol == "dashscope":
             return await generate_video_wan(
                 prompt, duration, out_dir, task.id, channel, first_frame_path,
+                video_params=video_params, end_frame_path=end_frame_path,
             )
-        return await generate_video_real(prompt, duration, out_dir, task.id, channel)
+        return await generate_video_real(
+            prompt, duration, out_dir, task.id, channel,
+            first_frame_url=meta.get("first_frame"),
+            video_params=video_params,
+            last_frame_url=meta.get("end_frame"),
+        )
 
     # 队列满弹性等待：Agnes 免费渠道高峰持续 video_queue_full（实测可满载数分钟
     # 以上），为避免过早降级 mock 占位，满载时按轮次等待重试；轮次耗尽才走
@@ -995,9 +1079,16 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         await _fail_task(db, task, user_id, "platform_error", "视频供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
-    # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）
+    # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）；
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
-    task.meta = {**meta, **(result.get("meta") or {}), "fallback_chain": fallback, "provider": provider}
+    task.meta = {
+        **meta,
+        **(result.get("meta") or {}),
+        "fallback_chain": fallback,
+        "provider": provider,
+        "placeholder": _is_placeholder_result(result, used_channel),
+    }
 
     # 视频首帧视觉机审（Task 7 / R-08）：violate 时任务置 failed 退款并触发分级处罚；
     # 先于 video_url 回写执行，避免违规产物暴露进分镜
@@ -1057,7 +1148,8 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         return
     task.result_url = result["url"]
     # provider meta 合并进任务 meta，duration_sec 置于其后防覆盖（RD-31 依据），
-    # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）
+    # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）；
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
     task.meta = {
         **meta,
@@ -1065,6 +1157,7 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         "duration_sec": result.get("duration_sec"),
         "fallback_chain": fallback,
         "provider": provider,
+        "placeholder": _is_placeholder_result(result, used_channel),
     }
     storyboard_id = meta.get("storyboard_id")
     if storyboard_id:

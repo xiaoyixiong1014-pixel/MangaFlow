@@ -5,18 +5,26 @@
   （增量合成按任务 meta.storyboard_ids 过滤，Task 5.3）；
 - 本机 ffmpeg 可用且片段数 >= 1：concat demuxer 拼接为基础成片；
 - 转场（Task 5.3，P-15）：请求携带 transition 且片段数 >= 2 时，改用 xfade
-  链重编码实现片段间 fade 转场（其他 type 取值接受但同样按 fade 应用）；
+  链重编码实现片段间转场；转场类型经 map_transition_type 白名单映射为
+  xfade 原生滤镜名（P-17：fade/dissolve/fadeblack/fadewhite，其余回退 fade）；
 - 后处理一次完成（Task 4.4 水印 + Task 5.1 字幕 + Task 5.2 BGM）：
   - 字幕：build_srt 按分镜对白/画面描述生成 SRT，ffmpeg subtitles 滤镜烧录；
+    双语字幕（P-16，subtitle_style.bilingual=true）：先批量调用 LLM 把台词
+    翻译为英文，成功生成双语 ASS（原文在上主样式、译文在下副样式——字号略
+    小、颜色区分），翻译失败/超时（15s）降级为单行 SRT，绝不阻断合成；
   - 水印：drawtext 将 watermark_id 前 8 位以低透明度角标烧录（隐形溯源）；
   - BGM：amix 混入背景音乐（原片无音轨时 BGM 直接作为唯一音轨）；
   - 同一条 -vf/filter_complex 链按「先字幕、后水印」顺序应用；
   - 任一环节失败或本机无 ffmpeg/字体：逐级降级跳过，不影响成片产出；
-- 否则降级为占位成片（直接取首个片段地址；完全无片段则生成 SVG 海报充当成片地址）；
+- 否则降级为占位成片（直接取首个片段地址；完全无片段时：本机有 ffmpeg 则
+  生成 2 秒黑底「演示占位」MP4 充当成片（保证 <video> 可播放，D2），无
+  ffmpeg 则抛异常交由执行器置任务 failed，绝不返回假 URL）；
 - 每次合成都写入一条 film_outputs 版本记录（版本号递增、is_current 切换、
   附带隐形水印标识 watermark_id）。
 """
 
+import asyncio
+import json
 import re
 import shutil
 import subprocess
@@ -29,7 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models import FilmOutput, Storyboard, Task
-from app.providers.image_mock import _URL_PREFIX, _write_svg, render_placeholder_svg
+from app.providers.llm import chat
 
 # 成片输出 URL 前缀（storage/outputs 目录经 /storage 挂载对外可访问）
 _OUTPUT_URL_PREFIX = "/storage/outputs"
@@ -49,6 +57,34 @@ _FONT_CANDIDATES = (
 
 # 字幕位置 → ASS Alignment 对齐值（2 底部居中 / 5 中间居中 / 8 顶部居中）
 _SUB_POSITION_ALIGNMENT = {"bottom": 2, "middle": 5, "top": 8}
+
+# 转场类型白名单映射（P-17）：请求 type（小写归一化）→ ffmpeg xfade 原生滤镜名；
+# 不在映射内的取值（如 wipeleft/bogus）一律回退 fade（淡入淡出）
+_XFADE_TYPE_MAP = {
+    "fade": "fade",
+    "dissolve": "dissolve",
+    "fadeblack": "fadeblack",
+    "fadewhite": "fadewhite",
+}
+
+
+def map_transition_type(type_name: Optional[str]) -> str:
+    """把请求的转场类型映射为 ffmpeg xfade 原生滤镜名（P-17）。
+
+    白名单仅支持四种转场：fade（淡入淡出）/ dissolve（叠化）/
+    fadeblack（闪黑）/ fadewhite（闪白）；大小写不敏感，前后空白剔除，
+    其余/非法/空值一律回退 fade，保证 xfade 滤镜参数恒合法。
+
+    Args:
+        type_name: 请求中的转场类型（如 "dissolve"，可空/非法）。
+
+    Returns:
+        str: xfade 原生滤镜名（映射失败恒为 "fade"）。
+
+    Raises:
+        无：纯字典查询，不产生异常路径。
+    """
+    return _XFADE_TYPE_MAP.get((type_name or "").strip().lower(), "fade")
 
 
 def _physical_path(url: str) -> Path:
@@ -126,6 +162,34 @@ def build_drawtext_filter(text: str) -> Optional[str]:
     )
 
 
+def build_placeholder_drawtext_filter(text: str) -> Optional[str]:
+    """构造占位成片提示文字 drawtext 滤镜（D2，内部函数）。
+
+    与水印角标（build_drawtext_filter）不同：占位提示为高对比度居中显示的
+    大字号文字，用于向用户明示当前成片为演示占位。本机无可用字体文件时
+    返回 None（调用方降级为无文字纯黑占位视频）。
+
+    Args:
+        text: 提示文字（如「演示占位·无可用片段」）。
+
+    Returns:
+        Optional[str]: drawtext 滤镜表达式；无字体时 None。
+
+    Raises:
+        无：纯字符串构造，不产生异常路径。
+    """
+    font = _find_font_file()
+    if font is None:
+        return None
+    # 规范化为 POSIX 风格后再转义（与水印滤镜相同的转义规则）
+    font_escaped = font.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+    text_escaped = text.replace(":", "\\:").replace("'", "\\'").replace("%", "\\%")
+    return (
+        f"drawtext=fontfile='{font_escaped}':text='{text_escaped}':"
+        f"fontsize=42:fontcolor=white@0.85:x=(w-tw)/2:y=(h-th)/2"
+    )
+
+
 def _srt_timestamp(seconds: float) -> str:
     """把秒数格式化为 SRT 时间戳 HH:MM:SS,mmm（内部函数）。
 
@@ -177,14 +241,15 @@ def build_srt(storyboards: List) -> Optional[str]:
     return "\n".join(blocks)
 
 
-def build_subtitles_filter(srt_path: Path, style: Optional[dict]) -> str:
+def build_subtitles_filter(sub_path: Path, style: Optional[dict]) -> str:
     """构造 ffmpeg subtitles 烧录滤镜（Task 5.1，内部函数）。
 
-    样式经 force_style 注入：FontSize / PrimaryColour / Alignment；颜色仅接受
-    ASS &H... 格式（正则白名单），非法值回退默认白色，防止滤镜注入。
+    字幕源可为 SRT（单行）或 ASS（P-16 双语）文件；样式经 force_style 注入：
+    FontSize / PrimaryColour / Alignment；颜色仅接受 ASS &H... 格式（正则白
+    名单），非法值回退默认白色，防止滤镜注入。
 
     Args:
-        srt_path: SRT 字幕文件本地路径。
+        sub_path: 字幕文件本地路径（.srt 或 .ass）。
         style: 字幕样式 dict（font_size/color/position，可空用默认）。
 
     Returns:
@@ -204,7 +269,7 @@ def build_subtitles_filter(srt_path: Path, style: Optional[dict]) -> str:
             color = candidate
         align = _SUB_POSITION_ALIGNMENT.get(style.get("position"), 2)
     return (
-        f"subtitles=filename='{_escape_filter_path(srt_path)}':"
+        f"subtitles=filename='{_escape_filter_path(sub_path)}':"
         f"force_style='FontSize={font_size},PrimaryColour={color},Alignment={align}'"
     )
 
@@ -222,6 +287,263 @@ def re_ass_color(value: str) -> bool:
         无。
     """
     return bool(re.fullmatch(r"&H[0-9A-Fa-f]{6,8}", value or ""))
+
+
+# ---------------------------------------------------------------------------
+# 双语字幕（P-16）：LLM 批量翻译 + 双样式 ASS 生成 + 失败降级单行 SRT
+# ---------------------------------------------------------------------------
+
+# 双语翻译单次 LLM 调用超时（秒）：超时/失败一律降级，不阻断合成
+_TRANSLATE_TIMEOUT = 15
+# 双语副样式（译文行）颜色：中灰（ASS &HBBGGRR），与主行白色形成区分
+_SUB_STYLE_COLOR = "&H00B4B4B4"
+
+
+def _ass_timestamp(seconds: float) -> str:
+    """把秒数格式化为 ASS 时间戳 H:MM:SS.cc（厘秒，内部函数）。
+
+    Args:
+        seconds: 时间（秒，非负）。
+
+    Returns:
+        str: ASS 时间戳字符串（如 "0:00:05.50"）。
+
+    Raises:
+        无：纯数值运算，负数按 0 处理。
+    """
+    cs = max(0, int(round(seconds * 100)))
+    h, rem = divmod(cs, 360_000)
+    m, rem = divmod(rem, 6_000)
+    s, cs_part = divmod(rem, 100)
+    return f"{h}:{m:02d}:{s:02d}.{cs_part:02d}"
+
+
+def _ass_escape(text: str) -> str:
+    """转义 ASS Dialogue 文本（内部函数）。
+
+    去除会被 libass 解析为覆盖标签的大括号（替换为全角括号）、压缩行内
+    空白、把真实换行替换为 \\N 软换行，防止字幕原文破坏 ASS 事件结构。
+
+    Args:
+        text: 原始字幕文本（单行/多行）。
+
+    Returns:
+        str: 转义后可安全嵌入 ASS 的文本（空文本以 "-" 占位）。
+
+    Raises:
+        无：纯字符串处理，不产生异常路径。
+    """
+    cleaned = (text or "").replace("{", "（").replace("}", "）")
+    lines = [" ".join(line.split()) for line in cleaned.splitlines()]
+    return "\\N".join(line for line in lines if line) or "-"
+
+
+def _subtitle_texts(storyboards: List) -> List[str]:
+    """按 build_srt 相同规则收集各分镜字幕原文（内部函数，P-16 双语用）。
+
+    取文规则与 build_srt 完全一致（对白优先、画面描述回退、皆空跳过），
+    保证双语翻译列表与字幕条目一一对应。
+
+    Args:
+        storyboards: 分镜对象列表（Storyboard 或同字段鸭子类型），按镜头序。
+
+    Returns:
+        List[str]: 有字幕文本的分镜原文列表（与 build_srt 条目同序同数量）。
+
+    Raises:
+        无：纯文本处理，不产生异常路径。
+    """
+    texts: List[str] = []
+    for sb in storyboards:
+        text = ((sb.dialogue or "").strip() or (sb.visual_description or "").strip())
+        if text:
+            texts.append(text)
+    return texts
+
+
+async def _translate_bilingual_lines(texts: List[str]) -> Optional[List[Optional[str]]]:
+    """批量把字幕原文翻译为英文（P-16 双语字幕，内部函数）。
+
+    一次 LLM 调用传入全部台词列表（json_mode），要求返回等长 JSON 数组；
+    15s 超时 / 全渠道失败 / JSON 解析失败 / 结构非法时返回 None（调用方整
+    体降级单行）；返回数组长度不足时缺失位以 None 填充（该镜降级单行）。
+
+    Args:
+        texts: 字幕原文列表（与 build_srt 条目同序）。
+
+    Returns:
+        Optional[List[Optional[str]]]: 与 texts 等长的译文列表（缺失位 None）；
+            翻译整体失败返回 None。
+
+    Raises:
+        无：内部捕获全部异常（超时/LLM/解析）返回 None，绝不向上抛出。
+    """
+    if not texts:
+        return None
+    prompt = (
+        "你是漫画短剧字幕翻译。请把下面 JSON 数组中的每条中文字幕逐条翻译为"
+        "简洁的英文口语（保持数组顺序与条数一致，不要合并或拆分条目），"
+        "仅返回 JSON 数组，不要任何解释。中文字幕数组：\n"
+        + json.dumps(texts, ensure_ascii=False)
+    )
+    try:
+        raw = await asyncio.wait_for(
+            chat([{"role": "user", "content": prompt}], temperature=0.2, json_mode=True),
+            timeout=_TRANSLATE_TIMEOUT,
+        )
+        parsed = json.loads(raw)
+        # 兼容 {"translations": [...]} 包装：取首个数组值
+        if isinstance(parsed, dict):
+            parsed = next((v for v in parsed.values() if isinstance(v, list)), None)
+        if not isinstance(parsed, list):
+            return None
+        translated: List[Optional[str]] = []
+        for i in range(len(texts)):
+            item = parsed[i] if i < len(parsed) else None
+            item = str(item).strip() if item is not None else ""
+            translated.append(item or None)
+        return translated
+    except Exception:  # noqa: BLE001 —— 翻译是增强能力，任何失败都降级单行
+        return None
+
+
+def build_ass_subtitles(
+    storyboards: List, translations: Optional[List[Optional[str]]], style: Optional[dict]
+) -> Optional[str]:
+    """生成双语 ASS 字幕文件内容（P-16，内部函数）。
+
+    时间轴与 build_srt 一致（按分镜实际时长累计）。双样式定义：
+    - Style Main（原文在上）：主字号/主颜色，底部位置时 MarginV 抬高为译文行留空；
+    - Style Sub（译文在下）：字号为主样式 0.7 倍（下限 10）、灰色区分，
+      贴近画面底部（MarginV 12）。
+    某条目无译文（translations 缺失位）时仅生成 Main 单行（逐条降级）。
+
+    Args:
+        storyboards: 分镜对象列表（按镜头序）。
+        translations: 与 _subtitle_texts(storyboards) 等长的译文列表
+            （缺失位 None 单行显示）；None 表示全部单行。
+        style: 字幕样式 dict（font_size/color/position）。
+
+    Returns:
+        Optional[str]: 完整 ASS 文本；无任何可用字幕文本时返回 None。
+
+    Raises:
+        无：纯文本构造，不产生异常路径。
+    """
+    entries: List[Tuple[float, float, str]] = []
+    cursor = 0.0
+    for sb in storyboards:
+        duration = float(sb.actual_duration or sb.duration or 5)
+        text = ((sb.dialogue or "").strip() or (sb.visual_description or "").strip())
+        if text:
+            entries.append((cursor, cursor + duration, text))
+        cursor += duration
+    if not entries:
+        return None
+
+    try:
+        font_size = max(10, min(72, int((style or {}).get("font_size", 24))))
+    except (TypeError, ValueError):
+        font_size = 24
+    main_color = str((style or {}).get("color") or "")
+    if not re_ass_color(main_color):
+        main_color = "&H00FFFFFF"
+    position = (style or {}).get("position")
+    main_align = _SUB_POSITION_ALIGNMENT.get(position, 2)
+    # 主行 MarginV：底部时抬高为译文行留空；居中/顶部用默认值
+    main_margin_v = 45 if main_align == 2 else 0
+    sub_font_size = max(10, int(font_size * 0.7))
+    sub_margin_v = 12
+
+    header = (
+        "[Script Info]\n"
+        "; MangaFlow P-16 bilingual subtitles (auto-generated)\n"
+        "ScriptType: v4.00+\n"
+        "PlayResX: 720\n"
+        "PlayResY: 1280\n"
+        "WrapStyle: 2\n\n"
+        "[V4+ Styles]\n"
+        "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
+        "OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, "
+        "ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, "
+        "MarginL, MarginR, MarginV, Encoding\n"
+        f"Style: Main,Microsoft YaHei,{font_size},{main_color},&H000000FF,"
+        f"&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,{main_align},"
+        f"20,20,{main_margin_v},1\n"
+        f"Style: Sub,Microsoft YaHei,{sub_font_size},{_SUB_STYLE_COLOR},&H000000FF,"
+        f"&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,1,2,20,20,{sub_margin_v},1\n\n"
+        "[Events]\n"
+        "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n"
+    )
+    lines: List[str] = []
+    for index, (start, end, text) in enumerate(entries):
+        ts_start, ts_end = _ass_timestamp(start), _ass_timestamp(end)
+        lines.append(f"Dialogue: 0,{ts_start},{ts_end},Main,,0,0,0,,{_ass_escape(text)}")
+        trans = None
+        if translations is not None and index < len(translations):
+            trans = translations[index]
+        if trans:
+            lines.append(f"Dialogue: 0,{ts_start},{ts_end},Sub,,0,0,0,,{_ass_escape(str(trans))}")
+    return header + "\n".join(lines) + "\n"
+
+
+def _write_subtitle_file(path: Path, content: str) -> Optional[Path]:
+    """把字幕内容写盘（内部函数）。
+
+    Args:
+        path: 字幕文件目标路径（.srt 或 .ass）。
+        content: 字幕文件完整文本。
+
+    Returns:
+        Optional[Path]: 写盘成功返回路径；OSError（目录不可写等）返回 None。
+
+    Raises:
+        无：内部捕获 OSError 返回 None。
+    """
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+    except OSError:
+        return None
+
+
+async def _prepare_subtitle_file(
+    storyboards: List, subtitle_style: Dict, task_id: int, out_dir: Path
+) -> Optional[Path]:
+    """按字幕样式准备待烧录字幕文件（内部函数，P-16 双语支持）。
+
+    流程：
+    - bilingual 为真：收集字幕原文 → LLM 批量翻译（15s 超时）→ 成功则生成
+      双语 ASS 文件（.ass）；翻译失败/无译文 → 降级 SRT 单行；
+    - bilingual 为假：直接生成 SRT 单行；
+    - 无任何可用字幕文本 / 写盘失败：返回 None（调用方降级为无字幕）。
+
+    Args:
+        storyboards: 涉及分镜列表（按镜头序）。
+        subtitle_style: 字幕样式 dict（font_size/color/position/bilingual）。
+        task_id: 任务 ID（字幕临时文件命名，避免并发覆盖）。
+        out_dir: 字幕文件输出目录（storage/outputs）。
+
+    Returns:
+        Optional[Path]: 字幕文件路径（.ass 或 .srt）；无可字幕文本/写盘失败为 None。
+
+    Raises:
+        无：内部捕获全部异常（翻译/写盘）返回 None，绝不阻断合成任务。
+    """
+    if subtitle_style.get("bilingual"):
+        texts = _subtitle_texts(storyboards)
+        if texts:
+            translations = await _translate_bilingual_lines(texts)
+            if translations:
+                ass_content = build_ass_subtitles(storyboards, translations, subtitle_style)
+                if ass_content:
+                    return _write_subtitle_file(out_dir / f"_subs_{task_id}.ass", ass_content)
+        # 双语任一环节失败：降级 SRT 单行
+    srt_content = build_srt(storyboards)
+    if not srt_content:
+        return None
+    return _write_subtitle_file(out_dir / f"_subs_{task_id}.srt", srt_content)
 
 
 async def shutil_get_run(cmd: List[str], timeout: int = _CONCAT_TIMEOUT, capture: bool = False):
@@ -287,13 +609,13 @@ async def _xfade_clips(
     ffmpeg: str, clip_paths: List[Path], durations: List[float],
     out_path: Path, transition: Dict,
 ) -> bool:
-    """相邻片段 xfade 转场链重编码（Task 5.3，P-15）。
+    """相邻片段 xfade 转场链重编码（Task 5.3，P-15/P-17）。
 
     多级 xfade：offset 按各片段时长累计（offset_k = 前序时长和 - k*转场时长）。
-    实现复杂度控制：仅实现 fade 转场——type 参数接受其他 xfade 名但同样按
-    fade 应用（验收口径）；转场链只处理视频轨（音频轨丢弃，如需 BGM 由后
-    处理环节混入）。片段时长取分镜配置估算值，与真实片段时长有偏差时由
-    offset 兜底（clamp 非负）。
+    转场类型经 map_transition_type 白名单映射为 xfade 原生滤镜名（P-17）：
+    fade/dissolve/fadeblack/fadewhite 直通，其余取值回退 fade；转场链只处理
+    视频轨（音频轨丢弃，如需 BGM 由后处理环节混入）。片段时长取分镜配置估算
+    值，与真实片段时长有偏差时由 offset 兜底（clamp 非负）。
 
     Args:
         ffmpeg: ffmpeg 可执行文件绝对路径。
@@ -317,6 +639,8 @@ async def _xfade_clips(
     cmd: List[str] = [ffmpeg, "-y"]
     for path in clip_paths:
         cmd += ["-i", str(path)]
+    # P-17：转场类型白名单映射（非法值回退 fade），整条 xfade 链统一应用同名转场
+    xfade_type = map_transition_type(str(transition.get("type") or ""))
     parts: List[str] = []
     prev_label = "[0:v]"
     acc = 0.0
@@ -326,7 +650,7 @@ async def _xfade_clips(
         offset = max(acc - i * t, 0.05)
         label = f"[v{i}]" if i < len(clip_paths) - 1 else "[vout]"
         parts.append(
-            f"{prev_label}[{i}:v]xfade=transition=fade:duration={t:.2f}:offset={offset:.3f}{label}"
+            f"{prev_label}[{i}:v]xfade=transition={xfade_type}:duration={t:.2f}:offset={offset:.3f}{label}"
         )
         prev_label = f"[v{i}]"
     cmd += [
@@ -448,22 +772,52 @@ async def _postprocess_film(
         return False
 
 
-async def _poster_film_url(task: Task, out_dir: Path) -> str:
-    """生成一张 SVG 海报充当占位成片地址（项目完全无片段时兜底）。
+async def _placeholder_film(task: Task, out_dir: Path, ffmpeg: Optional[str]) -> str:
+    """生成演示占位成片（项目完全无可用片段时兜底，D2 修复）。
+
+    行为约定：
+    - 本机有 ffmpeg：用 lavfi 纯色源生成 2 秒 720x1280 黑底占位 MP4，并以
+      drawtext 叠加「演示占位·无可用片段」提示（本机无可用中文字体时降级
+      为无文字纯黑 MP4），保证 <video> 元素可正常播放；
+    - 本机无 ffmpeg：不再返回假 URL（旧实现返回 SVG 海报导致 <video> 无法
+      播放），直接抛异常，由 compose_film / 任务执行器的既有异常路径把任务
+      置为 failed 并按平台承担退款。
 
     Args:
         task: 合成任务（用任务 ID 命名，避免并发覆盖）。
         out_dir: 成片输出目录（storage/outputs 绝对路径）。
+        ffmpeg: ffmpeg 可执行文件路径（None 表示本机无 ffmpeg）。
 
     Returns:
-        str: 占位成片的 /storage URL。
+        str: 占位成片的 /storage URL（恒以 .mp4 结尾）。
 
     Raises:
-        无：写盘异常由上层调用方捕获后按平台错误处理。
+        RuntimeError: 本机无 ffmpeg，或 ffmpeg 生成失败——均表示无法产出
+            可播放的占位成片，不允许用假地址充当交付物。
     """
-    filename = f"film_poster_{task.id}.svg"
-    content = render_placeholder_svg(f"项目 {task.project_id} 成片占位", task.id, label="成片占位")
-    _write_svg(out_dir, filename, content)
+    if not ffmpeg:
+        raise RuntimeError("无可用片段且无 ffmpeg，无法合成演示占位成片")
+    filename = f"film_placeholder_{task.id}.mp4"
+    out_path = out_dir / filename
+    try:
+        out_dir.mkdir(parents=True, exist_ok=True)
+        # 2 秒 720x1280 黑底 lavfi 源；有可用字体时叠加居中占位提示文字
+        drawtext = build_placeholder_drawtext_filter("演示占位·无可用片段")
+        cmd: List[str] = [ffmpeg, "-y", "-f", "lavfi", "-i", "color=c=0x000000:s=720x1280:d=2"]
+        if drawtext:
+            cmd += ["-vf", drawtext]
+        cmd += [
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            str(out_path),
+        ]
+        proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
+        if proc is None or proc.returncode != 0 or not out_path.exists():
+            raise RuntimeError("演示占位成片生成失败（ffmpeg 执行异常），无法提供可播放成片")
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"演示占位成片写入异常：{exc}") from exc
     return f"{_OUTPUT_URL_PREFIX}/{filename}"
 
 
@@ -472,7 +826,8 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
 
     合成流水线：分镜查询（增量过滤）→ concat 直拼 → xfade 转场（可选）→
     后处理（字幕/水印/BGM，可选）→ 版本落库。任一 ffmpeg 环节失败均降级
-    到上一级产物（最终回退占位），保证合成总有产出。
+    到上一级产物（最终回退占位成片）；项目完全无片段且本机无 ffmpeg 时
+    抛异常（由执行器置任务 failed，不返回假 URL）。
 
     Args:
         db: 异步数据库会话（调用方负责最终提交；本函数内不 commit）。
@@ -480,10 +835,13 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             subtitles/subtitle_style/bgm/transition）。
 
     Returns:
-        str: 成片资源 URL（/storage/outputs/...，占位场景可能指向片段或 SVG 海报）。
+        str: 成片资源 URL（/storage/outputs/...，占位场景可能指向片段或
+            演示占位 MP4，恒以 .mp4 结尾）。
 
     Raises:
-        Exception: 数据库查询异常向上抛出，由执行器按平台错误重试。
+        Exception: 数据库查询异常向上抛出，由执行器按平台错误重试；
+            RuntimeError: 无可用片段且无 ffmpeg（或占位成片生成失败）时抛出，
+            由执行器置任务 failed。
     """
     meta = task.meta or {}
     resolution = meta.get("resolution", "720P")
@@ -494,11 +852,21 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     bgm_option = meta.get("bgm") or {}
     transition = meta.get("transition") or {}
     wanted_ids = meta.get("storyboard_ids")  # 增量合成过滤清单（Task 5.3）
+    # S-06：剧集范围（None/缺省=全部，向后兼容；传入时仅合成该剧集分镜）
+    raw_episode_id = meta.get("episode_id")
+    try:
+        episode_filter: Optional[int] = int(raw_episode_id) if raw_episode_id is not None else None
+    except (TypeError, ValueError):
+        episode_filter = None
 
+    conds = [
+        Storyboard.project_id == task.project_id,
+        Storyboard.video_url.is_not(None),
+    ]
+    if episode_filter is not None:
+        conds.append(Storyboard.episode_id == episode_filter)
     rows = await db.execute(
-        select(Storyboard)
-        .where(Storyboard.project_id == task.project_id, Storyboard.video_url.is_not(None))
-        .order_by(Storyboard.sequence)
+        select(Storyboard).where(*conds).order_by(Storyboard.sequence)
     )
     storyboards: List[Storyboard] = list(rows.scalars().all())
     # 增量合成：仅保留指定分镜（保持镜头顺序；清单为空/全量模式不过滤）
@@ -546,16 +914,13 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                     except (TypeError, ValueError):
                         transition_duration = 0.5
 
-            # 字幕（Task 5.1）：SRT 按涉及分镜生成并落盘（写盘失败降级无字幕）
-            srt_path: Optional[Path] = None
+            # 字幕（Task 5.1/P-16）：双语样式先 LLM 翻译生成 ASS，任一失败
+            # 降级 SRT 单行；无可字幕文本/写盘失败降级无字幕（不阻断合成）
+            sub_path: Optional[Path] = None
             if subtitle_on and current:
-                srt_content = build_srt(storyboards)
-                if srt_content:
-                    try:
-                        srt_path = out_dir / f"_subs_{task.id}.srt"
-                        srt_path.write_text(srt_content, encoding="utf-8")
-                    except OSError:
-                        srt_path = None
+                sub_path = await _prepare_subtitle_file(
+                    storyboards, subtitle_style, task.id, out_dir
+                )
 
             # BGM（Task 5.2）：/storage URL 还原物理路径（曲库或用户上传素材）
             bgm_path: Optional[Path] = None
@@ -575,7 +940,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                 if await _postprocess_film(
                     ffmpeg, ffprobe, current, final_path,
                     subtitles_filter=(
-                        build_subtitles_filter(srt_path, subtitle_style) if srt_path else None
+                        build_subtitles_filter(sub_path, subtitle_style) if sub_path else None
                     ),
                     drawtext_filter=build_drawtext_filter(watermark_id[:8]),
                     bgm_path=bgm_path,
@@ -585,11 +950,12 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             if current is not None:
                 film_url = f"{_OUTPUT_URL_PREFIX}/{current.name}"
     if film_url is None:
-        # 降级占位：有片段则直接引用第一个片段地址；完全无片段则生成 SVG 海报
+        # 降级占位：有片段则直接引用第一个片段地址；完全无片段则生成演示占位
+        # MP4（无 ffmpeg 时抛异常走任务失败路径，不再以 SVG 假 URL 充当成片）
         if storyboards:
             film_url = storyboards[0].video_url
         else:
-            film_url = await _poster_film_url(task, out_dir)
+            film_url = await _placeholder_film(task, out_dir, ffmpeg)
 
     # 时长合计：优先取配音回写的实际时长（RD-31），缺省用分镜预估时长；
     # 应用 xfade 转场时扣除相邻片段间的转场重叠时长
@@ -606,7 +972,8 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
 
     film = FilmOutput(
         project_id=task.project_id,
-        episode_id=None,
+        # S-06：成片版本绑定来源剧集（None=未绑定剧集的全量合成，与存量一致）
+        episode_id=episode_filter,
         version_no=version_no,
         url=film_url,
         resolution=resolution,

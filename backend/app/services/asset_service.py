@@ -149,7 +149,8 @@ async def create_character_image_task(
     - cost = 10 积分/张；
     - 幂等键 img_{character_id}_{uuid8}，同时作为任务幂等键与冻结流水幂等键；
     - 任务 meta 携带 target_type/target_id/prompt（tasks.meta JSONB 字段，
-      任务执行器 runner 据此回写资产状态）。
+      任务执行器 runner 据此回写资产状态）；角色配置了参考图（A-04）时
+      meta 追加 reference_image_url，执行器把该参考图透传给图像渠道。
 
     Args:
         db: 异步数据库会话。
@@ -165,13 +166,19 @@ async def create_character_image_task(
     """
     final_prompt = (prompt or character.visual_prompt or "").strip()
     idem = f"img_{character.id}_{uuid4().hex[:8]}"
+    # A-04 参考图锚点：角色配置了参考图时写入任务 meta（执行器透传给 provider）
+    task_meta: Dict[str, Any] = {
+        "target_type": "character", "target_id": character.id, "prompt": final_prompt,
+    }
+    if character.reference_image_url:
+        task_meta["reference_image_url"] = character.reference_image_url
     task = await freeze_and_create_task(
         db,
         project=project,
         task_type="image",
         phase="full",
         cost_points=CHARACTER_IMAGE_COST,
-        meta={"target_type": "character", "target_id": character.id, "prompt": final_prompt},
+        meta=task_meta,
         idempotency_key=idem,
     )
     # 冻结成功后再置生成状态（freeze_and_create_task 内部已提交事务）

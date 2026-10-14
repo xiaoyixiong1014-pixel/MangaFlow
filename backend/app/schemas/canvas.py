@@ -367,3 +367,30 @@ class AssistantChatResponse(BaseModel):
     applied: int
     nodes: List[CanvasNodeOut] = Field(default_factory=list)
     edges: List[CanvasEdgeOut] = Field(default_factory=list)
+
+
+class CanvasSinkRequest(BaseModel):
+    """画布节点沉淀入资产库请求（A-10/CV-24）。
+
+    Attributes:
+        asset_type: 目标资产类型 character/scene/prop（其他取值返回 422/400）。
+        name: 资产名称（可空；缺省取节点 label，再缺省用 "[画布] 节点{id}"）。
+    """
+
+    asset_type: str = Field(description="目标资产类型：character/scene/prop")
+    name: Optional[str] = Field(default=None, min_length=1, max_length=50,
+                                description="资产名称（可空，缺省自动生成）")
+
+
+class CanvasSinkResult(BaseModel):
+    """画布节点沉淀结果。
+
+    Attributes:
+        asset_id: 创建（或既有）的资产 ID。
+        asset_type: 资产类型 character/scene/prop。
+        duplicated: 是否重复沉淀（True = 命中幂等，返回既有资产 ID，未重复建资产）。
+    """
+
+    asset_id: int
+    asset_type: str
+    duplicated: bool = False

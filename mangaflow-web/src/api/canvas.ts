@@ -14,6 +14,7 @@ import type {
   CanvasGraph,
   CanvasListItem,
   CanvasPluginItem,
+  CanvasSinkResult,
   CloneSubtreeResult,
   GraphSyncPayload,
   McpServersResult,
@@ -186,6 +187,19 @@ export function cloneSubtree(
   payload: { node_ids: number[]; target_canvas_id?: number },
 ): Promise<CloneSubtreeResult> {
   return client.post(`/canvases/${canvasId}/clone-subtree`, payload).then((r) => r.data)
+}
+
+/**
+ * 画布节点沉淀入资产库（A-10/CV-24：仅 image 节点且有产物时可用）。
+ * @param nodeId 节点 ID
+ * @param payload 资产类型（character/scene/prop）与可选名称（缺省取节点标签）
+ * @returns 资产 ID/类型与是否重复沉淀（duplicated=true 时返回既有资产 ID）
+ */
+export function sinkNode(
+  nodeId: number,
+  payload: { asset_type: 'character' | 'scene' | 'prop'; name?: string },
+): Promise<CanvasSinkResult> {
+  return client.post(`/canvas/nodes/${nodeId}/sink`, payload).then((r) => r.data)
 }
 
 /**

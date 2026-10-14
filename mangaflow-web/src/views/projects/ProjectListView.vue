@@ -35,8 +35,8 @@ const searchInput = ref('')
 const search = ref('')
 /** 状态筛选（空串 = 全部） */
 const statusFilter = ref('')
-/** 排序字段 */
-const sortBy = ref<'updated_at' | 'created_at'>('updated_at')
+/** 排序字段（recent=最近编辑，D-06 默认值） */
+const sortBy = ref<'recent' | 'updated_at' | 'created_at'>('recent')
 /** 视图模式：card 卡片 / list 列表 */
 const viewMode = ref<'card' | 'list'>('card')
 /** 请求序号守卫（防抖/快速切换时丢弃过期响应） */
@@ -87,11 +87,17 @@ const COVER_GRADS = [
   'linear-gradient(135deg, #1F2937, #4FD8CA)',
 ]
 
-// ---------- 统计（今日 / 本月创建，后端聚合 D-04） ----------
+// ---------- 统计（后端聚合 D-04：今日/本月创建 + 本月图片/视频时长/积分消耗） ----------
 /** 今日新建数 */
 const todayCount = ref(0)
 /** 本月创建数 */
 const monthCount = ref(0)
+/** 本月完成图片数（关键帧任务） */
+const monthImages = ref(0)
+/** 本月视频时长合计（秒） */
+const monthVideoSeconds = ref(0)
+/** 本月消耗积分 */
+const monthPoints = ref(0)
 /** 总项目数 */
 const totalProjects = ref(0)
 /** 导出 ZIP 进行中的项目 ID 集合（防重复点击） */
@@ -111,6 +117,43 @@ const announcementVisible = ref(true)
 function formatTime(iso?: string | null): string {
   if (!iso) return '—'
   return iso.slice(0, 16).replace('T', ' ')
+}
+
+/**
+ * 格式化相对时间（D-06 最近编辑展示）：ISO → "刚刚 / n 分钟前 / n 小时前 /
+ * n 天前"，超出 30 天回退绝对时间。
+ * @param iso ISO 时间字符串
+ * @returns 相对时间文本（空入参返回 '—'）
+ */
+function relativeTime(iso?: string | null): string {
+  if (!iso) return '—'
+  const t = new Date(iso).getTime()
+  if (Number.isNaN(t)) return formatTime(iso)
+  const diffMin = Math.floor((Date.now() - t) / 60000)
+  if (diffMin < 1) return '刚刚'
+  if (diffMin < 60) return `${diffMin} 分钟前`
+  const hours = Math.floor(diffMin / 60)
+  if (hours < 24) return `${hours} 小时前`
+  const days = Math.floor(hours / 24)
+  if (days < 30) return `${days} 天前`
+  return formatTime(iso)
+}
+
+/**
+ * 格式化视频时长（D-04 统计卡）：秒 → "x 分 x 秒"，≥1 小时 → "x 小时 x 分"。
+ * @param seconds 视频秒数
+ * @returns 展示文本
+ */
+function formatVideoDuration(seconds: number): string {
+  if (!seconds) return '0 秒'
+  if (seconds >= 3600) {
+    const h = Math.floor(seconds / 3600)
+    const m = Math.round((seconds % 3600) / 60)
+    return m ? `${h} 小时 ${m} 分` : `${h} 小时`
+  }
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m ? `${m} 分 ${s} 秒` : `${s} 秒`
 }
 
 /**
@@ -162,13 +205,16 @@ async function fetchList(): Promise<void> {
 
 /**
  * 统计今日 / 本月创建（D-04）：调后端聚合接口 /users/me/creation-stats，
- * 移除旧版「前 100 条前端本地汇总」逻辑。
+ * 补全本月图片数 / 视频时长 / 积分消耗三项展示。
  */
 async function fetchStats(): Promise<void> {
   try {
     const stats = await usersApi.creationStats()
     todayCount.value = stats.today.projects
     monthCount.value = stats.month.projects
+    monthImages.value = stats.month.images
+    monthVideoSeconds.value = stats.month.video_seconds
+    monthPoints.value = stats.month.points_spent
   } catch {
     // 统计失败局部降级（显示 0），不阻塞列表
   }
@@ -325,19 +371,31 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page-container projects-page">
-    <!-- ==================== 统计卡 ==================== -->
+    <!-- ==================== 统计卡（D-04：创建/图片/视频/积分补全展示） ==================== -->
     <div class="stat-grid">
       <div class="stat-card">
-        <span class="stat-label">今日新建</span>
+        <span class="stat-label">今日新建项目</span>
         <span class="stat-value">{{ todayCount }}</span>
       </div>
       <div class="stat-card">
-        <span class="stat-label">本月创建</span>
+        <span class="stat-label">本月创建项目</span>
         <span class="stat-value">{{ monthCount }}</span>
       </div>
       <div class="stat-card">
         <span class="stat-label">项目总数</span>
         <span class="stat-value">{{ totalProjects }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">本月生成图片</span>
+        <span class="stat-value">{{ monthImages }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">本月视频时长</span>
+        <span class="stat-value stat-value--sm">{{ formatVideoDuration(monthVideoSeconds) }}</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-label">本月消耗积分</span>
+        <span class="stat-value">{{ monthPoints }}</span>
       </div>
     </div>
 
@@ -369,6 +427,7 @@ onBeforeUnmount(() => {
           <el-option v-for="s in STATUS_OPTIONS" :key="s.value" :label="s.label" :value="s.value" />
         </el-select>
         <el-select v-model="sortBy" class="sort-select" @change="onFilterChange">
+          <el-option label="最近编辑" value="recent" />
           <el-option label="最近更新" value="updated_at" />
           <el-option label="最近创建" value="created_at" />
         </el-select>
@@ -421,7 +480,9 @@ onBeforeUnmount(() => {
                 <span>{{ p.style || '未设风格' }}</span>
                 <span>{{ p.aspect_ratio }}</span>
               </div>
-              <div class="card-time">更新于 {{ formatTime(p.updated_at) }}</div>
+              <div class="card-time" :title="`编辑于 ${formatTime(p.updated_at)}`">
+                编辑于 {{ relativeTime(p.updated_at) }}
+              </div>
             </div>
           </div>
         </el-col>
@@ -453,8 +514,10 @@ onBeforeUnmount(() => {
           <template #default="{ row }">{{ row.style || '—' }}</template>
         </el-table-column>
         <el-table-column prop="aspect_ratio" label="比例" width="80" />
-        <el-table-column label="更新时间" width="160">
-          <template #default="{ row }">{{ formatTime(row.updated_at) }}</template>
+        <el-table-column label="最近编辑" width="140">
+          <template #default="{ row }">
+            <span :title="formatTime(row.updated_at)">{{ relativeTime(row.updated_at) }}</span>
+          </template>
         </el-table-column>
         <el-table-column label="操作" width="240" fixed="right">
           <template #default="{ row }">
@@ -508,7 +571,7 @@ onBeforeUnmount(() => {
 /* ---------- 统计卡 ---------- */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 240px));
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
   gap: var(--mf-sp-4);
 }
 .stat-card {
@@ -528,6 +591,10 @@ onBeforeUnmount(() => {
   font-size: var(--mf-fs-2xl);
   font-weight: var(--mf-fw-bold);
   color: var(--mf-brand);
+}
+/* 视频时长等长文本值略缩，避免撑破卡片 */
+.stat-value--sm {
+  font-size: var(--mf-fs-xl);
 }
 
 /* ---------- 公告条 ---------- */

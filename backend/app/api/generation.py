@@ -2,10 +2,12 @@
 
 实现生成任务创建（打样/全量）/ 状态查询 / SSE 进度推送 / 重试与取消：
 - POST /api/projects/{project_id}/storyboards/{storyboard_id}/keyframes  关键帧（trial 打样 / full 全量）
+- POST /api/projects/{project_id}/storyboards/{storyboard_id}/end-frame  尾帧图像生成（P-03/P-08）
 - POST /api/projects/{project_id}/storyboards/{storyboard_id}/video      视频片段
 - POST /api/projects/{project_id}/storyboards/{storyboard_id}/tts        配音
 - GET  /api/projects/{project_id}/tasks                                  任务分页列表
 - GET  /api/tasks/{task_id}                                              任务详情
+- POST /api/tasks/{task_id}/replace                                      生成结果上传替换（P-06）
 - POST /api/tasks/{task_id}/retry                                        失败任务重试
 - POST /api/tasks/{task_id}/cancel                                       取消任务
 - GET  /api/projects/{project_id}/tasks/stream                           SSE 进度推送
@@ -16,16 +18,17 @@
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.sse import sse_event, sse_stream
-from app.models import Project, Task, User, Wallet
+from app.models import Project, Storyboard, Task, User, Wallet
 from app.schemas.common import PageResult
 from app.schemas.generation import (
     KeyframeCreateRequest,
@@ -38,6 +41,7 @@ from app.schemas.generation import (
 )
 from app.services import normalize_pagination
 from app.services.generation_service import (
+    create_end_frame_task,
     create_keyframe_tasks,
     create_retry_task,
     create_tts_task,
@@ -46,6 +50,7 @@ from app.services.generation_service import (
     get_storyboard_of_project,
 )
 from app.services.billing_service import refund_frozen
+from app.services.media_service import save_replace_file
 from app.tasks.runner import CANCEL_EVENTS, request_cancel
 
 router = APIRouter(tags=["generation"])
@@ -119,6 +124,42 @@ async def create_keyframes(
     return KeyframeCreateResponse(tasks=[TaskOut.from_task(t) for t in tasks], total_cost=total_cost)
 
 
+@router.post("/api/projects/{project_id}/storyboards/{storyboard_id}/end-frame", response_model=TaskOut)
+async def create_storyboard_end_frame(
+    project_id: int,
+    storyboard_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskOut:
+    """创建分镜尾帧图像生成任务（P-03/P-08：成本 10 积分/张，meta 标记 end_frame）。
+
+    任务成功后由执行器回写 storyboards.end_frame_url；生成前须确保该镜
+    关键帧已就绪（尾帧以关键帧画面为基准延续生成）。
+
+    Args:
+        project_id: 项目 ID。
+        storyboard_id: 分镜 ID。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        TaskOut: 新建的尾帧图像任务。
+
+    Raises:
+        HTTPException: 400 —— 分镜尚无关键帧，无法生成尾帧；
+            403/404 —— 归属校验失败；409 —— 同分镜已有进行中的尾帧任务或积分不足。
+    """
+    project = await get_owned_project(db, user.id, project_id)
+    storyboard = await get_storyboard_of_project(db, project_id, storyboard_id)
+    if not storyboard.keyframe_url:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该分镜尚未生成关键帧，请先生成关键帧再生成尾帧",
+        )
+    task = await create_end_frame_task(db, project=project, storyboard=storyboard)
+    return TaskOut.from_task(task)
+
+
 @router.post("/api/projects/{project_id}/storyboards/{storyboard_id}/video", response_model=TaskOut)
 async def create_storyboard_video(
     project_id: int,
@@ -140,11 +181,20 @@ async def create_storyboard_video(
         TaskOut: 新建的视频任务。
 
     Raises:
-        HTTPException: 403/404 —— 归属校验失败；409 —— 积分余额不足。
+        HTTPException: 400 —— 使用尾帧但该分镜尾帧尚未生成；
+            403/404 —— 归属校验失败；409 —— 积分余额不足。
     """
     project = await get_owned_project(db, user.id, project_id)
     storyboard = await get_storyboard_of_project(db, project_id, storyboard_id)
-    task = await create_video_task(db, project=project, storyboard=storyboard, use_end_frame=req.use_end_frame)
+    task = await create_video_task(
+        db,
+        project=project,
+        storyboard=storyboard,
+        use_end_frame=req.use_end_frame,
+        resolution=req.resolution,
+        fps=req.fps,
+        motion_strength=req.motion_strength,
+    )
     return TaskOut.from_task(task)
 
 
@@ -260,6 +310,75 @@ async def get_task_detail(
         HTTPException: 404 —— 任务不存在；403 —— 任务所属项目不属于当前用户。
     """
     task = await _get_owned_task(db, user.id, task_id)
+    return TaskOut.from_task(task)
+
+
+@router.post("/api/tasks/{task_id}/replace", response_model=TaskOut)
+async def replace_task_result(
+    task_id: int,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskOut:
+    """上传替换生成结果（P-06）：multipart 一步上传，回写任务结果并联动分镜。
+
+    约束：仅 image 任务且状态 done 可替换；文件为 png/jpg/jpeg/webp 且 ≤10MB；
+    落盘 storage/replaced/{yyyy-mm}/ 后回写 task.result_url，并在 meta 留痕
+    （replaced_from 原地址 / replaced_at ISO 时间 / replaced_by_upload=True）。
+    关键帧任务（meta.target_type=storyboard_keyframe 或 image 任务关联分镜且
+    非尾帧任务）同步更新 storyboards.keyframe_url（前端缩略图取同字段）。
+
+    Args:
+        task_id: 目标任务 ID。
+        file: 上传的替换图片文件。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        TaskOut: 更新后的任务详情（result_url 为新文件地址）。
+
+    Raises:
+        HTTPException: 404 —— 任务不存在；403 —— 任务不属于当前用户；
+            400 —— 任务类型非 image / 状态非 done / 文件格式或大小非法。
+    """
+    task = await _get_owned_task(db, user.id, task_id)
+    if task.type != "image":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="仅图像生成任务支持上传替换"
+        )
+    if task.status != "done":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail="任务尚未完成，无法替换生成结果"
+        )
+
+    new_url, _size = await save_replace_file(file)
+
+    meta = dict(task.meta or {})
+    old_url = task.result_url
+    meta["replaced_from"] = old_url
+    meta["replaced_at"] = datetime.now(timezone.utc).isoformat()
+    meta["replaced_by_upload"] = True
+    # JSONB 整体重新赋值以触发变更检测
+    task.meta = meta
+    task.result_url = new_url
+
+    # 联动分镜：关键帧任务回写 keyframe_url（尾帧任务回写 end_frame_url，不混用）
+    target_type = meta.get("target_type")
+    storyboard_id = meta.get("target_id") or task.storyboard_id
+    if storyboard_id:
+        try:
+            sb_id = int(storyboard_id)
+        except (TypeError, ValueError):
+            sb_id = None
+        if sb_id:
+            sb = await db.get(Storyboard, sb_id)
+            if sb is not None:
+                if target_type == "storyboard_end_frame" or meta.get("end_frame"):
+                    sb.end_frame_url = new_url
+                else:
+                    sb.keyframe_url = new_url
+                    sb.status = "done"
+    await db.commit()
     return TaskOut.from_task(task)
 
 

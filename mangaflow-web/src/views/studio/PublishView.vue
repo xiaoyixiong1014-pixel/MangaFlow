@@ -10,25 +10,35 @@
        violate 红色定位镜头号）；
     ② 版本管理：outputs 列表（版本号 / 分辨率 / 时长 / is_current Tag +「设为当前」
        setCurrent + 选两个版本显示参数 diff 表）；
-    ③ 分享设置：当前版本 share_token 存在显示链接 + 复制；有效期 Select + 密码
+    ③ 分享设置：当前版本 share_token 存在显示链接 + 复制 + 分享二维码（R-06，
+       qrcode toDataURL 渲染，撤回/未分享不显示）；有效期 Select + 密码
        Input + 「生成分享链接」publish + 「撤回分享」revokeShare（confirm）；
   - 导出参数卡：分辨率 Select（720P/1080P/2K）+ 比例 Select + 「导出 MP4」
     （演示提示：成片已含水印标识 watermark_id）+ 下载链接（a href download）；
+  - R-03 片段重生成直连：分镜条每项附「重生成」小按钮，点击携带 storyboard_id
+    query 跳转生成页（生成页自动定位高亮该分镜）；
   - 审核不通过时顶部 el-alert 指引修改。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { CopyDocument } from '@element-plus/icons-vue'
+import { CopyDocument, RefreshRight } from '@element-plus/icons-vue'
+import QRCode from 'qrcode'
 import * as productionApi from '@/api/production'
 import * as studioApi from '@/api/studio'
-import type { FilmOutput, ReviewRecord, Storyboard } from '@/types'
+import { useProjectStore } from '@/stores/project'
+import type { FilmOutput, GenTask, ReviewRecord, Storyboard } from '@/types'
 
 const route = useRoute()
+const router = useRouter()
+const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前选中剧集 ID（S-06 剧集切换器；null = 默认剧集，分镜条不传 episode_id） */
+const currentEpisodeId = computed(() => projectStore.currentEpisodeId)
 
 // ============================================================
 // 基础数据
@@ -42,28 +52,67 @@ const outputs = ref<FilmOutput[]>([])
 const reviewList = ref<ReviewRecord[]>([])
 /** 分镜列表（分镜条用） */
 const boards = ref<Storyboard[]>([])
+/** 分镜占位标记映射（分镜 ID → 最新已完成关键帧任务是否为演示占位，D3 角标） */
+const sbPlaceholderMap = ref<Record<number, boolean>>({})
+/** 当前成片是否为演示占位产物（取最近一条已完成合成任务的 placeholder 标记；
+ * FilmOutput 与任务无直接外键关联，按「项目最近合成任务」近似判定） */
+const composePlaceholder = ref(false)
 /** 当前版本 */
 const currentOutput = computed(() => outputs.value.find((o) => o.is_current) ?? null)
 
 /**
+ * 依据任务列表构建「分镜 → 演示占位」映射（分镜条缩略图角标用）。
+ * @param items 关键帧任务列表（创建时间倒序）
+ * @returns 无
+ */
+function buildPlaceholderMap(items: GenTask[]): void {
+  const map: Record<number, boolean> = {}
+  for (const t of items) {
+    if (t.type !== 'image' || !t.storyboard_id || t.status !== 'done') continue
+    if (!(t.storyboard_id in map)) map[t.storyboard_id] = !!t.placeholder
+  }
+  sbPlaceholderMap.value = map
+}
+
+/**
  * 拉取成片 / 审核 / 分镜数据。
+ * S-06：分镜条按当前选中剧集过滤（默认剧集 = 不传 episode_id，返回全部）；
+ * 成片版本列表不按剧集过滤（outputs 接口未提供剧集维度，保持既有行为）。
+ * 另拉取任务列表（关键帧 / 合成）以解析演示占位标记（任务失败静默不影响主流程）。
  * @returns 无
  */
 async function loadAll(): Promise<void> {
   loading.value = true
   try {
-    const [outs, revs, sb] = await Promise.all([
+    const [outs, revs, sb, imgTasks, composeTasks] = await Promise.all([
       productionApi.outputs(projectId.value, { page: 1, page_size: 20 }),
       productionApi.reviews(projectId.value, { page: 1, page_size: 50 }).catch(() => null),
-      studioApi.listStoryboard(projectId.value).catch(() => []),
+      studioApi
+        .listStoryboard(projectId.value, currentEpisodeId.value ?? undefined)
+        .catch(() => []),
+      productionApi
+        .taskList(projectId.value, { page: 1, page_size: 100, type: 'image' })
+        .catch(() => null),
+      productionApi
+        .taskList(projectId.value, { page: 1, page_size: 20, type: 'compose' })
+        .catch(() => null),
     ])
     outputs.value = outs.items
     reviewList.value = revs?.items ?? []
     boards.value = sb
+    buildPlaceholderMap(imgTasks?.items ?? [])
+    composePlaceholder.value = !!(composeTasks?.items ?? []).find(
+      (t) => t.status === 'done',
+    )?.placeholder
   } finally {
     loading.value = false
   }
 }
+
+// 切换剧集（S-06）后按新剧集重新加载分镜条
+watch(currentEpisodeId, () => {
+  void loadAll()
+})
 
 // ============================================================
 // 播放器与分镜条
@@ -96,6 +145,19 @@ function seekToShot(index: number): void {
   const ratio = video.duration && isFinite(video.duration) ? video.duration / totalBoard : 1
   video.currentTime = Math.min(video.duration - 0.05, startSec * ratio)
   void video.play().catch(() => undefined)
+}
+
+/**
+ * 跳转生成页重生成该分镜（R-03 片段重生成直连）：携带 storyboard_id query，
+ * 生成页 onMounted 自动高亮定位该分镜并提示可重新发起生成。
+ * @param b 目标分镜
+ * @returns 无
+ */
+function regenShot(b: Storyboard): void {
+  void router.push({
+    path: `/projects/${projectId.value}/production`,
+    query: { storyboard_id: b.id },
+  })
 }
 
 // ============================================================
@@ -180,6 +242,35 @@ const shareLink = computed(() =>
   currentOutput.value?.share_token
     ? `${window.location.origin}/share/${currentOutput.value.share_token}`
     : '',
+)
+
+/** 有效分享链接（未撤回才有值；二维码与链接区共用的展示口径） */
+const validShareLink = computed(() =>
+  shareLink.value && !currentOutput.value?.share_revoked ? shareLink.value : '',
+)
+
+/** 分享二维码 data URL（R-06；无效/撤回/生成失败时为空串隐藏） */
+const qrDataUrl = ref('')
+
+// 有效分享链接变化时同步生成二维码（R-06 分享二维码）：
+// 生成成功后渲染，撤回/未分享状态清空不显示；失败静默隐藏（复制链接仍可用）
+watch(
+  validShareLink,
+  (link) => {
+    if (!link) {
+      qrDataUrl.value = ''
+      return
+    }
+    QRCode.toDataURL(link, { width: 132, margin: 1 })
+      .then((url) => {
+        // 异步回调期间链接可能已被撤回/切换，回写前再校验一次
+        if (validShareLink.value === link) qrDataUrl.value = url
+      })
+      .catch(() => {
+        qrDataUrl.value = ''
+      })
+  },
+  { immediate: true },
 )
 
 /**
@@ -322,6 +413,10 @@ onMounted(loadAll)
             <div class="player-head">
               <span>当前成片 v{{ currentOutput?.version_no ?? '—' }}</span>
               <el-tag v-if="currentOutput?.is_current" size="small" type="success">当前版本</el-tag>
+              <!-- D3 演示占位角标：最近一次合成任务命中 mock 兜底渠道 -->
+              <el-tag v-if="composePlaceholder" size="small" type="warning" effect="light">
+                演示占位
+              </el-tag>
             </div>
           </template>
           <template v-if="currentOutput">
@@ -362,7 +457,27 @@ onMounted(loadAll)
               class="shot-img"
             />
             <div v-else class="shot-img shot-img--empty">#{{ String(b.sequence).padStart(2, '0') }}</div>
+            <!-- D3 演示占位角标：该镜关键帧任务命中 mock 兜底渠道 -->
+            <el-tag
+              v-if="sbPlaceholderMap[b.id]"
+              class="shot-ph-tag"
+              size="small"
+              type="warning"
+              effect="light"
+            >
+              占位
+            </el-tag>
             <span class="shot-no">#{{ String(b.sequence).padStart(2, '0') }}</span>
+            <!-- R-03 片段重生成直连：跳生成页并定位该分镜 -->
+            <el-button
+              class="shot-regen"
+              size="small"
+              type="primary"
+              circle
+              :icon="RefreshRight"
+              title="到生成页重新生成分镜"
+              @click.stop="regenShot(b)"
+            />
           </div>
         </div>
 
@@ -471,11 +586,16 @@ onMounted(loadAll)
           <el-tab-pane label="分享设置">
             <template v-if="currentOutput">
               <!-- 已有分享链接 -->
-              <div v-if="shareLink && !currentOutput.share_revoked" class="share-link-box">
+              <div v-if="validShareLink" class="share-link-box">
                 <div class="layer-label">当前分享链接</div>
                 <div class="share-link">
                   <span class="share-url">{{ shareLink }}</span>
                   <el-button size="small" :icon="CopyDocument" @click="copyLink">复制</el-button>
+                </div>
+                <!-- R-06 分享二维码：链接生成成功后渲染，撤回/未分享状态不显示 -->
+                <div v-if="qrDataUrl" class="share-qr">
+                  <img :src="qrDataUrl" alt="分享链接二维码" class="qr-img" />
+                  <span class="qr-tip">手机扫码访问分享页</span>
                 </div>
                 <div class="share-meta">
                   <el-tag
@@ -515,7 +635,7 @@ onMounted(loadAll)
               <el-button type="primary" :loading="publishing" @click="doPublish">
                 生成分享链接
               </el-button>
-              <div class="share-note">二维码：发布后可在浏览器地址栏直接访问分享链接</div>
+              <div class="share-note">生成成功后将展示访问链接与二维码，可复制或扫码分享</div>
             </template>
             <el-empty v-else description="暂无当前版本可分享" />
           </el-tab-pane>
@@ -618,6 +738,14 @@ onMounted(loadAll)
   border-radius: 4px;
   padding: 0 4px;
 }
+/* D3 演示占位角标（分镜条缩略图右上角） */
+.shot-ph-tag {
+  position: absolute;
+  right: 4px;
+  top: 4px;
+  transform: scale(0.85);
+  transform-origin: top right;
+}
 .export-form {
   display: flex;
   align-items: center;
@@ -719,6 +847,31 @@ onMounted(loadAll)
   gap: var(--mf-sp-2);
   color: var(--mf-text-3);
   font-size: var(--mf-fs-sm);
+}
+/* R-06 分享二维码（链接 + 提示横向排列） */
+.share-qr {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-3);
+  padding: var(--mf-sp-2);
+  border: 1px dashed var(--mf-border);
+  border-radius: var(--mf-r-ctl);
+}
+.qr-img {
+  width: 132px;
+  height: 132px;
+  display: block;
+  border-radius: var(--mf-r-ctl);
+}
+.qr-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+}
+/* R-03 分镜条重生成直连按钮（缩略图右下角） */
+.shot-regen {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
 }
 .share-note {
   margin-top: var(--mf-sp-3);

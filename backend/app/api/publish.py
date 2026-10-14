@@ -30,7 +30,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models import FilmOutput, Project, ReviewRecord, Storyboard, User
+from app.models import Episode, FilmOutput, Project, ReviewRecord, Storyboard, User
 from app.schemas.common import PageResult
 from app.schemas.generation import TaskOut
 from app.schemas.publish import (
@@ -49,14 +49,19 @@ router = APIRouter(tags=["publish"])
 
 
 async def _resolve_involved_storyboard_ids(
-    db: AsyncSession, project_id: int, storyboard_ids: Optional[List[int]]
+    db: AsyncSession,
+    project_id: int,
+    storyboard_ids: Optional[List[int]],
+    episode_id: Optional[int] = None,
 ) -> List[int]:
-    """解析本次合成涉及的分镜 ID 集合（增量模式按指定清单过滤，Task 5.3）。
+    """解析本次合成涉及的分镜 ID 集合（增量模式按指定清单过滤，Task 5.3；
+    S-06 传入 episode_id 时仅取该剧集的分镜）。
 
     Args:
         db: 请求级异步数据库会话。
         project_id: 项目 ID。
         storyboard_ids: 请求指定的分镜 ID 清单（None/空表示全量）。
+        episode_id: 可选剧集 ID（S-06；None 表示不限剧集，向后兼容）。
 
     Returns:
         List[int]: 涉及分镜 ID（按镜头序号排序）。
@@ -64,10 +69,11 @@ async def _resolve_involved_storyboard_ids(
     Raises:
         HTTPException: 400 —— 指定清单含不属于该项目的分镜。
     """
+    conds = [Storyboard.project_id == project_id]
+    if episode_id is not None:
+        conds.append(Storyboard.episode_id == episode_id)
     rows = await db.execute(
-        select(Storyboard.id)
-        .where(Storyboard.project_id == project_id)
-        .order_by(Storyboard.sequence)
+        select(Storyboard.id).where(*conds).order_by(Storyboard.sequence)
     )
     all_ids = list(rows.scalars().all())
     if not storyboard_ids:
@@ -213,7 +219,7 @@ async def create_compose(
     Args:
         project_id: 项目 ID。
         req: 请求体（resolution / aspect_ratio / mode / storyboard_ids /
-            subtitles / subtitle_style / bgm / transition）。
+            episode_id / subtitles / subtitle_style / bgm / transition）。
         user: 当前登录用户。
         db: 请求级异步数据库会话。
 
@@ -222,12 +228,19 @@ async def create_compose(
 
     Raises:
         HTTPException: 400 —— 项目无分镜/增量清单非法/闸门二拦截；
-            403/404 —— 归属校验失败；409 —— 积分不足。
+            403/404 —— 归属校验失败（含 episode_id 不属于该项目）；
+            409 —— 积分不足。
     """
     project = await get_owned_project(db, user.id, project_id)
-    # 解析本次合成涉及的分镜（增量模式按指定清单过滤，Task 5.3）
+    # S-06：episode_id 传入时校验剧集归属（不属于该项目一律 404）
+    if req.episode_id is not None:
+        episode = await db.get(Episode, req.episode_id)
+        if episode is None or episode.project_id != project.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="剧集不存在")
+    # 解析本次合成涉及的分镜（增量模式按指定清单过滤；episode_id 传入时仅取该剧集分镜）
     involved_ids = await _resolve_involved_storyboard_ids(
-        db, project.id, req.storyboard_ids if req.mode == "incremental" else None
+        db, project.id, req.storyboard_ids if req.mode == "incremental" else None,
+        episode_id=req.episode_id,
     )
     # 闸门二（RD-34）：合成前审核记录真实判定，未放行即拦截
     await _check_compose_gate(db, project.id, involved_ids)
@@ -242,6 +255,7 @@ async def create_compose(
         aspect_ratio=req.aspect_ratio or project.aspect_ratio,
         mode=req.mode,
         storyboard_ids=involved_ids if req.mode == "incremental" else None,
+        episode_id=req.episode_id,
         subtitles=req.subtitles,
         subtitle_style=req.subtitle_style.model_dump() if req.subtitle_style else None,
         bgm=req.bgm.model_dump() if req.bgm else None,

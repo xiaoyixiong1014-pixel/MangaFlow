@@ -26,9 +26,12 @@
   - 插件/集成（Task 9）：左侧插件分组（listPlugins）一键添加 plugin 节点；
     右侧"集成"页签管理 MCP server（operator 可增删）、浏览工具并添加
     mcp_tool 节点；检查器支持 plugin 执行与 mcp_tool arguments JSON 编辑。
+  - 沉淀回流（A-10/CV-24）：图像节点有产物时检查器展示"沉淀入资产库"，
+    弹窗选资产类型（角色/场景/道具）与可选名称后调 sinkNode，成功消息
+    附跳转 /assets 链接，重复沉淀提示"已沉淀过"。
 -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions, UploadFile } from 'element-plus'
@@ -1288,6 +1291,89 @@ async function executeSelectedNode(): Promise<void> {
   }
 }
 
+// ============================================================
+// 沉淀入资产库（A-10/CV-24：画布 → 资产库回流）
+// ============================================================
+
+/** 沉淀资产类型中文映射（弹窗单选与成功提示用） */
+const SINK_ASSET_LABELS: Record<'character' | 'scene' | 'prop', string> = {
+  character: '角色',
+  scene: '场景',
+  prop: '道具',
+}
+
+/**
+ * 当前图像节点产物 URL（data.output / data.url 中的资源地址；非 image 节点为空串）。
+ * 产物非空才在检查器展示"沉淀入资产库"入口。
+ */
+const sinkArtifactUrl = computed(() => {
+  const node = selectedNode.value
+  if (!node || node.node_type !== 'image') return ''
+  return previewUrl(node)
+})
+
+/** 沉淀弹窗开关 */
+const sinkDialogVisible = ref(false)
+/** 沉淀表单：资产类型（单选）+ 可选名称 */
+const sinkForm = reactive<{ assetType: 'character' | 'scene' | 'prop'; name: string }>({
+  assetType: 'character',
+  name: '',
+})
+/** 沉淀提交中（确认按钮 loading） */
+const sinkSubmitting = ref(false)
+
+/**
+ * 打开沉淀弹窗：重置表单，名称预填节点标签（类型名为"图像"时不预填）。
+ */
+function openSinkDialog(): void {
+  sinkForm.assetType = 'character'
+  const title = nodeTitle(selectedNode.value)
+  sinkForm.name = title && title !== TYPE_LABELS.image ? title : ''
+  sinkDialogVisible.value = true
+}
+
+/**
+ * 提交沉淀：调用 sinkNode 接口建资产；成功按 duplicated 区分提示
+ * （重复沉淀提示"已沉淀过"），并在成功消息中提供跳转 /assets 的链接。
+ * 失败已由 axios 拦截器统一提示，此处静默吞掉异常。
+ */
+async function submitSink(): Promise<void> {
+  const node = selectedNode.value
+  if (!node) return
+  sinkSubmitting.value = true
+  try {
+    const res = await canvasApi.sinkNode(node.id, {
+      asset_type: sinkForm.assetType,
+      name: sinkForm.name.trim() || undefined,
+    })
+    sinkDialogVisible.value = false
+    if (res.duplicated) {
+      ElMessage.warning('该节点已沉淀过资产库，无需重复沉淀')
+      return
+    }
+    const gotoAssets = (e: MouseEvent): void => {
+      e.preventDefault()
+      void router.push('/assets')
+    }
+    ElMessage({
+      type: 'success',
+      duration: 6000,
+      message: h('span', { style: 'display:inline-flex;align-items:center;gap:6px' }, [
+        `已沉淀入资产库（${SINK_ASSET_LABELS[res.asset_type]} · ID ${res.asset_id}）`,
+        h(
+          'a',
+          { href: '/assets', style: 'color:var(--el-color-primary);cursor:pointer', onClick: gotoAssets },
+          '前往资产库',
+        ),
+      ]),
+    })
+  } catch {
+    /* 400/404 等已由拦截器提示 */
+  } finally {
+    sinkSubmitting.value = false
+  }
+}
+
 /** MCP server 配置列表（GET /api/mcp/servers，站点设置 KV） */
 const mcpList = ref<McpServer[]>([])
 /** MCP 列表加载中 */
@@ -1940,6 +2026,18 @@ onBeforeUnmount(() => {
                   <div class="output-box">{{ outputText(selectedNode) }}</div>
                 </div>
 
+                <!-- 沉淀入资产库（A-10/CV-24：仅图像节点且有产物时展示） -->
+                <el-button
+                  v-if="selectedNode && selectedNode.node_type === 'image' && sinkArtifactUrl"
+                  type="primary"
+                  plain
+                  size="small"
+                  class="del-btn"
+                  @click="openSinkDialog"
+                >
+                  沉淀入资产库
+                </el-button>
+
                 <el-button type="danger" plain size="small" class="del-btn" @click="removeSelected">
                   删除节点（级联删除连边）
                 </el-button>
@@ -2042,6 +2140,33 @@ onBeforeUnmount(() => {
           </el-tab-pane>
         </el-tabs>
       </aside>
+
+      <!-- 沉淀入资产库弹窗（A-10/CV-24：资产类型单选 + 可选名称） -->
+      <el-dialog v-model="sinkDialogVisible" title="沉淀入资产库" width="400px" append-to-body>
+        <el-form label-width="76px" @submit.prevent>
+          <el-form-item label="资产类型">
+            <el-radio-group v-model="sinkForm.assetType">
+              <el-radio-button value="character">角色</el-radio-button>
+              <el-radio-button value="scene">场景</el-radio-button>
+              <el-radio-button value="prop">道具</el-radio-button>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item label="资产名称">
+            <el-input
+              v-model="sinkForm.name"
+              size="small"
+              maxlength="50"
+              placeholder="可留空，默认取节点标签"
+            />
+          </el-form-item>
+        </el-form>
+        <template #footer>
+          <el-button size="small" @click="sinkDialogVisible = false">取消</el-button>
+          <el-button type="primary" size="small" :loading="sinkSubmitting" @click="submitSink">
+            确认沉淀
+          </el-button>
+        </template>
+      </el-dialog>
     </div>
   </div>
 </template>

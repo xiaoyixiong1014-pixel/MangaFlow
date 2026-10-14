@@ -6,6 +6,9 @@
   - 空态：无分镜时展示「AI 拆解分镜」大按钮（decompose → loading → 刷新列表）；
   - 顶部工具条：总时长 / 预计成本（分镜数 × 10 积分文案，RD-20 拆解阶段成本可见）、
     节奏预警徽标（点开抽屉：storyboardWarnings → 告警 el-alert 列表，RD-22）、
+    连续性检查（SB-06：suspect 红点 / info 灰点分组弹窗，点击项滚动定位分镜卡）、
+    自动时长（SB-07：输入目标秒数等比缩放落库 + 前后对比摘要）、
+    导出分镜表（xlsx / csv / pdf，SB-08）、
     「投递画布」按钮（deliverToCanvas → 成功后确认打开画布）；
   - 分镜卡片列表：vuedraggable 未安装（且禁止新增依赖），改用「上移 / 下移」按钮 +
     reorder(ordered_ids) 实现重排，注释说明为拖拽的替代实现；
@@ -17,18 +20,24 @@
   - 底部「确认分镜，进入生成」→ 跳 /projects/:id/production。
 -->
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Warning } from '@element-plus/icons-vue'
 import * as studioApi from '@/api/studio'
+import { useProjectStore } from '@/stores/project'
 import type { AssetsGroup, Storyboard, StoryboardWarning } from '@/types'
+import type { AutoFitDurationResult, ContinuityItem } from '@/api/studio'
 
 const route = useRoute()
 const router = useRouter()
+const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前选中剧集 ID（S-06 剧集切换器；null = 默认剧集，列表不传 episode_id） */
+const currentEpisodeId = computed(() => projectStore.currentEpisodeId)
 
 // ============================================================
 // 分镜列表
@@ -41,17 +50,26 @@ const boards = ref<Storyboard[]>([])
 
 /**
  * 拉取分镜列表（quiet=true 静默刷新）。
+ * S-06：按当前选中剧集过滤（默认剧集 = 不传 episode_id，返回全部，向后兼容）。
  * @param quiet 是否静默
  * @returns 无
  */
 async function loadBoards(quiet = false): Promise<void> {
   if (!quiet) loading.value = true
   try {
-    boards.value = await studioApi.listStoryboard(projectId.value)
+    boards.value = await studioApi.listStoryboard(
+      projectId.value,
+      currentEpisodeId.value ?? undefined,
+    )
   } finally {
     if (!quiet) loading.value = false
   }
 }
+
+// 切换剧集（S-06）后按新剧集重新加载分镜
+watch(currentEpisodeId, () => {
+  void loadBoards()
+})
 
 // ============================================================
 // AI 拆解
@@ -133,25 +151,140 @@ async function openWarnings(): Promise<void> {
 /** 导出进行中（防重复点击） */
 const exporting = ref(false)
 /** 当前导出格式（按钮 loading 依据） */
-const exportFormat = ref<'xlsx' | 'csv' | null>(null)
+const exportFormat = ref<'xlsx' | 'csv' | 'pdf' | null>(null)
 
 /**
- * 导出分镜表（xlsx / csv，episode_id=0 表示项目全部分镜）。
+ * 导出分镜表（xlsx / csv / pdf）。
+ * S-06：选中具体剧集时按该剧集导出（episode_id 走路径参数）；
+ * 默认剧集回退 episode_id=0 全量导出（兼容语义）。
  * @param format 导出格式
  * @returns 无
  */
-async function exportSheet(format: 'xlsx' | 'csv'): Promise<void> {
+async function exportSheet(format: 'xlsx' | 'csv' | 'pdf'): Promise<void> {
   if (exporting.value) return
   exporting.value = true
   exportFormat.value = format
   try {
-    await studioApi.exportStoryboardSheet(projectId.value, format)
+    await studioApi.exportStoryboardSheet(
+      projectId.value,
+      format,
+      currentEpisodeId.value ?? undefined,
+    )
     ElMessage.success('分镜表已开始下载')
   } catch {
     // 错误已由拦截器提示
   } finally {
     exporting.value = false
     exportFormat.value = null
+  }
+}
+
+// ============================================================
+// 连续性检查（SB-06，RD-23 宁可漏报不误报）
+// ============================================================
+
+/** 连续性检查弹窗可见性 */
+const contVisible = ref(false)
+/** 连续性检查加载中 */
+const contLoading = ref(false)
+/** 问题列表（无问题为空） */
+const contItems = ref<ContinuityItem[]>([])
+/** 检查的相邻镜头对数量 */
+const contPairs = ref(0)
+/** 疑似冲突分组（suspect，红点展示） */
+const contSuspects = computed(() => contItems.value.filter((i) => i.confidence === 'suspect'))
+/** 信息提示分组（info，灰点展示） */
+const contInfos = computed(() => contItems.value.filter((i) => i.confidence === 'info'))
+/** 当前高亮定位的分镜 ID（点击问题项临时高亮对应卡片） */
+const flashBoardId = ref<number | null>(null)
+/** 高亮复位定时器句柄（重复定位时重置） */
+let flashTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 打开连续性检查弹窗并拉取检查结果。
+ * @returns 无
+ */
+async function openContinuity(): Promise<void> {
+  contVisible.value = true
+  contLoading.value = true
+  try {
+    const res = await studioApi.continuityCheck(
+      projectId.value,
+      currentEpisodeId.value ?? undefined,
+    )
+    contItems.value = res.items ?? []
+    contPairs.value = res.checked_pairs ?? 0
+  } finally {
+    contLoading.value = false
+  }
+}
+
+/**
+ * 定位问题到对应分镜卡：平滑滚动至卡片并临时高亮 2 秒。
+ * @param item 目标问题项
+ * @returns 无
+ */
+function locateContinuityItem(item: ContinuityItem): void {
+  if (!item.storyboard_id) return
+  document.getElementById(`sb-card-${item.storyboard_id}`)?.scrollIntoView({
+    behavior: 'smooth',
+    block: 'center',
+  })
+  flashBoardId.value = item.storyboard_id
+  if (flashTimer) clearTimeout(flashTimer)
+  flashTimer = setTimeout(() => {
+    flashBoardId.value = null
+  }, 2000)
+}
+
+// ============================================================
+// 目标时长自动调整（SB-07，等比缩放落库）
+// ============================================================
+
+/** 自动调整弹窗可见性 */
+const fitVisible = ref(false)
+/** 自动调整提交中 */
+const fitLoading = ref(false)
+/** 目标总时长输入（秒） */
+const fitTarget = ref(60)
+/** 调整摘要（确认后回填展示，前后对比） */
+const fitResult = ref<AutoFitDurationResult | null>(null)
+/** 每镜调整对比列表（空安全） */
+const fitShots = computed(() => fitResult.value?.per_shot ?? [])
+
+/**
+ * 打开自动调整弹窗（默认目标 = 当前总时长，便于微调）。
+ * @returns 无
+ */
+function openAutoFit(): void {
+  fitTarget.value = totalDuration.value || 60
+  fitResult.value = null
+  fitVisible.value = true
+}
+
+/**
+ * 确认按时长自动调整：等比缩放落库后静默刷新列表并展示摘要。
+ * @returns 无
+ */
+async function confirmAutoFit(): Promise<void> {
+  if (fitLoading.value) return
+  const target = Math.round(fitTarget.value)
+  if (!Number.isFinite(target) || target < 1 || target > 3600) {
+    ElMessage.warning('目标总时长须在 1~3600 秒之间')
+    return
+  }
+  fitLoading.value = true
+  try {
+    fitResult.value = await studioApi.autoFitDuration(
+      projectId.value,
+      target,
+      currentEpisodeId.value ?? undefined,
+    )
+    await loadBoards(true)
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    fitLoading.value = false
   }
 }
 
@@ -455,9 +588,14 @@ onMounted(loadBoards)
         <span>总时长 <b>{{ Math.floor(totalDuration / 60) }}分{{ totalDuration % 60 }}秒</b>（{{ totalDuration }}s）</span>
         <el-divider direction="vertical" />
         <span class="toolbar-cost">预估生成消耗：{{ boards.length }} 镜 ≈ {{ estimatedCost }} 积分</span>
-        <!-- 导出分镜表（Task 10.4：episode_id=0 全量导出） -->
+        <!-- 连续性检查（SB-06：窄口径规则，suspect/info 分组展示） -->
+        <el-button class="toolbar-btn" :loading="contLoading && contVisible" @click="openContinuity">
+          连续性检查
+        </el-button>
+        <!-- 目标时长自动调整（SB-07：等比缩放落库） -->
+        <el-button @click="openAutoFit">自动时长</el-button>
+        <!-- 导出分镜表（Task 10.4 + SB-08：episode_id=0 全量导出） -->
         <el-button
-          class="toolbar-btn"
           :loading="exportFormat === 'xlsx'"
           :disabled="exporting"
           @click="exportSheet('xlsx')"
@@ -465,21 +603,33 @@ onMounted(loadBoards)
           导出 Excel
         </el-button>
         <el-button
-          class="toolbar-btn"
           :loading="exportFormat === 'csv'"
           :disabled="exporting"
           @click="exportSheet('csv')"
         >
           导出 CSV
         </el-button>
-        <el-button class="toolbar-btn" type="primary" plain @click="runDecompose" :loading="decomposing">
+        <el-button
+          :loading="exportFormat === 'pdf'"
+          :disabled="exporting"
+          @click="exportSheet('pdf')"
+        >
+          导出 PDF
+        </el-button>
+        <el-button type="primary" plain @click="runDecompose" :loading="decomposing">
           重新拆解
         </el-button>
       </div>
 
-      <!-- 分镜卡片列表（上移/下移按钮替代拖拽） -->
+      <!-- 分镜卡片列表（上移/下移按钮替代拖拽；卡片 id 供连续性问题定位） -->
       <div class="board-list">
-        <el-card v-for="(b, i) in boards" :key="b.id" shadow="hover" class="board-card">
+        <el-card
+          v-for="(b, i) in boards"
+          :id="`sb-card-${b.id}`"
+          :key="b.id"
+          shadow="hover"
+          :class="['board-card', { 'board-card-flash': flashBoardId === b.id }]"
+        >
           <template #header>
             <div class="board-head">
               <span class="board-no">#{{ String(b.sequence).padStart(2, '0') }}</span>
@@ -654,6 +804,73 @@ onMounted(loadBoards)
         />
       </div>
     </el-drawer>
+
+    <!-- 连续性检查弹窗（SB-06：suspect 红点 / info 灰点分组，点击项定位分镜卡） -->
+    <el-dialog v-model="contVisible" title="连续性检查" width="640px" append-to-body>
+      <div v-loading="contLoading">
+        <div class="cont-summary">共检查 {{ contPairs }} 组相邻镜头</div>
+        <el-empty v-if="!contItems.length" description="未发现连续性问题" />
+        <template v-else>
+          <template v-if="contSuspects.length">
+            <div class="cont-group-title">疑似冲突</div>
+            <div
+              v-for="(item, i) in contSuspects"
+              :key="`s-${i}`"
+              class="cont-item"
+              title="点击定位到对应分镜"
+              @click="locateContinuityItem(item)"
+            >
+              <span class="cont-dot cont-dot-suspect" />
+              <span class="cont-msg">{{ item.message }}</span>
+            </div>
+          </template>
+          <template v-if="contInfos.length">
+            <div class="cont-group-title">信息提示</div>
+            <div
+              v-for="(item, i) in contInfos"
+              :key="`i-${i}`"
+              class="cont-item"
+              title="点击定位到对应分镜"
+              @click="locateContinuityItem(item)"
+            >
+              <span class="cont-dot cont-dot-info" />
+              <span class="cont-msg">{{ item.message }}</span>
+            </div>
+          </template>
+        </template>
+      </div>
+    </el-dialog>
+
+    <!-- 目标时长自动调整弹窗（SB-07：输入目标秒数 → 等比缩放 → 前后对比摘要） -->
+    <el-dialog v-model="fitVisible" title="按时长自动调整" width="520px" append-to-body>
+      <el-form label-width="100px">
+        <el-form-item label="目标总时长">
+          <el-input-number v-model="fitTarget" :min="1" :max="3600" :step="5" step-strictly />
+          <span class="fit-unit">秒</span>
+        </el-form-item>
+        <el-form-item label="当前总时长">
+          <span class="fit-current"> {{ totalDuration }} 秒（{{ boards.length }} 镜）</span>
+        </el-form-item>
+      </el-form>
+      <div class="fit-tip">各镜按时长占比等比缩放（单镜保底 1 秒），调整后总时长 ≈ 目标值</div>
+      <template v-if="fitResult">
+        <el-alert
+          type="success"
+          :closable="false"
+          class="fit-result"
+          :title="`调整完成：${fitResult.before_total}s → ${fitResult.after_total}s（目标 ${fitResult.target_seconds}s），变更 ${fitResult.changed} 镜`"
+        />
+        <div v-if="fitShots.length" class="fit-list">
+          <div v-for="d in fitShots" :key="d.id" class="fit-line">
+            {{ d.before }}s → <b>{{ d.after }}s</b>
+          </div>
+        </div>
+      </template>
+      <template #footer>
+        <el-button @click="fitVisible = false">关闭</el-button>
+        <el-button type="primary" :loading="fitLoading" @click="confirmAutoFit">开始调整</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -788,5 +1005,73 @@ onMounted(loadBoards)
 }
 .warn-item {
   margin-bottom: var(--mf-sp-2);
+}
+/* 连续性问题定位时的高亮（2 秒后由脚本复位） */
+.board-card-flash {
+  box-shadow: 0 0 0 2px var(--mf-brand);
+  transition: box-shadow 0.3s;
+}
+.cont-summary {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  margin-bottom: var(--mf-sp-3);
+}
+.cont-group-title {
+  font-weight: var(--mf-fw-bold);
+  margin: var(--mf-sp-2) 0;
+}
+.cont-item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--mf-sp-2);
+  padding: var(--mf-sp-2);
+  border-radius: var(--mf-r-ctl);
+  cursor: pointer;
+}
+.cont-item:hover {
+  background: var(--mf-surface-2);
+}
+.cont-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-top: 7px;
+  flex: none;
+}
+.cont-dot-suspect {
+  background: var(--el-color-danger, #f56c6c);
+}
+.cont-dot-info {
+  background: var(--el-text-color-placeholder, #c0c4cc);
+}
+.cont-msg {
+  font-size: var(--mf-fs-sm);
+  line-height: 1.7;
+}
+.fit-unit {
+  margin-left: var(--mf-sp-2);
+  color: var(--mf-text-3);
+}
+.fit-current {
+  color: var(--mf-text-2);
+}
+.fit-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+  margin-bottom: var(--mf-sp-2);
+}
+.fit-result {
+  margin-bottom: var(--mf-sp-2);
+}
+.fit-list {
+  max-height: 200px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.fit-line {
+  font-size: var(--mf-fs-sm);
+  color: var(--mf-text-2);
 }
 </style>

@@ -117,6 +117,64 @@ async def get_script_or_404(db: AsyncSession, project: Project) -> Script:
     return script
 
 
+async def validate_episode(
+    db: AsyncSession, project: Project, episode_id: int
+) -> None:
+    """校验剧集存在且属于指定项目（S-06 剧集链路适配共用）。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+        episode_id: 剧集 ID。
+
+    Returns:
+        None
+
+    Raises:
+        HTTPException: 404 —— 剧集不存在或不属于该项目（统一 404，不泄露存在性）。
+    """
+    from app.models import Episode
+
+    episode = await db.get(Episode, episode_id)
+    if episode is None or episode.project_id != project.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="剧集不存在")
+
+
+async def get_script_scoped_or_404(
+    db: AsyncSession, project: Project, episode_id: Optional[int]
+) -> Script:
+    """按剧集范围获取剧本行，不存在时抛 404（S-06）。
+
+    范围语义（与存量数据完全兼容——存量剧本行 episode_id 均为 NULL）：
+    - episode_id 为 None：定位「未绑定剧集」的默认剧本行（episode_id IS NULL），
+      即既有单剧本行项目的唯一行，行为与 get_script_or_404 一致；
+    - episode_id 传值：定位该剧集绑定的剧本行（uk_scripts_project 保证
+      (project_id, episode_id) 唯一）。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+        episode_id: 剧集 ID（None 表示默认/未绑定剧集剧本行）。
+
+    Returns:
+        Script: 剧本 ORM 对象。
+
+    Raises:
+        HTTPException: 404 —— 对应范围的剧本行不存在。
+    """
+    conds = [Script.project_id == project.id]
+    if episode_id is None:
+        conds.append(Script.episode_id.is_(None))
+    else:
+        conds.append(Script.episode_id == episode_id)
+    script = (
+        await db.execute(select(Script).where(*conds))
+    ).scalar_one_or_none()
+    if script is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="剧本不存在，请先保存剧本输入")
+    return script
+
+
 def strip_json_fences(text: str) -> str:
     """剥离 LLM 输出中的 markdown 围栏并截取首尾大括号之间的内容。
 

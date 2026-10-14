@@ -41,10 +41,14 @@ class ScriptInputRequest(BaseModel):
     Attributes:
         mode: 输入模式 idea（点子）/ novel（小说）/ outline（大纲）。
         raw_text: 原始输入文本（非空）。
+        episode_id: 可选剧集 ID（S-06；传入时写入该剧本行的 episode_id，
+            缺省绑定到未绑定剧集的默认剧本行，存量数据 episode_id 均为 NULL，
+            行为与既有接口完全一致）。
     """
 
     mode: Literal["idea", "novel", "outline"]
     raw_text: str = Field(min_length=1, description="原始输入文本")
+    episode_id: Optional[int] = Field(default=None, description="可选剧集 ID（S-06）")
 
 
 class ScriptSaveRequest(BaseModel):
@@ -53,10 +57,13 @@ class ScriptSaveRequest(BaseModel):
     Attributes:
         content: 用户编辑后的剧本内容（整体以 source=user 包装落库）。
         health_report: 可选的体检结果回写。
+        episode_id: 可选剧集 ID（S-06；传入时按该剧集定位剧本行，
+            缺省定位未绑定剧集的默认剧本行）。
     """
 
     content: Any = Field(description="剧本内容（dict，整体包装 source=user）")
     health_report: Optional[Any] = None
+    episode_id: Optional[int] = Field(default=None, description="可选剧集 ID（S-06）")
 
 
 class ExtractedEntity(BaseModel):
@@ -177,3 +184,56 @@ class ExtractConfirmOut(BaseModel):
     characters: int
     scenes: int
     props: int
+
+
+class ScriptSendToAgentRequest(BaseModel):
+    """剧本一键同步到 Agent 会话请求（POST /script/send-to-agent，S-08）。
+
+    Attributes:
+        thread_id: 可选既有会话 ID（LangGraph thread_id 字符串；缺省新建会话；
+            传入时会校验该会话属于当前用户，不存在返回 404）。
+        episode_id: 可选剧集 ID（S-06；传入时按该剧集定位剧本行，
+            缺省作用于未绑定剧集的默认剧本行）。
+    """
+
+    thread_id: Optional[str] = Field(default=None, description="可选既有会话 ID（缺省新建）")
+    episode_id: Optional[int] = Field(default=None, description="可选剧集 ID（S-06）")
+
+
+class ScriptSendToAgentOut(BaseModel):
+    """剧本同步 Agent 会话响应（幂等：同剧本版本重复调用返回既有会话）。
+
+    Attributes:
+        thread_id: Agent 会话 ID（新建或既有）。
+        duplicated: 是否命中幂等（True = 该剧本版本已同步过，返回既有会话）。
+    """
+
+    thread_id: str
+    duplicated: bool = False
+
+
+class ScriptSendToCanvasRequest(BaseModel):
+    """剧本投递画布请求（POST /script/send-to-canvas，S-08）。
+
+    Attributes:
+        canvas_id: 可选目标画布 ID（缺省取该项目最近一个画布，无则自动
+            创建标题为「剧本画布」的画布；传入时校验归属，不匹配返回 404）。
+        episode_id: 可选剧集 ID（S-06；传入时按该剧集定位剧本行）。
+    """
+
+    canvas_id: Optional[int] = Field(default=None, description="可选目标画布 ID")
+    episode_id: Optional[int] = Field(default=None, description="可选剧集 ID（S-06）")
+
+
+class ScriptSendToCanvasOut(BaseModel):
+    """剧本投递画布响应（幂等：同剧本版本重复调用返回既有节点）。
+
+    Attributes:
+        canvas_id: 目标画布 ID。
+        node_id: 写入的 text 节点 ID（幂等命中时为既有节点）。
+        duplicated: 是否命中幂等（True = 该剧本版本已投递过）。
+    """
+
+    canvas_id: int
+    node_id: int
+    duplicated: bool = False

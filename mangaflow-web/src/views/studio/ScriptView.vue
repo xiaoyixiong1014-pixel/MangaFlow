@@ -6,25 +6,30 @@
   - 左栏「原始输入」：已有剧本时只读展示；无剧本时三 Tab（一句话/小说文本/大纲）快速录入
     并调 saveInput(mode, raw_text)；
   - 右栏「AI 生成」：generateStream（POST SSE）增量追加流式文本（打字机光标 + 自动滚动），
-    支持 AbortController 中断；error 事件展示警告条；done 后刷新剧本详情；
+    支持 AbortController 中断；error 事件展示失败三路径面板（S-09：重试 / 换模型 /
+    精简输入），genError 清空（成功/关闭）后面板自动隐藏；done 后刷新剧本详情；
   - 结构化展示：大纲导航（锚点定位）+ 场景卡列表（场景号/标题/剧情/对白表/时长）；
     content 兼容三种落库形态：字段级 {"value","source"} 包装（AI 生成）、
     整体 {"value","source"} 包装（手动保存）、{"raw"} 纯文本；
   - 场景卡「编辑」：el-dialog 内以 JSON 文本编辑该场景，保存走 saveScript；
   - AI 助手：选粒度 → agent.chatStream 流式给出建议（抽屉展示，标注需手动采纳）；
   - 剧本体检：scriptHealth（修正版 POST）→ 得分 + 问题列表，点击定位到对应场景卡；
+  - S-08 一键同步：「同步到 Agent」调 send-to-agent（按剧本版本幂等）后跳转
+    AI 工作台并携带 thread_id query 续聊；「投递画布」调 send-to-canvas
+    （按剧本版本幂等）成功后 el-message 内提供画布编辑器跳转链接；
   - 底部主按钮「确认剧本，进入实体提取」→ 跳转 /projects/:id/script/extract。
 -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Lock } from '@element-plus/icons-vue'
 import * as studioApi from '@/api/studio'
 import * as agentApi from '@/api/agent'
+import { modelsCatalog } from '@/api/catalog'
 import { rollbackSnapshot, snapshots as snapshotsApi } from '@/api/projects'
 import { useProjectStore } from '@/stores/project'
-import type { ScriptContent, ScriptOut, VersionSnapshot } from '@/types'
+import type { LogicalModel, ScriptContent, ScriptOut, VersionSnapshot } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -32,6 +37,9 @@ const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前选中剧集 ID（S-06 剧集切换器；null = 默认剧集，请求不携带 episode_id） */
+const currentEpisodeId = computed(() => projectStore.currentEpisodeId)
 
 // ============================================================
 // 剧本加载状态
@@ -154,16 +162,17 @@ function normalizeScript(content: ScriptContent | null | undefined): ParsedScrip
 
 /**
  * 拉取剧本详情并解析（无剧本行 404 时进入录入空态）。
+ * S-06：按当前选中剧集过滤（默认剧集 = 不传 episode_id，兼容存量 NULL 行）。
  * @returns 无
  */
 async function loadScript(): Promise<void> {
   loading.value = true
   try {
-    script.value = await studioApi.getInput(projectId.value)
+    script.value = await studioApi.getInput(projectId.value, currentEpisodeId.value ?? undefined)
     noScript.value = false
     parsed.value = normalizeScript(script.value.content)
   } catch (e) {
-    // 404 = 项目尚无剧本行，属正常空态（全局拦截器已提示一次），切录入视图
+    // 404 = 当前范围尚无剧本行，属正常空态（全局拦截器已提示一次），切录入视图
     const status = (e as { response?: { status?: number } }).response?.status
     if (status === 404) {
       noScript.value = true
@@ -174,6 +183,11 @@ async function loadScript(): Promise<void> {
     loading.value = false
   }
 }
+
+// 切换剧集（S-06）后按新剧集重新加载剧本
+watch(currentEpisodeId, () => {
+  void loadScript()
+})
 
 // ============================================================
 // 原始输入（三 Tab 快速录入）
@@ -200,6 +214,8 @@ async function saveInput(): Promise<void> {
     script.value = await studioApi.saveInput(projectId.value, {
       mode: inputMode.value,
       raw_text: inputText.value.trim(),
+      // S-06：绑定当前剧集（默认剧集 = 不传，后端落 NULL 行）
+      episode_id: currentEpisodeId.value ?? undefined,
     })
     noScript.value = false
     parsed.value = normalizeScript(script.value.content)
@@ -253,11 +269,14 @@ async function startGenerate(): Promise<void> {
         } else if (event === 'error') {
           genError.value = typeof d.message === 'string' ? d.message : '生成过程出现异常'
         } else if (event === 'done') {
-          // done 负载含最新 content，直接刷新详情视图
+          // S-09：成功后面板自动隐藏（genError 清空）+ 刷新详情
+          genError.value = ''
           void loadScript()
         }
       },
       abortCtrl.signal,
+      // S-06：按当前剧集生成（默认剧集 = 不传，后端作用于默认剧本行）
+      currentEpisodeId.value ?? undefined,
     )
   } catch (e) {
     // 用户主动中断不提示错误
@@ -278,6 +297,77 @@ async function startGenerate(): Promise<void> {
  */
 function stopGenerate(): void {
   abortCtrl?.abort()
+}
+
+// ============================================================
+// S-09 生成失败三路径（重试 / 换模型 / 精简输入）
+// ============================================================
+
+/** 建议的原始输入长度上限（超长提示与「保留开头 N 字」截断口径） */
+const INPUT_LIMIT = 8000
+
+/** 原始输入字符数（三路径「精简输入」的统计口径） */
+const rawCharCount = computed(() => (script.value?.raw_text ?? '').length)
+
+/**
+ * 「重试」（S-09 三路径 a）：以相同参数重新发起生成。
+ * genError 清空后面板自动隐藏，开始新一轮流式生成。
+ * @returns 无
+ */
+function retryGeneration(): void {
+  genError.value = ''
+  void startGenerate()
+}
+
+/** 换模型弹窗可见性 */
+const modelDialogVisible = ref(false)
+/** 模型目录拉取中 */
+const catalogLoading = ref(false)
+/** 文本能力逻辑模型列表（换模型弹窗展示） */
+const llmModels = ref<LogicalModel[]>([])
+
+/**
+ * 「换模型」（S-09 三路径 b，最小实现）：打开弹窗并拉取模型目录，
+ * 展示平台可用文本模型（含健康状态与默认标记）；项目无轻量「默认渠道
+ * 偏好」接口，指定渠道的路径为在模型配置页添加自有渠道后返回重试。
+ * @returns 无
+ */
+async function openModelDialog(): Promise<void> {
+  modelDialogVisible.value = true
+  catalogLoading.value = true
+  try {
+    const cat = await modelsCatalog()
+    llmModels.value =
+      cat.capabilities?.find((g) => g.capability === 'llm')?.models ?? []
+  } catch {
+    // 目录拉取失败：弹窗内展示空态与模型配置页入口，不阻断重试路径
+    llmModels.value = []
+  } finally {
+    catalogLoading.value = false
+  }
+}
+
+/** 小说输入 textarea 引用（「精简输入」填充后聚焦） */
+const inputAreaRef = ref<{ focus: () => void } | null>(null)
+
+/**
+ * 「精简输入」（S-09 三路径 c）：切回录入视图并带出原始输入——超长
+ * （> INPUT_LIMIT 字）时截取开头 8000 字，随后聚焦输入框，便于截取
+ * 核心章节后重新保存并生成。
+ * @returns 无
+ */
+function simplifyInput(): void {
+  const raw = script.value?.raw_text ?? ''
+  noScript.value = true
+  inputMode.value = 'novel'
+  inputText.value = raw.length > INPUT_LIMIT ? raw.slice(0, INPUT_LIMIT) : raw
+  genError.value = ''
+  void nextTick(() => inputAreaRef.value?.focus())
+  ElMessage.info(
+    raw.length > INPUT_LIMIT
+      ? `已保留开头 ${INPUT_LIMIT} 字（原输入 ${raw.length} 字），建议截取核心章节后保存并重新生成`
+      : '原始输入未超长，已带出录入框，可调整后重新保存并生成',
+  )
 }
 
 // ============================================================
@@ -326,7 +416,11 @@ async function saveSceneEdit(): Promise<void> {
     const scenes = [...parsed.value.scenes]
     scenes[editIndex.value] = sceneObj as ParsedScene
     plain.scenes = scenes
-    script.value = await studioApi.saveScript(projectId.value, { content: plain as ScriptContent })
+    script.value = await studioApi.saveScript(projectId.value, {
+      content: plain as ScriptContent,
+      // S-06：按当前剧集保存（默认剧集 = 不传，后端定位默认剧本行）
+      episode_id: currentEpisodeId.value ?? undefined,
+    })
     parsed.value = normalizeScript(script.value.content)
     editVisible.value = false
     ElMessage.success('场景已保存')
@@ -600,6 +694,75 @@ async function handleRollback(snap: VersionSnapshot): Promise<void> {
   }
 }
 
+// ============================================================
+// S-08 剧本一键同步（Agent 会话 / 画布投递，后端幂等）
+// ============================================================
+
+/** 同步 Agent 会话进行中（防重复点击） */
+const syncingAgent = ref(false)
+/** 投递画布进行中（防重复点击） */
+const syncingCanvas = ref(false)
+
+/**
+ * 剧本一键同步到 Agent 会话：调 send-to-agent（后端按剧本版本幂等），
+ * 成功后跳转 AI 工作台并携带 thread_id query（工作台续聊该会话）。
+ * @returns 无
+ */
+async function sendToAgent(): Promise<void> {
+  if (syncingAgent.value) return
+  syncingAgent.value = true
+  try {
+    const res = await studioApi.sendScriptToAgent(projectId.value, {
+      // S-06：按当前选中剧集同步（默认剧集 = 不传）
+      episode_id: currentEpisodeId.value ?? undefined,
+    })
+    ElMessage.success(res.duplicated ? '该剧本版本已同步过，已定位到既有会话' : '剧本已同步到 Agent 会话')
+    await router.push({ path: '/agent', query: { thread_id: res.thread_id } })
+  } finally {
+    syncingAgent.value = false
+  }
+}
+
+/**
+ * 剧本一键投递画布：调 send-to-canvas（后端按剧本版本幂等），
+ * 成功后 el-message 内提供跳转画布编辑器的链接。
+ * @returns 无
+ */
+function sendToCanvas(): void {
+  if (syncingCanvas.value) return
+  syncingCanvas.value = true
+  studioApi
+    .sendScriptToCanvas(projectId.value, {
+      // S-06：按当前选中剧集投递（默认剧集 = 不传）
+      episode_id: currentEpisodeId.value ?? undefined,
+    })
+    .then((res) => {
+      ElMessage({
+        type: 'success',
+        duration: 6000,
+        showClose: true,
+        message: h('span', null, [
+          res.duplicated ? '该剧本版本已投递过，返回既有画布节点 ' : '剧本已投递到画布 ',
+          h(
+            'a',
+            {
+              href: `/canvas/${res.canvas_id}`,
+              style: 'color: var(--el-color-primary); margin-left: 4px; text-decoration: underline;',
+              onClick: (e: MouseEvent) => {
+                e.preventDefault()
+                void router.push(`/canvas/${res.canvas_id}`)
+              },
+            },
+            '打开画布',
+          ),
+        ]),
+      })
+    })
+    .finally(() => {
+      syncingCanvas.value = false
+    })
+}
+
 // 剧本已生成标记（有结构化场景或纯文本均视为已有内容）
 const hasContent = computed(
   () => !!parsed.value && (parsed.value.isRaw || parsed.value.scenes.length > 0),
@@ -649,7 +812,9 @@ onBeforeUnmount(() => {
             />
           </el-tab-pane>
           <el-tab-pane label="小说文本" name="novel">
+            <!-- S-09 精简输入：截断填充后聚焦该输入框 -->
             <el-input
+              ref="inputAreaRef"
               v-model="inputText"
               type="textarea"
               :rows="8"
@@ -711,16 +876,29 @@ onBeforeUnmount(() => {
             </div>
           </template>
 
-          <!-- 生成失败/降级警告条 -->
-          <el-alert
-            v-if="genError"
-            :title="genError"
-            type="warning"
-            show-icon
-            closable
-            class="gen-alert"
-            @close="genError = ''"
-          />
+          <!-- S-09 生成失败三路径面板：重试 / 换模型 / 精简输入（genError 清空自动隐藏） -->
+          <el-card v-if="genError" shadow="never" class="fail-panel">
+            <div class="fail-title">⚠ 生成失败</div>
+            <div class="fail-msg">{{ genError }}</div>
+            <div class="fail-actions">
+              <el-button
+                type="primary"
+                size="small"
+                :loading="generating"
+                @click="retryGeneration"
+              >
+                重试
+              </el-button>
+              <el-button size="small" @click="openModelDialog">换模型</el-button>
+              <el-button size="small" @click="simplifyInput">精简输入</el-button>
+            </div>
+            <div class="fail-stats">
+              当前原始输入 {{ rawCharCount }} 字
+              <template v-if="rawCharCount > INPUT_LIMIT">
+                ，超过建议上限 {{ INPUT_LIMIT }} 字——建议截取核心章节后重新生成
+              </template>
+            </div>
+          </el-card>
 
           <!-- 流式输出区（生成中可见，含打字机光标） -->
           <div v-if="generating || streamText" ref="streamBox" class="stream-box">
@@ -839,6 +1017,13 @@ onBeforeUnmount(() => {
         <div class="footer-left">
           <el-button :loading="healthLoading" @click="runHealth">剧本体检</el-button>
           <el-button :disabled="!hasContent" @click="openAssistant">AI 助手</el-button>
+          <!-- S-08 剧本一键同步：Agent 会话（幂等，跳转工作台续聊）/ 画布投递（幂等） -->
+          <el-button :disabled="!hasContent" :loading="syncingAgent" @click="sendToAgent">
+            同步到 Agent
+          </el-button>
+          <el-button :disabled="!hasContent" :loading="syncingCanvas" @click="sendToCanvas">
+            投递画布
+          </el-button>
         </div>
         <el-button
           size="large"
@@ -851,6 +1036,47 @@ onBeforeUnmount(() => {
         </el-button>
       </div>
     </template>
+
+    <!-- ========== S-09 换模型弹窗：展示平台文本模型 + 模型配置页入口 ========== -->
+    <el-dialog v-model="modelDialogVisible" title="更换文本模型" width="520px" append-to-body>
+      <div v-loading="catalogLoading">
+        <p class="model-dialog-tip">平台按渠道健康状态自动降级选择文本模型，当前可用文本模型：</p>
+        <el-empty
+          v-if="!catalogLoading && !llmModels.length"
+          description="目录拉取失败或暂无可用文本模型"
+          :image-size="60"
+        />
+        <div v-for="m in llmModels" :key="m.id" class="model-row">
+          <span class="model-name">{{ m.name }}</span>
+          <el-tag v-if="m.is_default" size="small" type="success" effect="plain">默认</el-tag>
+          <el-tag
+            size="small"
+            effect="light"
+            :type="m.health === 'healthy' ? 'success' : m.health === 'down' ? 'danger' : 'warning'"
+          >
+            {{ ({ healthy: '健康', degraded: '降级', down: '不可用' } as Record<string, string>)[m.health] ?? m.health }}
+          </el-tag>
+          <span v-if="m.scene_desc" class="model-desc">{{ m.scene_desc }}</span>
+        </div>
+        <el-alert
+          type="info"
+          :closable="false"
+          class="model-dialog-tip"
+          title="如需指定渠道：在模型配置页添加自有文本渠道（选择健康渠道），返回本页重试即可生效"
+        />
+      </div>
+      <template #footer>
+        <el-button @click="modelDialogVisible = false">取消</el-button>
+        <el-button @click="router.push('/models')">打开模型配置页</el-button>
+        <el-button
+          type="primary"
+          :loading="generating"
+          @click="modelDialogVisible = false; retryGeneration()"
+        >
+          使用当前模型重试
+        </el-button>
+      </template>
+    </el-dialog>
 
     <!-- ========== 场景编辑弹窗 ========== -->
     <el-dialog v-model="editVisible" title="编辑场景（JSON）" width="640px" append-to-body>
@@ -1010,8 +1236,53 @@ onBeforeUnmount(() => {
   margin-top: var(--mf-sp-3);
   text-align: right;
 }
-.gen-alert {
+/* S-09 生成失败三路径面板（重试 / 换模型 / 精简输入） */
+.fail-panel {
   margin-bottom: var(--mf-sp-3);
+  border: 1px solid var(--el-color-danger-light-7);
+}
+.fail-title {
+  font-weight: var(--mf-fw-semibold);
+  color: var(--el-color-danger);
+  margin-bottom: 4px;
+}
+.fail-msg {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  line-height: 1.6;
+  word-break: break-word;
+}
+.fail-actions {
+  display: flex;
+  gap: var(--mf-sp-2);
+  margin-top: var(--mf-sp-2);
+}
+.fail-stats {
+  margin-top: var(--mf-sp-2);
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
+/* S-09 换模型弹窗内文本模型行 */
+.model-dialog-tip {
+  margin: 0 0 var(--mf-sp-2);
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+}
+.model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+  padding: var(--mf-sp-2) 0;
+  border-bottom: 1px dashed var(--mf-border);
+}
+.model-name {
+  font-weight: var(--mf-fw-semibold);
+}
+.model-desc {
+  margin-left: auto;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+  text-align: right;
 }
 .stream-box {
   min-height: 160px;

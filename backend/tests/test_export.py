@@ -369,9 +369,9 @@ async def test_storyboard_export_csv_and_xlsx(client, auth, db):
     assert ws.cell(row=2, column=4).value == "天台对话"
     assert ws.cell(row=2, column=7).value == 5
 
-    # ---- 非法 format → 422 ----
-    bad = await client.get(base, params={"format": "pdf"}, headers=auth["headers"])
-    assert bad.status_code == 422
+    # ---- 非法 format → 400（SB-08 起支持 pdf；非法值由实现手动校验返回 400） ----
+    bad = await client.get(base, params={"format": "docx"}, headers=auth["headers"])
+    assert bad.status_code == 400
 
 
 async def test_storyboard_export_all_with_episode_zero(client, auth, db):

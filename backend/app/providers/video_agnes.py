@@ -134,6 +134,8 @@ async def generate_video_real(
     seed: int,
     channel: ResolvedChannel,
     first_frame_url: Optional[str] = None,
+    video_params: Optional[Dict[str, Any]] = None,
+    last_frame_url: Optional[str] = None,
 ) -> Optional[Dict]:
     """调用 Agnes 渠道真实生成一段竖版视频片段。
 
@@ -145,6 +147,12 @@ async def generate_video_real(
         channel: 已解析的候选渠道（含 base_url/api_key/model）。
         first_frame_url: 首帧图片 URL（可选）；传入时自动切换 keyframe 模式
             实现图生视频，未传走 settings.agnes_video_mode（默认 text 文生视频）。
+        video_params: 视频参数（P-12，可空）：resolution 映射请求体 size（官方
+            Flash 契约仅承诺 720P，其他档位按字段透传由渠道裁决）；fps 与
+            motion_strength 为扩展字段（官方文档未列明，渠道约定待验证，
+            透传供渠道兼容时生效）。
+        last_frame_url: 尾帧图片 URL（P-08，可选）；请求体字段 last_frame
+            （渠道约定待验证），与 first_frame 同时传入实现首尾帧控制。
 
     Returns:
         Optional[Dict]: 成功返回
@@ -172,6 +180,21 @@ async def generate_video_real(
         }
         if first_frame_url:
             payload["first_frame"] = first_frame_url
+        if last_frame_url:
+            # P-08 尾帧控制：请求体字段 last_frame（渠道约定待验证）
+            payload["last_frame"] = last_frame_url
+        # P-12 视频参数透传：resolution 覆盖默认 size（大写档位），fps/motion
+        # 为扩展字段（官方契约未列明，渠道约定待验证）
+        if video_params:
+            resolution = str(video_params.get("resolution") or "").upper()
+            if resolution:
+                payload["size"] = resolution
+            fps = video_params.get("fps")
+            if fps:
+                payload["fps"] = int(fps)
+            motion = video_params.get("motion_strength")
+            if motion:
+                payload["motion"] = str(motion)
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             # 提交任务：503 队列满（官方提示稍后重试）做有限次退避重试

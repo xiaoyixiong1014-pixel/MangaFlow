@@ -162,6 +162,9 @@ MangaFlow 全链路（uvicorn、mangaflow-web / mangaflow-admin-web 的 vite pro
 
 完整端点与参数见 Swagger：http://127.0.0.1:8300/docs
 
+本轮（2026-10-12 创作链路缺口补全）新增接口的**业务口径文档**（幂等键、降级链、
+占位标记、错误码表、性能与索引评估）见 `backend/docs/api-creation-chain.md`。
+
 ## 模型渠道配置（5 渠道）
 
 渠道常量定义在 `app/core/config.py`（带开发默认值），生产用 `backend/.env` 覆盖（环境变量名不区分大小写）：
@@ -348,6 +351,35 @@ Gauge、渠道健康 Gauge 等聚合指标，供 Prometheus 抓取。
 cd backend
 .venv\Scripts\python.exe -m pytest tests/ -q    # 121 例全量回归
 ```
+
+## 性能基线与索引评估（2026-10-12 核查）
+
+> 详细评估过程见 `backend/docs/api-creation-chain.md` §11（主链路 API 文档附录）。
+
+**新列查询模式结论**：
+
+- `episodes.project_id` 过滤：`idx_episodes_project` 索引已确认存在（另有
+  `uk_episodes_seq(project_id, sequence)` 唯一索引同时覆盖排序），索引完备；
+- 资产 `?tag=` JSONB `@>` 过滤：**当前规模不需要 GIN 索引**（单项目资产万级以内，
+  project_id 收敛后顺序扫描行数极少）；单表资产行数超 **5 万** 或 tag 过滤 P95
+  超 100ms 时建议为四类资产 `tags` 列追加 GIN（`jsonb_path_ops`）索引，DDL 示例见
+  api 文档 §11.1（当前不执行）；
+- `reference_image_url` / `canvas_nodes.meta`：仅单点读写，不作为过滤条件，不需要索引。
+
+**列表接口分页核查**：episodes / storyboards 列表不分页（数量天然有限，合理）；
+资产 / 任务 / 成片 / 审核 / 画布列表沿用既有分页（`normalize_pagination` 钳位
+page_size ∈ [1,100]）。
+
+**响应时间基线（本地 dev 口径，非生产压测结论）**：
+
+- 测量方式：`GET /api/metrics` 既有 HTTP 时延直方图
+  `mangaflow_http_request_duration_seconds`（分桶 0.05/0.1/0.5/1.0/3.0s），
+  或 pytest 用例内 `time.perf_counter()` 内联计时；
+- 量级参考（本地单机、mock provider 即时完成）：列表类接口 <50ms、任务创建类
+  （含积分冻结与文件落盘）<100ms、幂等同步类 <100ms、导出类 100~500ms；
+  compose/decompose 为异步任务，API 创建 <100ms，执行耗时取决于 provider；
+- pytest 全量套件单用例均值约 30s 属 fixture 环境（建库/种子）开销，
+  **不代表接口响应时间**；生产口径需以 `/api/metrics` 直方图在真实流量下重新标定。
 
 ## 已知演示性实现说明
 
