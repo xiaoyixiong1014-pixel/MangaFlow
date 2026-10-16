@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -94,11 +94,19 @@ class AgentResumeRequest(BaseModel):
     Attributes:
         thread_id: 被中断会话的线程 ID（必填）。
         approved: 是否确认通过（True=放行后续流程 / False=拒绝并中止）。
+        decision: 决策字符串（P-5 扩展："approved"/"rejected"；显式传入时
+            优先于 approved 布尔值，便于前端语义化透传）。
+        feedback: 可选用户修改意见（原样并入 resume 值透传给 interrupt 决策，
+            供被确认方记录/展示）。
         payload: 附加确认数据（可空，原样并入 resume 值透传给 interrupt 决策）。
     """
 
     thread_id: str = Field(min_length=1, max_length=80, description="会话线程 ID")
     approved: bool = Field(default=True, description="是否确认通过")
+    decision: Optional[Literal["approved", "rejected"]] = Field(
+        default=None, description="决策字符串（显式传入时优先于 approved）")
+    feedback: Optional[str] = Field(
+        default=None, max_length=2000, description="可选用户修改意见（透传给 interrupt 决策）")
     payload: Optional[dict] = Field(default=None, description="附加确认数据（可空）")
 
 

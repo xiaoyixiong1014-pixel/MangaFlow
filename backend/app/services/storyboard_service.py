@@ -24,6 +24,7 @@ from app.models import (
     CanvasEdge,
     CanvasNode,
     Character,
+    Episode,
     Project,
     Scene,
     Script,
@@ -31,7 +32,12 @@ from app.models import (
     StoryboardCharacter,
     User,
 )
-from app.services.script_service import strip_json_fences, unwrap_scenes
+from app.services.script_service import (
+    build_character_bible_prompt,
+    extract_appearance_from_description,
+    strip_json_fences,
+    unwrap_scenes,
+)
 
 # 场景名匹配命中时的应用层置信度（storyboards 表无独立字段，仅作匹配策略语义记录）
 SCENE_MATCH_CONFIDENCE = 0.9
@@ -49,14 +55,25 @@ _SCENE_CONTINUITY_WORDS = ("接着", "随后", "同一", "继续", "紧接", "�
 # 目标时长自动调整（SB-07）的合法目标范围上限（秒）
 AUTO_FIT_TARGET_MAX = 3600
 
-# LLM 单场景拆解系统提示词（要求仅输出严格 JSON）
+# LLM 单场景拆解系统提示词（要求仅输出严格 JSON）；
+# visual_description 参照 AI 漫剧行业分镜公式：[景别]+[角色+外貌特征]+[动作]+
+# [场景]+[情绪关键词]，保证下游关键帧生图可直接消费；camera_movement 白名单
+# 覆盖运镜 8 术语（固定/推/拉/摇/移/跟随/升降/旋转）
 _SHOTS_SYSTEM_PROMPT = (
     "你是专业分镜师。请把给定剧本场景拆解为 1~3 个分镜镜头。\n"
     "仅输出严格 JSON（禁止 markdown 围栏与任何解释文字），格式：\n"
     '{"shots":[{"shot_type":"远景|全景|中景|近景|特写",'
-    '"camera_movement":"固定|推|拉|摇|移|跟随","duration":5,'
+    '"camera_movement":"固定|推|拉|摇|移|跟随|升降|旋转","duration":5,'
     '"visual_description":"画面描述","dialogue":[{"character":"角色名","line":"台词"}]}]}\n'
-    "duration 为整数秒；无对白的镜头 dialogue 为空数组；全部使用中文。"
+    "要求：\n"
+    "- visual_description 按分镜公式组织：景别 + 角色（含与设定一致的外貌特征）"
+    "+ 动作 + 场景要素 + 情绪关键词，一句话可直接转生图提示词；\n"
+    "- 画面中角色的外貌/服装必须与剧本角色设定保持一致，禁止换装换发型；\n"
+    "- camera_movement 从白名单中按镜头意图选择（推=强调主体、拉=揭示环境、"
+    "摇=跟随扫视、移=建立空间、跟随=角色跟拍、升降=氛围强调、旋转=眩晕/冲突）；\n"
+    "- duration 按节奏取值：快卡点镜头 2~3 秒、常规叙事镜头 4~6 秒、"
+    "单个镜头不超过 10 秒；\n"
+    "- duration 为整数秒；无对白的镜头 dialogue 为空数组；全部使用中文。"
 )
 
 
@@ -237,26 +254,39 @@ def _match_characters(dialogue_text: str, char_rows: List[Character]) -> List[Ch
 
 
 def _build_prompt_locked(
-    project: Project, scene_name: str, names: List[str],
+    project: Project, scene_name: str, characters: List[Character],
     visual_description: str, shot_type: str, camera_movement: str,
 ) -> str:
     """构造五要素提示词锁定层模板（RD-04：风格/场景/角色/画面/景别运镜）。
 
+    角色要素注入「角色圣经固定前缀」（AI 漫剧行业惯例：每条人物提示词以
+    角色圣经开头，只改动作/场景）——外貌来源为 characters.description 的
+    「外观：」段（build_profile_description 拼接格式），无该段时回退姓名，
+    每角色截 60 字，保证跨镜头生图一致性。
+
     Args:
         project: 项目对象（取全局风格锚点）。
         scene_name: 场景名。
-        names: 绑定角色名列表。
+        characters: 绑定的角色 ORM 列表（外貌圣经来源）。
         visual_description: 画面描述。
         shot_type: 景别。
         camera_movement: 运镜。
 
     Returns:
         str: 五要素锁定层提示词。
+
+    Raises:
+        无：纯字符串拼装，角色字段缺失按姓名兜底。
     """
-    names_text = "、".join(names) if names else "无"
+    char_parts: List[str] = []
+    for ch in characters:
+        appearance = extract_appearance_from_description(ch.description)
+        bible = build_character_bible_prompt(ch.name, ch.age, appearance)
+        char_parts.append(bible[:60])
+    names_text = "；".join(char_parts) if char_parts else "无"
     return (
         f"统一风格：{project.style or '默认风格'}；场景：{scene_name}；"
-        f"角色：{names_text}；画面：{visual_description or '无'}；"
+        f"角色（外貌圣经，跨镜一致）：{names_text}；画面：{visual_description or '无'}；"
         f"景别运镜：{shot_type}/{camera_movement}"
     )
 
@@ -305,6 +335,8 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
         out.append({
             "id": sb.id,
             "sequence": sb.sequence,
+            "episode_id": sb.episode_id,
+            "script_id": sb.script_id,
             "shot_type": sb.shot_type,
             "camera_movement": sb.camera_movement,
             "duration": sb.duration,
@@ -347,6 +379,9 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
     """AI 拆解：读剧本 content.scenes 逐场景生成 1~3 镜并建 storyboards 行。
 
     - LLM 失败走规则降级（每场景固定 2 镜、每镜 5s，离线降级路径）；
+    - 剧本按项目全部 Script 行合并读取（默认行 episode_id NULL 排最前，其余按剧集
+      sequence 升序），兼容分阶段流水线每集一行的落库形态；
+    - 每镜 episode_id 随来源剧本行落库（前端可按剧集过滤分镜）；
     - scene_id 按场景名匹配场景资产（未匹配落 NULL）；
     - storyboard_characters 关联对白中出现的角色（link_confidence=0.8）；
     - prompt_locked 写入五要素模板；status='pending'；project.status='storyboard'；
@@ -362,13 +397,43 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
     Raises:
         HTTPException: 400 —— 项目无剧本或剧本无场景数据。
     """
-    script = (
-        await db.execute(select(Script).where(Script.project_id == project.id))
-    ).scalar_one_or_none()
-    if script is None:
+    # 读取项目全部剧本行（下游接收修复 2026-10-15）：分阶段流水线按剧集落库
+    # （每集一行，uk_scripts_project = (project_id, episode_id)），旧快速路径
+    # 为单行默认行（episode_id NULL）。此前 scalar_one_or_none 在行数 >1 时
+    # 抛 MultipleResultsFound（500），导致流水线产出无法被下游分镜接收。
+    if (
+        await db.execute(
+            select(Script).where(Script.project_id == project.id).limit(1)
+        )
+    ).scalar_one_or_none() is None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目尚无剧本，请先生成剧本")
-    scenes = unwrap_scenes(script.content)
-    if not scenes:
+
+    # 剧集序号映射：默认行（episode_id NULL）视为第 0 集排最前，
+    # 其余按所属剧集 sequence 升序、同序按 Script.id 稳定排序
+    episode_order: Dict[int, int] = {
+        ep.id: (ep.sequence if ep.sequence is not None else 0)
+        for ep in (
+            await db.execute(select(Episode).where(Episode.project_id == project.id))
+        ).scalars().all()
+    }
+    script_rows = (
+        await db.execute(
+            select(Script).where(Script.project_id == project.id).order_by(Script.id.asc())
+        )
+    ).scalars().all()
+    script_rows.sort(
+        key=lambda s: (
+            0 if s.episode_id is None else episode_order.get(s.episode_id, 10**9),
+            s.id,
+        )
+    )
+
+    # 逐行解包场景并携带来源行（跨剧集按序合并为一整份可拆解序列）
+    scene_entries: List[Tuple[Script, Dict[str, Any]]] = []
+    for row in script_rows:
+        for sc in unwrap_scenes(row.content):
+            scene_entries.append((row, sc))
+    if not scene_entries:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="剧本中无场景数据，无法拆解")
 
     # 项目内场景 / 角色资产（用于强绑与实体链接）
@@ -387,7 +452,7 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
 
     seq = 0
     degraded = False
-    for scene in scenes:
+    for src_script, scene in scene_entries:
         shots = await _llm_shots(scene)
         if any("规则降级" in str(s.get("visual_description") or "") for s in shots):
             degraded = True
@@ -400,7 +465,8 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
             dialogue_text = _dialogue_to_text(shot.get("dialogue"))
             sb = Storyboard(
                 project_id=project.id,
-                script_id=script.id,
+                script_id=src_script.id,
+                episode_id=src_script.episode_id,
                 sequence=seq,
                 shot_type=shot_type,
                 camera_movement=camera_movement,
@@ -424,9 +490,9 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
                     variant_id=None,
                     link_confidence=LINK_CONFIDENCE,
                 ))
-            # 五要素锁定层提示词（RD-04）
+            # 五要素锁定层提示词（RD-04）：角色要素注入外貌圣经固定前缀
             sb.prompt_locked = _build_prompt_locked(
-                project, scene_name, [ch.name for ch in linked],
+                project, scene_name, linked,
                 visual_description, shot_type, camera_movement,
             )
 

@@ -27,26 +27,33 @@ _BASE_KEYWORDS = [
     ("billing", ["积分", "充值", "计费", "余额", "扣费"]),
 ]
 
-# 扩展意图关键词：在任务规定的 7 类之外补充 compose/consistency/review/research，
-# 用于保证编排图中所有域节点均可被路由可达（规则模式直接命中；LLM 模式由
-# supervisor 节点内的二次细化 _refine_intent() 补偿）
+# 扩展意图关键词：在任务规定的 7 类之外补充 script_pipeline（P-5 整本剧本
+# 流水线）/compose/consistency/review/research，用于保证编排图中所有域均可
+# 被路由可达（规则模式直接命中；LLM 模式由 supervisor 节点内的二次细化
+# _refine_intent() 补偿）。script_pipeline 放在最前：其触发词（如「整本剧本」）
+# 同时包含基础 script 的「剧本」，更具体的意图必须先匹配（P-5，Task 6）
 _EXT_KEYWORDS = [
+    ("script_pipeline", ["整本剧本", "整部剧本", "剧本流水线", "自动写完",
+                         "一键写完", "全部剧本", "一条龙写剧本"]),
     ("compose", ["合成", "转场", "剪辑", "字幕"]),
     ("consistency", ["一致性", "形象统一", "角色一致"]),
     ("review", ["审核", "违禁", "敏感词", "合规检查"]),
     ("research", ["调研", "长文解析", "拆书", "提取世界观"]),
 ]
 
-# LLM 可返回的合法意图枚举（任务规定的 7 类）
-_ALLOWED_INTENTS = {"script", "asset", "storyboard", "generation", "canvas", "billing", "chat"}
+# LLM 可返回的合法意图枚举（任务规定的 7 类 + P-5 扩展 script_pipeline）
+_ALLOWED_INTENTS = {"script", "script_pipeline", "asset", "storyboard", "generation",
+                    "canvas", "billing", "chat"}
 
-# 意图分类系统提示词：强制 JSON 输出，枚举限定 7 类
+# 意图分类系统提示词：强制 JSON 输出，枚举限定 7+1 类
 _INTENT_SYSTEM_PROMPT = (
     "你是漫序 MangaFlow 多智能体系统的意图路由器。请判断用户消息最符合哪一类创作意图，"
     "仅输出 JSON（不要输出其他内容）：\n"
-    '{"intent":"script|asset|storyboard|generation|canvas|billing|chat","confidence":0-1}\n'
-    "分类说明：script=写剧本/大纲/故事；asset=角色定妆/视觉资产；storyboard=分镜/镜头设计；"
-    "generation=生成图像/视频/配音；canvas=画布节点操作；billing=积分/充值/费用；chat=其余闲聊或咨询。"
+    '{"intent":"script|script_pipeline|asset|storyboard|generation|canvas|billing|chat","confidence":0-1}\n'
+    "分类说明：script=写剧本/大纲/故事；script_pipeline=整本剧本流水线/自动写完"
+    "全部剧本（角色→分集大纲→正文一条龙自动推进）；asset=角色定妆/视觉资产；"
+    "storyboard=分镜/镜头设计；generation=生成图像/视频/配音；canvas=画布节点操作；"
+    "billing=积分/充值/费用；chat=其余闲聊或咨询。"
 )
 
 

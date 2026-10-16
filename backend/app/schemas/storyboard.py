@@ -51,6 +51,8 @@ class StoryboardOut(BaseModel):
 
     id: int
     sequence: int
+    episode_id: Optional[int] = None
+    script_id: Optional[int] = None
     shot_type: Optional[str] = None
     camera_movement: Optional[str] = None
     duration: int = 5

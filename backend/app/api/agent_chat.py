@@ -26,6 +26,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.graph import get_compiled_graph
+from app.agents.script_pipeline_graph import get_compiled_script_pipeline
 from app.agents.supervisor import classify_intent
 from app.core.database import get_db, SessionLocal
 from app.core.security import get_current_user
@@ -125,6 +126,9 @@ async def _upsert_thread(thread_id: str, user_id: int, project_id: int | None,
     """
     state_payload = {
         "intent": stage,
+        # P-5：project_id 一并记录（script_pipeline 意图的 resume 分流依赖
+        # state.intent；project_id 供断线恢复/前端回放定位项目）
+        "project_id": project_id,
         "updated_at": datetime.now(timezone.utc).isoformat(),
         "messages": replay,
     }
@@ -294,6 +298,12 @@ async def chat_stream(req: AgentChatRequest, user: User = Depends(get_current_us
       interrupt 触发时推送（MA-08），随后本次流结束，等 resume 续跑；
     - done：{"thread_id", "interrupted"} —— 图执行完毕后发出。
 
+    P-5 意图分流：classify_intent 判为 script_pipeline（整本剧本流水线）时
+    运行剧本子图（app/agents/script_pipeline_graph.py）而非主图，子图的三个
+    interrupt（confirm_characters/confirm_episodes/confirm_body）复用同一
+    pending_confirm 事件通道；子图运行要求请求携带 project_id（缺失时输出
+    提示 message 后结束本次流）。
+
     Args:
         req: 对话请求体（message 必填；project_id/thread_id 可空）。
         user: 当前登录用户（Bearer 鉴权）。
@@ -337,18 +347,32 @@ async def chat_stream(req: AgentChatRequest, user: User = Depends(get_current_us
             intent_result = {"intent": "chat", "confidence": 0.0, "mode": "rule"}
         yield sse_event("stage", {"intent": intent_result["intent"], "mode": intent_result["mode"]})
 
-        # 2) 运行多智能体图（公共事件泵：updates+messages 双流 + interrupt 检测）
-        graph = await get_compiled_graph()
+        # 2) 运行图（P-5 分流：script_pipeline 意图走剧本子图，其余走主图）
         # 标准可配置格式：astream/aget_state 均从 configurable.thread_id 读取线程标识
         config: Dict[str, Any] = {"configurable": {"thread_id": thread_id}}
         if rewind_checkpoint:
             # MA-06 Time Travel：从指定检查点分叉续聊（本次对话完成后清空标记）
             config["configurable"]["checkpoint_id"] = rewind_checkpoint
-        graph_input = {
-            "messages": [HumanMessage(content=message)],
-            "user_id": user_id,
-            "project_id": project_id,
-        }
+        if intent_result["intent"] == "script_pipeline":
+            if not project_id:
+                # 子图入口强依赖 project_id：缺失时输出提示并结束本次流
+                yield sse_event("message", {
+                    "text": "整本剧本流水线需要绑定项目：请在请求中携带 project_id 后重试。",
+                    "agent": "system",
+                })
+                yield sse_event("done", {"thread_id": thread_id, "interrupted": False})
+                return
+            graph = await get_compiled_script_pipeline()
+            # 子图输入：project_id 必填；用户消息作为补充指令透传（剧本输入源
+            # 文本由子图 sp_input 节点从 scripts 表读取）
+            graph_input: Any = {"project_id": project_id, "instruction": message}
+        else:
+            graph = await get_compiled_graph()
+            graph_input = {
+                "messages": [HumanMessage(content=message)],
+                "user_id": user_id,
+                "project_id": project_id,
+            }
         async for frame in _stream_graph_events(
             graph,
             config=config,
@@ -457,8 +481,15 @@ async def chat_resume(req: AgentResumeRequest, user: User = Depends(get_current_
     复用 chat/stream 的公共事件泵：恢复运行同样输出 message/token/
     pending_confirm（可能连环确认）/done 事件。会话必须存在且属于当前用户。
 
+    P-5 分流：会话 state.intent 为 script_pipeline 时续跑剧本子图（三闸口
+    confirm_characters/confirm_episodes/confirm_body 的连环确认即经本端点），
+    否则续跑主图。决策值统一为 {"approved": bool, **payload}；请求体显式传
+    decision（approved/rejected）时以其为准，feedback 原样并入 resume 值
+    透传给 interrupt 决策。
+
     Args:
-        req: 恢复请求体（thread_id 必填；approved 默认 True；payload 可选附加数据）。
+        req: 恢复请求体（thread_id 必填；approved 默认 True；decision/feedback/
+        payload 可选附加）。
         user: 当前登录用户（Bearer 鉴权）。
         db: 请求级异步数据库会话（会话归属校验）。
 
@@ -480,10 +511,20 @@ async def chat_resume(req: AgentResumeRequest, user: User = Depends(get_current_
     if row is None:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    graph = await get_compiled_graph()
+    # P-5 分流：按会话落库的意图选择续跑的图（子图/主图共享 checkpointer
+    # 与 thread_id 命名空间，恢复配置结构一致）
+    thread_state = row.state if isinstance(row.state, dict) else {}
+    if str(thread_state.get("intent") or "") == "script_pipeline":
+        graph = await get_compiled_script_pipeline()
+    else:
+        graph = await get_compiled_graph()
     config: Dict[str, Any] = {"configurable": {"thread_id": thread_id}}
     # resume 值：{"approved": bool, **payload} —— interrupt() 处原样接收为决策
     resume_value: Dict[str, Any] = {"approved": bool(req.approved)}
+    if req.decision is not None:
+        resume_value["approved"] = req.decision == "approved"
+    if req.feedback:
+        resume_value["feedback"] = req.feedback
     if req.payload:
         resume_value.update(req.payload)
     command = Command(resume=resume_value)

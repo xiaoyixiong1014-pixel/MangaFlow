@@ -573,6 +573,89 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("styles",
      "COMMENT ON COLUMN styles.tags IS "
      "'资产标签数组（A-05 标签搜索）'"),
+    # ---------- P-1 剧本流水线（范式级重构 Task 2）：阶段状态机与角色/剧集扩展 ----------
+    # projects.script_phase：剧本创作阶段状态机（可空，NULL=快速模式）
+    ("projects", "ALTER TABLE projects ADD COLUMN IF NOT EXISTS script_phase VARCHAR(30)"),
+    ("projects",
+     "COMMENT ON COLUMN projects.script_phase IS "
+     "'剧本创作阶段：idea/characters/outline/body；NULL=快速模式'"),
+    # projects 阶段 CHECK（四值枚举；nullable 列不拦截 NULL）。约束名与
+    # naming_convention 渲染结果（ck_projects_ck_projects_script_phase）一致；
+    # DO 块幂等，兼容「create_all 已按新模型建约束」的库。
+    ("projects", """
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'projects'::regclass
+                  AND conname = 'ck_projects_ck_projects_script_phase'
+            ) THEN
+                ALTER TABLE projects ADD CONSTRAINT ck_projects_ck_projects_script_phase
+                CHECK (script_phase IN ('idea', 'characters', 'outline', 'body'));
+            END IF;
+        END $$;
+    """),
+    # characters：P-1 角色域七列（全部可空，快速模式/旧数据不填）
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS role_type VARCHAR(20)"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS age VARCHAR(20)"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS personality TEXT"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS motivation TEXT"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS arc TEXT"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS relations JSONB"),
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ"),
+    ("characters",
+     "COMMENT ON COLUMN characters.role_type IS "
+     "'角色定位（P-1）：lead 主角/support 配角/villain 反派/extra 群像'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.age IS "
+     "'年龄设定（P-1，字符串容纳约30岁/少年等弹性表述）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.personality IS '性格设定（P-1）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.motivation IS '行为动机（P-1）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.arc IS '人物弧光（P-1）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.relations IS "
+     "'人物关系数组（P-1，JSONB：[{target, relation}]）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.confirmed_at IS "
+     "'角色设定确认时间（P-1；NULL=候选/未确认）'"),
+    # characters.role_type CHECK（四值枚举），DO 块幂等
+    ("characters", """
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'characters'::regclass
+                  AND conname = 'ck_characters_ck_characters_role_type'
+            ) THEN
+                ALTER TABLE characters ADD CONSTRAINT ck_characters_ck_characters_role_type
+                CHECK (role_type IN ('lead', 'support', 'villain', 'extra'));
+            END IF;
+        END $$;
+    """),
+    # episodes：P-1 大纲域三列（全部可空）
+    ("episodes", "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS logline VARCHAR(200)"),
+    ("episodes", "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS outline JSONB"),
+    ("episodes", "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS confirmed_at TIMESTAMPTZ"),
+    ("episodes",
+     "COMMENT ON COLUMN episodes.logline IS '单集一句话梗概（P-1）'"),
+    ("episodes",
+     "COMMENT ON COLUMN episodes.outline IS "
+     "'单集大纲（P-1）：core_event/characters/emotion_curve/duration_sec'"),
+    ("episodes",
+     "COMMENT ON COLUMN episodes.confirmed_at IS '单集大纲确认时间（P-1）'"),
+    # version_snapshots.stage：varchar(20) 扩宽至 varchar(30)（幂等，重复执行无副作用）
+    ("version_snapshots",
+     "ALTER TABLE version_snapshots ALTER COLUMN stage TYPE VARCHAR(30)"),
+    ("version_snapshots",
+     "COMMENT ON COLUMN version_snapshots.stage IS "
+     "'阶段：extract_confirmed/characters_confirmed/outline_confirmed/body_generated 等'"),
+    # ---------- P2 故事设定产物（redesign-script-workspace）：projects.story_setting ----------
+    # 故事设定 JSONB（可空，NULL=尚未生成；存量项目行为不受影响）
+    ("projects", "ALTER TABLE projects ADD COLUMN IF NOT EXISTS story_setting JSONB"),
+    ("projects",
+     "COMMENT ON COLUMN projects.story_setting IS "
+     "'故事设定（P2）：logline/core_conflict/worldview/source(ai|user)/updated_at'"),
 ]
 
 
@@ -592,6 +675,13 @@ async def _add_missing_columns() -> None:
       A-04 参考图锚点（生成资产图时透传图像渠道作参考）。
     - characters/scenes/props/styles.tags：
       A-05 资产标签数组（JSONB 可空，列表接口 ?tag= 包含匹配）。
+    - P-1（范式级重构 Task 2）：projects.script_phase 阶段状态机（含 CHECK）、
+      characters 角色域七列（role_type/age/personality/motivation/arc/
+      relations/confirmed_at，含 role_type CHECK）、episodes 大纲域三列
+      （logline/outline/confirmed_at）、version_snapshots.stage 扩宽至
+      varchar(30)。
+    - P2（故事设定产物）：projects.story_setting 故事设定 JSONB（可空，
+      NULL=尚未生成）。
 
     Returns:
         None。

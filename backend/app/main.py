@@ -220,6 +220,7 @@ def create_app() -> FastAPI:
         prompts,
         publish,
         script,
+        script_pipeline,
         storyboards,
         users,
         versions,
@@ -240,6 +241,8 @@ def create_app() -> FastAPI:
     app.include_router(announcements.router)
     # 以下路由因携带 {project_id} 路径参数，不设 prefix，路由内部写完整路径
     app.include_router(script.router)
+    # 剧本创作流水线（P-1 Task 3）：P-2 角色设定阶段五接口（generate/list/edit/regenerate/confirm）
+    app.include_router(script_pipeline.router)
     app.include_router(assets.router)
     app.include_router(storyboards.router)
     app.include_router(generation.router)

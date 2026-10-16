@@ -39,6 +39,7 @@ LANGSMITH_API_KEY 即启用（详见 backend/README.md「LangSmith 可选接入�
 
 import asyncio
 import logging
+from typing import Optional
 
 from langchain_core.messages import AIMessage
 from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -238,6 +239,9 @@ def build_graph(checkpointer=None):
     return builder.compile(checkpointer=checkpointer)
 
 
+# 模块级检查点单例（懒加载，供主图与剧本子图等所有编译图复用同一实例）
+_checkpointer: Optional[BaseCheckpointSaver] = None
+_checkpointer_lock = asyncio.Lock()
 # 模块级编译图缓存（懒加载单例）
 _compiled_graph = None
 _compiled_graph_lock = asyncio.Lock()
@@ -388,8 +392,13 @@ def _build_sync_postgres_checkpointer():
     return saver
 
 
-async def get_compiled_graph():
-    """获取带检查点的编译图模块级单例（线程/协程安全懒加载）。
+async def get_checkpointer() -> BaseCheckpointSaver:
+    """获取检查点模块级单例（线程/协程安全懒加载，三级降级策略）。
+
+    供主图 get_compiled_graph() 与剧本子图 get_compiled_script_pipeline()
+    （app/agents/script_pipeline_graph.py）共同复用，保证同一进程内所有
+    编译图共享同一个 checkpointer 实例（同一连接/同一组检查点表，以
+    thread_id 维度隔离线程）。
 
     检查点三级策略（详见模块头「检查点决策记录」）：
     1. AsyncPostgresSaver：当前事件循环非 Windows Proactor 时直接使用（异步原生）；
@@ -397,17 +406,17 @@ async def get_compiled_graph():
     3. InMemorySaver：以上均失败时降级（重启即丢，服务保持可用，记录「检查点降级」warning）。
 
     Returns:
-        CompiledStateGraph: 编译完成的图单例（含 checkpointer）。
+        BaseCheckpointSaver: 检查点单例（AsyncPostgresSaver / 线程池适配器 / InMemorySaver）。
 
     Raises:
-        不抛出异常：检查点初始化失败自动逐级降级；图构建本身无运行期外部依赖。
+        不抛出异常：初始化失败自动逐级降级，恒返回可用实例。
     """
-    global _compiled_graph
-    if _compiled_graph is not None:
-        return _compiled_graph
-    async with _compiled_graph_lock:
-        if _compiled_graph is not None:
-            return _compiled_graph
+    global _checkpointer
+    if _checkpointer is not None:
+        return _checkpointer
+    async with _checkpointer_lock:
+        if _checkpointer is not None:
+            return _checkpointer
         checkpointer = None
         async_error = None
         # 策略 1：AsyncPostgresSaver（psycopg 异步模式，需 selector 语义事件循环）
@@ -447,5 +456,28 @@ async def get_compiled_graph():
                     "检查点降级：PostgresSaver 同步适配也失败（%s），改用 InMemorySaver", exc
                 )
                 checkpointer = InMemorySaver()
+        _checkpointer = checkpointer
+        return _checkpointer
+
+
+async def get_compiled_graph():
+    """获取带检查点的编译图模块级单例（线程/协程安全懒加载）。
+
+    检查点经 get_checkpointer() 单例获取（三级降级策略详见该函数说明），
+    与剧本子图等其它编译图共享同一 checkpointer 实例。
+
+    Returns:
+        CompiledStateGraph: 编译完成的图单例（含 checkpointer）。
+
+    Raises:
+        不抛出异常：检查点初始化失败自动降级；图构建本身无运行期外部依赖。
+    """
+    global _compiled_graph
+    if _compiled_graph is not None:
+        return _compiled_graph
+    async with _compiled_graph_lock:
+        if _compiled_graph is not None:
+            return _compiled_graph
+        checkpointer = await get_checkpointer()
         _compiled_graph = build_graph(checkpointer=checkpointer)
         return _compiled_graph

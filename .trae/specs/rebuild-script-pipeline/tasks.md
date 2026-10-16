@@ -1,0 +1,83 @@
+# Tasks
+
+> 编码规范（全部任务强制）：所有新增/修改的后端代码遵循项目既有注释规范——文件级、类级、函数级 docstring，含 Args/Returns/Raises/Yields 中文说明；前端关键逻辑加中文注释；RESTful 路由语义清晰、错误码规范（404 归属保护不泄露存在性、409 冲突、400 参数、422 校验）。
+> **运行 pytest 的任务必须串行执行**（共享测试库 TRUNCATE 互锁教训，见 fix-critical-defects spec）；纯编码任务可并行。
+
+- [x] Task 1: P0 断链修复四件套（不改范式，立即止损）
+  - [x] 1.1 抽取源改判：`extract_entities`（script_service.py:540）数据源改为"结构化剧本 content 解包文本（title/logline/outline/scenes 含对白拼接）"，novel 模式下 raw_text 兜底；`llm_extract`/`rule_extract` 输入同步切换；test_script.py 断言更新 + 新增"一句话模式抽取自剧本"用例（content_plain/content_has_payload 迁入 service 公开；build_extract_source_text 新增；llm_extract 截断提至 12000）
+  - [x] 1.2 Schema 校验 + 重试：`schemas/script.py` 新增 `ScriptContent`（title/logline/outline/scenes 必填约束、scenes 数组结构、duration_sec 正整数）；`parse_script_json` 升级为"解析 → 校验 → 失败返回错误详情"；`generate/stream` 校验失败携错误回传 LLM 重试 ≤3 次（MAX_GENERATE_ATTEMPTS），耗尽后 SSE 显式 `error` 事件不落库；`{"raw"}` 兜底落库彻底移除，离线降级 fallback 保留且可过校验
+  - [x] 1.3 统一 LLM 出入口：`api/script.py` 弃用 `providers.llm.chat_stream` 直连，改走 `llm_adapter.llm.chat_stream`（`agent_name="script"`），SSE done 事件携带用量归因（usage: channel/model/tokens）
+  - [x] 1.4 并发幂等：进程内生成状态位 `_generating_projects`（单进程语义）+ 生成中重复请求 409；提交采用乐观锁 `UPDATE ... WHERE version = ?`（rowcount=0 → error 事件不 commit）；手动保存 `base_version` 可选乐观锁 409
+  - [x] 1.5 测试：新增 test_script_pipeline_basics.py 4 用例（抽取源/重试成功/重试耗尽/并发 409）全绿；回归 test_script.py+test_script_sync.py（15 passed）+ test_agents.py（4 passed）零失败
+- [x] Task 2: P-1 数据模型 + 阶段状态机 + Alembic 迁移
+  - [x] 2.1 模型扩展：projects.script_phase（VARCHAR30+CHECK）、characters 七个人设字段（role_type 带 CHECK）、episodes logline/outline/confirmed_at、version_snapshots.stage String(30)；docstring/Attributes 同步
+  - [x] 2.2 Alembic 迁移 c7d9e1f3a5b7（down_revision=e2b3b5b5c90a）：空库 upgrade→校验 11 新列+2 CHECK→downgrade 干净→再 upgrade 幂等；init_db MISSING_COLUMN_DDL_STATEMENTS 同步（修复 create_check_constraint 三重前缀问题，op.f() 包装）
+  - [x] 2.3 阶段守卫服务 script_pipeline_service.py：SCRIPT_PHASES 常量/require_phase（NULL 快速模式放行、未达 409 中文提示）/advance_phase（仅前进一格）/write_stage_snapshot
+  - [x] 2.4 schemas/script_pipeline.py：角色域 8 + 大纲域 6 + 正文域 2 + PhaseOut，全字段中文 description
+  - [x] 2.5 测试：test_script_phase.py 13 用例（守卫/推进/快照/模型往返含 CHECK 生效）+ 回归 21 passed
+- [x] Task 3: P-2 角色设定阶段（后端 5 接口 + character_planner）
+  - [x] 3.1 `character_planner` Agent（agents/script_pipeline.py）：build_character_planner_messages（RD-01 挂点：faithful/outline 注入约束句）+ plan_characters（_llm_chat 包装便于 mock，重试 2 次温度递增，失败 502）+ _normalize_character_candidates（name 必填/role_type 白名单/relations 容错）
+  - [x] 3.2 接口（api/script_pipeline.py 新路由模块 + main.py include）：generate（候选落 projects.config.script_characters，临时 id + confirmed 标记，NULL/idea 直置 characters）、GET（planned+confirmed 双组）、PUT 批量编辑、{cid}/regenerate（候选原位替换 + 已确认角色回落路径）、confirm（幂等入池 + 快照 characters_confirmed + phase=outline）
+  - [x] 3.3 确认入池：同名幂等更新/新建、DEFAULT_VISUAL_TEMPLATE、description 拼人设摘要、relations JSONB、source="script_planner"（修复 JSONB 引用共享导致 flush 跳过 UPDATE 的坑：deepcopy 隔离）
+  - [x] 3.4 测试：test_script_characters.py 10 用例（生成/容错/批量编辑/重生成/确认幂等/越权 404/阶段守卫）+ 回归 31 passed
+- [x] Task 4: P-3 分集大纲阶段（后端 4 接口 + episode_planner）
+  - [x] 4.1 `episode_planner` Agent（agents/script_pipeline.py 追加）：build_episode_planner_messages（已确认角色强约束/集间钩子/忠实度挂点/from_chapters 预留）+ plan_episodes（重试 3 次）+ _normalize_episode_candidates（duration 夹取/角色名过滤到名单）
+  - [x] 4.2 接口：POST episodes/plan（body 阶段 409 锁定；多退少补落库，删行前解绑 scripts/storyboards/film_outputs 的 episode_id；sequence 两阶段写避唯一索引）、GET plan、PUT {eid}/outline（JSONB 重赋值 + sequence 互换 + body 禁重排）、plan/confirm（幂等 confirmed_at + 快照 outline_confirmed + phase=body）
+  - [x] 4.3 删除集解绑语义与既有 episodes API DELETE 对齐（三表 episode_id 置 NULL）
+  - [x] 4.4 测试：test_script_episodes_plan.py 8 用例 + 回归 39 passed（修复 str.format 花括号转义坑）
+- [x] Task 5: P-4 逐集正文阶段 + Schema 表达力升级（后端 3 接口 + episode_writer）
+  - [x] 5.1 Schema 表达力升级：SceneItem + action/location/time_of_day/int_ext/sfx/emotion；DialogueItem + type/emotion/character_id；LocationItem 新增 + ScriptContent.locations；ScriptBodyContent + validate_script_body_content（全 Optional，storyboard 下游回归通过）
+  - [x] 5.2 `episode_writer` Agent 两段式：文章体正文流式（按 emotion_curve 分 1~3 批续写衔接、单批 2500 字截断）+ 第二段结构化 scenes（character_id 以名单为准回填、locations 去重、重试 2 次）
+  - [x] 5.3 接口：POST {eid}/body/generate/stream（SSE：delta→status→done，乐观锁 + 生成锁 + phase=body 守卫 + (project_id,episode_id) upsert）、PUT {eid}/body（merge_scene_sources 场次级 source 合并 + base_version 乐观锁）、{eid}/body/regenerate（复用事件生成器，无正文 400，version+1）
+  - [x] 5.4 长文分段保护落地（stream_episode_body）
+  - [x] 5.5 测试：test_script_episode_body.py 7 用例 + 回归 46 passed + test_storyboard.py 4 passed
+- [x] Task 6: P-5 剧本子图编排（LangGraph）
+  - [x] 6.1 剧本子图 agents/script_pipeline_graph.py：sp_input → sp_character_planner → interrupt(confirm_characters) → sp_episode_planner → interrupt(confirm_episodes) → sp_body_dispatch（Send×N 并行）→ sp_episode_writer → sp_body_reduce → interrupt(confirm_body) → END；bodies 自定义 reducer（并行 append + None 重置）；retry_stage 退回上游重生；auto_confirm 一键串跑保留
+  - [x] 6.2 REST 驱动入口（api/script_pipeline.py）：POST pipeline/run/stream（SSE：node/pending_confirm/done/error，thread_id=script_{pid}_{uid}，已挂起幂等回放）、POST pipeline/resume（Command(resume) 复用 MA-08 协议）、GET pipeline/status（断线重连状态）+ GET pipeline/state；复用 graph.get_checkpointer 三级策略
+  - [x] 6.3 Agent 模式接入：agent_chat + supervisor 增加 script_pipeline 意图分流，复用 pending_confirm 协议
+  - [x] 6.4 测试：test_script_subgraph.py 7 用例 + test_script_pipeline_graph.py 调整 + 回归 45 passed / 追加 32 passed；全部 InMemorySaver，未触及主库检查点表
+  - 已知偏离：退回意见随 state 播报留存，未注入正文提示词（未改 Task 5 签名）；state 沿用既有 sp_* 命名
+- [x] Task 7: P-6 AI 优化四粒度 + diff 接受/拒绝（RD-07，后端）
+  - [x] 7.1 优化 Agent（agents/script_pipeline.py）：build_optimize_messages（grain global/episode/segment/field + target 范围约束，仅输出 changes JSON）+ optimize_episode_content（agent_name="script_optimize" 温度 0.5，重试 2 次，path 白名单校验 + original 以库值覆盖）
+  - [x] 7.2 diff 纯函数（script_service.py）：build_field_diffs（difflib 句级对比 → diff_lines op 序列，片段化绝不整篇覆盖）+ split_content_path/get_value_by_path/set_value_by_path（不可变式，防引用共享坑）
+  - [x] 7.3 接口：POST {eid}/optimize（只读预览不落库，phase=body 守卫，segment/field 强制 target）、POST {eid}/optimize/apply（accept 片段回传校验 path+original 一致防并发覆盖，改动场次 source=ai_optimized，乐观锁，applied=0 不递增版本）
+  - [x] 7.4 测试：test_script_optimize.py 8 用例（预览不落库/非法 target/path 双阶段校验/apply source/并发 skipped/base_version 409/越权）+ 回归 44 passed
+  - 实现约定：diff 片段 id = sha1(path+original+proposed)[:12]，optimize/apply 双侧一致
+- [x] Task 8: P1 决议对齐（体检 + 口径 + source + 忠实度）
+  - [x] 8.1 RD-02 体检对齐：run_health_check 重写为决议四条（角色出场断层/对白过长>120字/缺动作描写（新 Schema 才启用）/缺高潮点 info）+ 时长阈值 10% + 对白语速(4字/秒)交叉校验；按集体检 run_project_health_check（episode_id 可选，聚合时 location 带集号前缀）；旧「无场景/无对白」降级为生成闸门
+  - [x] 8.2 时长口径统一：DEFAULT_TARGET_DURATION=180 常量；_GENERATE_SYSTEM_PROMPT 改为按 target 自洽（去硬编码示例 30）；build_fallback_script 按目标均分；episode_writer 默认值同步
+  - [x] 8.3 RD-03 场次级 source：wrap_content_fields 双层包装（顶层 + scenes 元素级）；save_script 改为 merge_scene_sources 逐场 diff 合并（改动场 user、未动保留旧 source）；content_plain/unwrap_scenes 三层形态兼容
+  - [x] 8.4 RD-01 忠实度：build_fidelity_directive 三档策略函数（faithful/outline/free）+ 四处 Agent 统一调用 + faithful 名单外角色校验触发重试 1 次
+  - [x] 8.5 测试：test_script_health_rules.py 10 用例 + 回归 58 passed + 追加 22 passed；既有断言零改动
+- [x] Task 9: P-7 小说改编链路（txt/epub 解析 + 章节切分 + 分集映射）
+  - [x] 9.1 解析器 services/novel_parser.py：纯标准库（zipfile+xml.etree+html.parser）；split_txt_chapters（章节标题正则 + 空行启发式，utf-8/gbk 探测）、parse_epub（container.xml→OPF→spine 顺序剥标签）、parse_novel（分派 + 单章 >8000 字按段落切子段）、summarize_chapters
+  - [x] 9.2 接口（api/script.py）：POST script/input/novel/parse（multipart UploadFile + JSON 双支持，20MB 上限 413，章节落 config.novel_chapters，只存摘要+preview 控体积）、GET script/input/novel/chapters；plan from_chapters 映射（_map_chapters_to_episodes：等分/合并相邻章/章内分段，摘要经既有通道注入）
+  - [x] 9.3 截断消除：build_novel_context（章节摘要+正文节选，回退 raw_text）；生成/抽取 novel 分支改用之，替代 raw_text[:4000]
+  - [x] 9.4 测试：test_novel_parser.py 8 例 + test_novel_pipeline.py 8 例 + 回归 35 passed / 追加 25 passed
+- [x] Task 10: 前端 ScriptView 四步工作台（步骤条 + 角色设定页 + 分集大纲页）
+  - [x] 10.1 结构重构：ScriptView.vue 由 1400 行重构为四步容器（el-steps + script_phase 映射 + 回跳/锁定 + keep-alive）；StepIdea.vue 承接原三栏编辑器全逻辑 + 快速模式开关
+  - [x] 10.2 StepCharacters.vue：角色卡网格 + 编辑弹窗 + 增删 + 单角色重生成 + 确认推进（已确认置灰禁编）
+  - [x] 10.3 StepEpisodesPlan.vue：左集列表（重排/复用既有剧集 CRUD 增删）+ 右大纲编辑表单（角色多选来自已确认名单）+ 确认推进；body 锁定态
+  - [x] 10.4 api/scriptPipeline.ts：ScriptPhase/CharacterProfile/EpisodePlanItem 类型 + 9 接口封装（出入参对照后端 schema 核实；409/502 detail 统一拦截弹窗）
+  - [x] 10.5 vue-tsc type-check 0 错误 + build 成功；快速模式共存
+- [x] Task 11: 前端逐集正文页 + AI 优化 diff UI + 交互收尾（含后端 RD-08 预览与导出接口）
+  - [x] 11.1 StepEpisodeBody.vue 完整实现：左集列表（按 episode.status==='scripted' 判正文）+ 中间 SSE 流式区/文章体与场次结构双视图 Tab + 工具栏（保存 base_version/仅重生成本集/导出下拉）+ 右侧 AI 优化四粒度（条件参数 → optimize 预览 → diff_lines 增删着色渲染 → 逐片段勾选 → apply，无一键全覆盖）+ 体检面板（环形 score + issue 着色 + 场景定位滚动高亮）
+  - [x] 11.2 SSE 断线恢复（pipeline/status 展示 pending_confirm/中断摘要，不自研轮询）；JSON 残留消除（StepIdea error 丢弃半成品、done 清空流式、原始输出收进默认收起折叠面板）；影响面预览（AssetsView 单删角色前调 entities/impact 展示 summary 二次确认）；导出按钮；小说上传解析入口（el-upload .txt/.epub → novel/parse → 章节列表 + from_chapters 生成分集）
+  - [x] 11.3 后端 RD-08 影响面预览接口（script_export_service.collect_entity_impact：script_refs 文本匹配 + storyboard_refs 文本∪结构化引用并集去重）+ 剧本导出接口（render_txt/render_fountain / Section 分节 / INT./EXT. 场景标题 / Content-Disposition URL 编码）；test_script_export_impact.py 7 用例 + 22 passed
+  - [x] 11.4 全前端 type-check 0 错误 + build 成功
+  - 已知限制：optimize/apply 只更新结构化 content 未回写 raw_text（应用后自动切「场次结构」视图；文章体同步可走"仅重生成本集"）；AssetsView 批量删除未逐条预览；StepCharacters 无删除入口故未接预览
+- [x] Task 12: API 文档 + 性能基线 + 全量测试（主控执行，pytest 串行）
+  - [x] 12.1 `backend/docs/api-script-pipeline.md`：22 个新接口 + 5 个既有接口变更点的完整 RESTful 文档（§0 概述/状态机/错误码约定 → §1~§7 分域接口含参数表/真实响应示例/错误码/幂等与阶段口径 → §3.1/§3.3/§5.1/§5.2 SSE 事件协议表 → §8 既有接口行为变更对比 → §9 性能基线 → §10 缺陷修复 → §11 证据索引）
+  - [x] 12.2 性能基线（httpx.ASGITransport 进程内，3 次取中位）：GET projects 6.9ms / GET episodes/plan 6.5ms / POST health 8.3ms / GET export 6.1ms / GET entities/impact 8.2ms / SSE 首事件 10.9ms
+  - [x] 12.3 全量测试：后端 pytest `-k "not real"` **342 passed（887s）零失败**；mangaflow-web + mangaflow-admin-web type-check 0 错误 + build exit 0
+  - [x] 12.4 端到端冒烟脚本 `.run/smoke_script_pipeline.py`（10 步 30+ 断言，mock LLM，覆盖完整四阶段流水线 + 优化 apply + 体检 + 抽取 + 影响面 + fountain 导出 + 子图状态）**exit 0**；过程中发现并修复真实缺陷（多剧本行致 `get_script_or_404` MultipleResultsFound 500）
+  - [x] 12.5 checklist.md 逐项核验勾选
+
+# Task Dependencies
+- Task 1 独立可先行（且 1.3 统一 llm_adapter 是 Task 3~6 Agent 路径的复用前提，建议最先完成）
+- Task 2（数据模型/迁移/守卫）→ Task 3 → Task 4 → Task 5（严格顺序：阶段状态机逐级依赖）
+- Task 5 → Task 6（子图编排依赖逐集生成节点）→ Task 7（优化依赖正文结构）
+- Task 4 → Task 9（章节映射分集依赖分集大纲接口）；Task 9 与 Task 5 后端可并行
+- Task 8.1 体检依赖 Task 5 的 action 字段；Task 8.3 依赖 Task 5 的正文保存接口——Task 8 在 Task 5 之后执行，与 Task 6/7 可并行
+- Task 10 依赖 Task 3/4 接口定稿；Task 11 依赖 Task 5/7 接口定稿；前端两任务可并行（不同子组件文件）
+- Task 12 最后执行；**凡运行 pytest 的任务必须串行**（共享测试库 TRUNCATE 互锁）

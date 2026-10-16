@@ -68,13 +68,21 @@ const FIDELITIES = [
 /** 输出比例选项 */
 const ASPECT_RATIOS = ['9:16', '16:9', '1:1']
 
-/** 元信息校验规则（仅标题必填；其余均有默认值） */
-const metaRules: FormRules = {
-  title: [
-    { required: true, message: '请输入项目标题', trigger: 'blur' },
-    { max: 100, message: '标题不超过 100 字', trigger: 'blur' },
-  ],
-}
+/** 元信息校验规则（按输入模式动态）：标题仅小说/大纲模式必填——
+    创意模式下标题由首句自动生成（输入框置灰），不设必填避免自相矛盾 */
+const metaRules = computed<FormRules>(() => ({
+  title: inputTab.value === 'idea'
+    ? [{ max: 100, message: '标题不超过 100 字', trigger: 'blur' }]
+    : [
+        { required: true, message: '请输入项目标题', trigger: 'blur' },
+        { max: 100, message: '标题不超过 100 字', trigger: 'blur' },
+      ],
+}))
+
+/** 单集时长旁注文案：换算分钟 + 说明整部集数的推定方式（消解"总时长/单集"歧义） */
+const durationHint = computed(
+  () => `单集约 ${Math.max(1, Math.round(metaForm.targetDuration / 60))} 分钟 · 整部集数由 AI 按内容推定，可在分集大纲步调整`,
+)
 
 /** 当前 Tab 对应的原始输入文本（创建时写入剧本 raw_text） */
 const rawText = computed(() =>
@@ -165,7 +173,8 @@ function onNovelFileChange(uploadFile: UploadFile): void {
  * 1. 校验标题与当前 Tab 非空；
  * 2. projects.create 建项目（draft）；
  * 3. 立即 studio.saveInput 写入原始输入（mode + raw_text）；
- * 4. 关闭弹窗、emit('created') 并跳转 /projects/{id}/script。
+ * 4. 关闭弹窗、emit('created') 并跳转 /projects/{id}/script（故事设定步骤
+ *    展示创作输入，用户查看/修改后保存；生成分集大纲与剧本正文均基于该输入）。
  */
 async function submitCreate(): Promise<void> {
   const valid = await formRef.value?.validate().catch(() => false)
@@ -176,9 +185,12 @@ async function submitCreate(): Promise<void> {
   }
   loading.value = true
   try {
-    // 1. 创建项目（初始 draft）
+    // 1. 创建项目（初始 draft）；创意模式下标题为自动生成值，
+    //    极端情况（首句切分为空）时以原文前 20 字兜底，避免空标题被后端 422
+    const finalTitle = metaForm.title.trim()
+      || (inputTab.value === 'idea' ? pickTitle(rawText.value) || '未命名项目' : '')
     const project = await projectsApi.create({
-      title: metaForm.title,
+      title: finalTitle,
       genre: metaForm.genre,
       style: metaForm.style,
       fidelity: metaForm.fidelity,
@@ -194,7 +206,8 @@ async function submitCreate(): Promise<void> {
     ElMessage.success('项目创建成功')
     modelValue.value = false
     emit('created', project)
-    // 3. 进入剧本创作页
+    // 3. 进入剧本创作页（故事设定步骤展示创作输入，用户查看/修改后保存，
+    //    生成分集大纲与剧本正文均基于该输入；不再携带 auto 自动生成标记）
     router.push(`/projects/${project.id}/script`)
   } catch {
     // 创建失败（校验/网络）已由拦截器提示，弹窗保留表单
@@ -258,8 +271,15 @@ async function submitCreate(): Promise<void> {
     <!-- 项目元信息 -->
     <el-divider>项目信息</el-divider>
     <el-form ref="formRef" :model="metaForm" :rules="metaRules" label-position="top" size="large" @submit.prevent>
-      <el-form-item label="标题" prop="title">
-        <el-input v-model="metaForm.title" placeholder="项目标题（创意模式下自动取首句前 20 字）" maxlength="100" @input="onTitleInput" />
+      <!-- 标题：三种模式均可填写；创意模式下留空则自动取首句前 20 字
+           （watch 预填，用户手动编辑后停止跟随），非必填 -->
+      <el-form-item label="标题" prop="title" :required="inputTab !== 'idea'">
+        <el-input
+          v-model="metaForm.title"
+          :placeholder="inputTab === 'idea' ? '不填则自动取创意首句前 20 字' : '请输入项目标题'"
+          maxlength="100"
+          @input="onTitleInput"
+        />
       </el-form-item>
       <div class="meta-row">
         <el-form-item label="体裁" class="meta-item">
@@ -273,7 +293,9 @@ async function submitCreate(): Promise<void> {
           </el-select>
         </el-form-item>
       </div>
-      <el-form-item label="忠实度">
+      <!-- 忠实度：仅小说 / 大纲模式显示——忠实的前提是"已有大纲/原著"，
+           一句话创意模式下大纲尚未生成，档位语义不成立（用户建议采纳） -->
+      <el-form-item v-if="inputTab !== 'idea'" label="忠实度">
         <el-radio-group v-model="metaForm.fidelity" @change="fidelityTouched = true">
           <el-radio-button v-for="f in FIDELITIES" :key="f.value" :value="f.value">
             {{ f.label }}
@@ -286,8 +308,16 @@ async function submitCreate(): Promise<void> {
             <el-option v-for="r in ASPECT_RATIOS" :key="r" :label="r" :value="r" />
           </el-select>
         </el-form-item>
-        <el-form-item label="目标时长（秒）" class="meta-item">
-          <el-input-number v-model="metaForm.targetDuration" :min="30" :max="600" :step="30" controls-position="right" />
+        <!-- 单集时长：label 明确"单集"口径 + 旁注换算分钟与集数推定方式 -->
+        <el-form-item label="单集时长（秒）" class="meta-item">
+          <el-input-number
+            v-model="metaForm.targetDuration"
+            :min="30"
+            :max="600"
+            :step="30"
+            controls-position="right"
+          />
+          <div class="meta-hint">{{ durationHint }}</div>
         </el-form-item>
       </div>
     </el-form>
@@ -343,6 +373,13 @@ async function submitCreate(): Promise<void> {
 }
 .meta-item {
   flex: 1;
+}
+/* 单集时长旁注（换算分钟 + 集数推定说明） */
+.meta-hint {
+  margin-top: var(--mf-sp-1);
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
+  line-height: 1.5;
 }
 
 /* 底部成本提示与操作 */

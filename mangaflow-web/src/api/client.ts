@@ -16,8 +16,13 @@ const client = axios.create({
   timeout: 30000,
 })
 
-/** 提取后端返回的 detail 文案（422 校验错误 detail 为数组，降级为通用文案） */
-function extractDetail(error: AxiosError): string {
+/**
+ * 提取后端返回的 detail 文案（导出供组件错误态复用：拦截器 toast 消失后，
+ * 组件内联错误条可展示同一 detail，避免用户看不到失败原因）。
+ * @param error axios 拦截器 reject 的错误对象
+ * @returns detail 文案（422 数组 detail 降级为通用文案）
+ */
+export function extractDetail(error: AxiosError): string {
   const data = error.response?.data as { detail?: unknown } | undefined
   const detail = data?.detail
   if (typeof detail === 'string' && detail) return detail

@@ -33,6 +33,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Lock } from '@element-plus/icons-vue'
 import * as studioApi from '@/api/studio'
 import * as mediaApi from '@/api/media'
+import * as pipelineApi from '@/api/scriptPipeline'
 import type { UploadFile } from 'element-plus'
 import type {
   AssetVariant,
@@ -528,15 +529,31 @@ async function onUploadReplace(character: CharacterAsset, uploadFile: UploadFile
 // ============================================================
 
 /**
- * 删除角色（confirm + 软删除）。
+ * 删除角色（RD-08 影响面预览 + confirm + 软删除）。
+ * 删除前调 entities/impact 拉取剧本/分镜引用统计，把摘要拼入二次确认文案；
+ * 预览失败时降级为通用确认文案，不阻断删除流程。
+ * 注：批量删除涉及多实体，暂不逐条预览影响面（改动面控制）。
  * @param c 目标角色
  * @returns 无
  */
 async function removeCharacter(c: CharacterAsset): Promise<void> {
+  let impactSummary = ''
   try {
-    await ElMessageBox.confirm(`确定删除角色「${c.name}」吗？删除后可联系管理员恢复。`, '删除角色', {
-      type: 'warning',
+    const impact = await pipelineApi.entityImpact(projectId.value, {
+      entity_type: 'character',
+      entity_id: c.id,
     })
+    impactSummary = impact.summary ? `${impact.summary}\n\n` : ''
+  } catch {
+    // 预览失败（网络/业务错误）：降级为通用确认文案
+    impactSummary = ''
+  }
+  try {
+    await ElMessageBox.confirm(
+      `${impactSummary}确定删除角色「${c.name}」吗？删除后可联系管理员恢复。`,
+      '删除角色',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
   } catch {
     return
   }

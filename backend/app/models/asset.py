@@ -48,6 +48,13 @@ class Character(Base):
         source: 资产来源 manual/canvas（A-10/CV-24 画布沉淀）。
         reference_image_url: 参考图 URL（A-04 生成锚点：生成定妆照时透传给图像渠道）。
         tags: 资产标签数组（A-05 标签搜索）。
+        role_type: 角色定位（P-1）：lead 主角 / support 配角 / villain 反派 / extra 群像。
+        age: 年龄设定（P-1，字符串承载"约30岁/少年"等弹性表述）。
+        personality: 性格设定（P-1）。
+        motivation: 行为动机（P-1）。
+        arc: 人物弧光（P-1）。
+        relations: 人物关系数组（P-1，JSONB：[{target, relation}]）。
+        confirmed_at: 角色设定确认时间（P-1；NULL=候选/未确认）。
         deleted_at: 软删除时间。
     """
 
@@ -55,6 +62,8 @@ class Character(Base):
     __table_args__ = (
         CheckConstraint("generation_status IN ('pending', 'generating', 'done', 'failed')",
                         name="ck_characters_generation_status"),
+        CheckConstraint("role_type IN ('lead', 'support', 'villain', 'extra')",
+                        name="ck_characters_role_type"),
         Index("idx_characters_project", "project_id"),
         Index("uk_characters_name", "project_id", "name", unique=True),
         Index("idx_characters_locked", "project_id", "face_locked"),
@@ -84,6 +93,22 @@ class Character(Base):
         String(500), nullable=True, comment="参考图 URL（A-04：生成定妆照时透传图像渠道作参考）")
     # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
     tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
+    # ---------- P-1 剧本流水线角色域扩展（全部可空：快速模式/旧数据不填） ----------
+    role_type: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True,
+        comment="角色定位（P-1）：lead 主角/support 配角/villain 反派/extra 群像")
+    age: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, comment="年龄设定（P-1，字符串容纳约30岁/少年等弹性表述）")
+    personality: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="性格设定（P-1）")
+    motivation: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="行为动机（P-1）")
+    arc: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="人物弧光（P-1）")
+    relations: Mapped[Optional[list]] = mapped_column(
+        JSONB, nullable=True, comment="人物关系数组（P-1，JSONB：[{target, relation}]）")
+    confirmed_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True, comment="角色设定确认时间（P-1；NULL=候选/未确认）")
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
 
