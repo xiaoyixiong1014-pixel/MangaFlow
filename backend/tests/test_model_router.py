@@ -2,7 +2,8 @@
 
 覆盖 app/services/model_router.py 的渠道降级链解析与健康回写：
 - resolve_channels_chain：按 LogicalModel.channel_priority 顺序返回候选渠道；
-  过滤 enabled=False、health_status=down、用户私有渠道（owner_user_id 非空）；
+  过滤 enabled=False、health_status=down；user_id 非空时本人自有 openai 渠道
+  （models 含对应能力键）按 id 升序插入链首（自有 Key 优先，owner_user_id 回填）；
   默认模型取渠道 models 目录第一个；引用不存在渠道时跳过；
 - 逻辑模型缺失（无默认记录）返回空链；
 - mock_sentinel：链尾 mock 哨兵渠道字段正确；
@@ -109,6 +110,48 @@ async def test_chain_shunxu_yu_guolv(db):
     assert head.capability == "image"
     assert head.model == "agnes-img-v1", "默认模型应取渠道 models 目录第一个"
     assert head.api_key == "sk-plain-test", "明文 Key 应降级原值返回"
+
+
+async def test_chain_youyou_qiangdao_youxian(db):
+    """自有渠道优先：user_id 非空时本人 openai 渠道按能力键匹配插入链首。
+
+    验证规则：
+    - models 含对应能力键（image→"image"）的自有渠道进入链首（owner_user_id 回填）；
+    - models 不含能力键的自有渠道（如仅 "chat"）不参与该能力路由；
+    - 平台渠道仍按 channel_priority 追加其后，整体按 id 去重。
+
+    Args:
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 链顺序或过滤结果与自有渠道优先规则不符时中断。
+    """
+    suffix = uuid.uuid4().hex[:10]
+    owner = User(username=f"own_{suffix}", password_hash="test-hash", role="user", status=1)
+    db.add(owner)
+    await db.commit()
+    await db.refresh(owner)
+    # 自有图像渠道（models 含 image 键）→ 应插入链首
+    own_img = await _make_channel(
+        db, owner_user_id=owner.id, models={"image": ["my-image-v1"]}, base_url="https://own.example.com/v1")
+    # 自有 chat 渠道（models 仅含 chat 键）→ 不参与 image 能力路由
+    own_chat = await _make_channel(db, owner_user_id=owner.id, models={"chat": ["my-chat-v1"]})
+    platform = await _make_channel(db)
+    await _make_default_logical(db, "image", [platform.id])
+
+    chain = await resolve_channels_chain(db, "image", user_id=owner.id)
+    assert [c.channel_id for c in chain] == [own_img.id, platform.id], \
+        "自有图像渠道应插链首，平台渠道按优先级追加其后"
+    assert chain[0].owner_user_id == owner.id, "自有渠道应回填 owner_user_id 供计费豁免"
+    assert chain[0].model == "my-image-v1"
+    assert own_chat.id not in [c.channel_id for c in chain], "不含能力键的自有渠道不参与该能力路由"
+
+    # user_id 为 None（旧行为）：仅平台渠道
+    chain_plain = await resolve_channels_chain(db, "image")
+    assert [c.channel_id for c in chain_plain] == [platform.id]
 
 
 async def test_chain_wu_luoji_mokuai_fan_kong(db):

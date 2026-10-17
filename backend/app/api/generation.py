@@ -119,7 +119,8 @@ async def create_keyframes(
     project = await get_owned_project(db, user.id, project_id)
     storyboard = await get_storyboard_of_project(db, project_id, storyboard_id)
     tasks, total_cost = await create_keyframe_tasks(
-        db, project=project, storyboard=storyboard, phase=req.phase, prompt_editable=req.prompt_editable
+        db, project=project, storyboard=storyboard, phase=req.phase, prompt_editable=req.prompt_editable,
+        scope_episode_id=req.episode_id,
     )
     return KeyframeCreateResponse(tasks=[TaskOut.from_task(t) for t in tasks], total_cost=total_cost)
 

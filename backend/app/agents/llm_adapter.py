@@ -1,8 +1,10 @@
 """智能体 LLM 适配器模块（文件级说明）。
 
 对应里程碑 MA-16 / MA-19 / MA-20（统一 Agent 侧 LLM 出入口与用量观测）：
-- AgentLLM：双渠道（DeepSeek → Agnes）LLM 调用适配器，所有 Agent 节点统一经本
-  适配器调用 providers.llm，保持原 chat()/chat_stream() 行为不变；
+- AgentLLM：多渠道（用户自有渠道前置 → DeepSeek → Agnes）LLM 调用适配器，
+  所有 Agent 节点统一经本适配器调用 providers.llm，保持原 chat()/chat_stream()
+  行为不变；从图状态 user_id 前置注入该用户自有 openai 兼容渠道（免生成积分
+  优先使用），全部自有渠道失败仍降级平台默认链；
 - 每次调用成功后把用量元信息 {"agent","channel","model","tokens","prompt_chars"}
   写入模块级 ContextVar（_last_usage），节点函数通过 get_last_usage()/attach_usage()
   取用并追加到 artifacts["_usage"]，实现无侵入的用量观测；
@@ -19,12 +21,35 @@ import logging
 from contextvars import ContextVar
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
+from app.providers.llm import _channels as _default_channels
 from app.providers.llm import chat_stream_with_meta, chat_with_meta
+from app.services.model_router import get_user_llm_channel_tuples
 
 logger = logging.getLogger(__name__)
 
 # 模块级上下文变量：保存最近一次 LLM 调用的用量记录（默认 None）
 _last_usage: ContextVar = ContextVar("agent_llm_last_usage", default=None)
+
+
+def _user_id_from_state(state_aware: Any) -> Optional[int]:
+    """从图状态提取 user_id（内部函数）。
+
+    Args:
+        state_aware: 调用方所在的图状态（AgentState dict）或 None。
+
+    Returns:
+        Optional[int]: 用户 ID；状态缺失/结构异常/无 user_id 时返回 None。
+
+    Raises:
+        无：任何结构异常均安全返回 None。
+    """
+    try:
+        if isinstance(state_aware, dict):
+            uid = state_aware.get("user_id")
+            return int(uid) if uid is not None else None
+    except (TypeError, ValueError):
+        return None
+    return None
 
 
 def estimate_tokens(text: Any) -> int:
@@ -148,7 +173,19 @@ class AgentLLM:
         except Exception:  # noqa: BLE001 —— 日志上下文提取失败不影响调用
             thread_id = None
         _last_usage.set(None)  # 调用前置空，防止失败路径读到陈旧记录
-        content, meta = await chat_with_meta(messages, temperature=temperature, json_mode=json_mode)
+        # 自有渠道前置注入：用户配置的 openai 兼容渠道优先于平台默认链，
+        # 全部自有渠道失败仍降级到平台默认链（DeepSeek → Agnes）；
+        # 无自有渠道时不传 channels（保持原调用签名，兼容测试替身）
+        user_channels = await get_user_llm_channel_tuples(_user_id_from_state(state_aware))
+        if user_channels:
+            content, meta = await chat_with_meta(
+                messages, temperature=temperature, json_mode=json_mode,
+                channels=user_channels + _default_channels(),
+            )
+        else:
+            content, meta = await chat_with_meta(
+                messages, temperature=temperature, json_mode=json_mode,
+            )
         record = usage_record(
             agent_name,
             meta.get("channel"),
@@ -189,9 +226,19 @@ class AgentLLM:
         _last_usage.set(None)  # 调用前置空，防止失败路径读到陈旧记录
         recorded = False
         prompt_chars = self._prompt_chars(messages)
-        async for piece, meta in chat_stream_with_meta(
-            messages, temperature=temperature, json_mode=json_mode
-        ):
+        # 自有渠道前置注入：语义与非流式一致（自有失败降级平台默认链）；
+        # 无自有渠道时不传 channels（保持原调用签名，兼容测试替身）
+        user_channels = await get_user_llm_channel_tuples(_user_id_from_state(state_aware))
+        if user_channels:
+            stream_iter = chat_stream_with_meta(
+                messages, temperature=temperature, json_mode=json_mode,
+                channels=user_channels + _default_channels(),
+            )
+        else:
+            stream_iter = chat_stream_with_meta(
+                messages, temperature=temperature, json_mode=json_mode,
+            )
+        async for piece, meta in stream_iter:
             # 仅首块携带渠道元信息，此时记录用量（与渠道降级语义对齐）
             if not recorded and meta:
                 record = usage_record(

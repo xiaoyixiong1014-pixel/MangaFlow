@@ -119,8 +119,18 @@ class Settings(BaseSettings):
     # 3.0 代旗舰；视觉调用失败时 runner 自动降级 llm-text → keyword 文本机审。
     agnes_vision_model: str = "agnes-3.0-flash-max"
 
+    # ---------- P0-4 面部视觉一致性（Agnes 面部档案 + 余弦比对闸门） ----------
+    # 一致性阈值：新图面部档案与主形象档案余弦低于该值判定偏差过大。
+    # 初始 0.70 为保守起步（跨图档案描述比对语义噪声大于同源自比对），
+    # 影子模式积累 task.meta.face_score 样本后经回测校准再收紧。
+    face_consistency_threshold: float = 0.70
+    # 强拦截开关：False=影子模式（仅记录 score 不拦截，默认）；
+    # True=低于阈值自动重抽一次，仍低则任务 failed（error_code=consistency_failed）。
+    # 建议累计 50+ 真实回测样本后再开启。
+    face_consistency_enforce: bool = False
+
     # ---------- 阿里云百炼 TTS ----------
-    bailian_tts_base_url: str = "https://ws-66dgbbhi5gzzll8r.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
+    bailian_tts_base_url: str = "https://ws-lhelc7dy7rch25ia.cn-beijing.maas.aliyuncs.com/compatible-mode/v1"
     # 安全基线（D1）：密钥一律不落代码，默认空串，从环境变量/BAILIAN_TTS_API_KEY 注入
     bailian_tts_api_key: str = ""
     # 默认模型名：qwen-audio-3.1-tts-flash 仅提供 WebSocket 端点
@@ -131,7 +141,7 @@ class Settings(BaseSettings):
     # ---------- 阿里云百炼视频（wan2.7-i2v 图生视频，DashScope 原生异步协议） ----------
     # 根域名：视频任务创建/轮询走原生路径 /api/v1/...（非 OpenAI 兼容 /compatible-mode）；
     # API Key 与 TTS 渠道共用（bailian_tts_api_key）
-    bailian_wan_base_url: str = "https://ws-66dgbbhi5gzzll8r.cn-beijing.maas.aliyuncs.com"
+    bailian_wan_base_url: str = "https://ws-lhelc7dy7rch25ia.cn-beijing.maas.aliyuncs.com"
     bailian_wan_model: str = "wan2.7-i2v"
 
     # ---------- 视频轮询配置 ----------

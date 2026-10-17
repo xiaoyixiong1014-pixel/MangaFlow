@@ -226,7 +226,7 @@ function normalizeBodyContent(content: unknown): {
       const dur = Number(r.duration_sec)
       return {
         scene_no: Number(r.scene_no ?? i + 1) || i + 1,
-        title: toStr(r.title) || `场景 ${i + 1}`,
+        title: toStr(r.title) || `剧情节点 ${i + 1}`,
         plot: toStr(r.plot),
         action: toStr(r.action),
         location: toStr(r.location),
@@ -614,9 +614,29 @@ async function loadPipelineStatus(): Promise<void> {
 // 生命周期
 // ============================================================
 
+/** 项目内场景资产名集合（镜头 location 与资产管理场景资产的对应判定） */
+const sceneAssetNames = ref<Set<string>>(new Set())
+
+/**
+ * 拉取项目场景资产名集合（用于镜头 location 标签联动：已入池/未入池状态）。
+ * 失败静默降级为空集合（标签全部按"未对应"展示，不影响正文编辑）。
+ * @returns 无
+ */
+async function loadSceneAssetNames(): Promise<void> {
+  try {
+    const group = await studioApi.listAssets(props.projectId)
+    sceneAssetNames.value = new Set(
+      group.scenes.map((s) => s.name.trim()).filter(Boolean),
+    )
+  } catch {
+    sceneAssetNames.value = new Set()
+  }
+}
+
 onMounted(async () => {
   await loadPlan()
   void loadPipelineStatus()
+  void loadSceneAssetNames()
 })
 // keep-alive 切走/卸载时中止进行中的正文流
 onDeactivated(abortStream)
@@ -795,7 +815,7 @@ onBeforeUnmount(abortStream)
             <el-tab-pane label="场次结构" name="scenes">
               <!-- v-if 惰性挂载：与漫剧格式视图互斥渲染，避免 body-scene-{no} 锚点重复 -->
               <template v-if="activeView === 'scenes'">
-                <el-empty v-if="!scenes.length" description="本集暂无结构化场次" :image-size="60" />
+                <el-empty v-if="!scenes.length" description="本集暂无剧情节点" :image-size="60" />
                 <div
                   v-for="sc in scenes"
                   :key="sc.scene_no"
@@ -803,7 +823,7 @@ onBeforeUnmount(abortStream)
                   class="scene-card"
                 >
                   <div class="scene-head">
-                    <span class="scene-no">场景 {{ sc.scene_no }}</span>
+                    <span class="scene-no">剧情节点 {{ sc.scene_no }}</span>
                     <span class="scene-title">{{ sc.title }}</span>
                     <el-tag v-if="sc.duration_sec" size="small" type="info" effect="plain">
                       约 {{ sc.duration_sec }}s
@@ -811,17 +831,30 @@ onBeforeUnmount(abortStream)
                     <el-tag v-if="sc.source" size="small" :type="sc.source === 'user' ? 'warning' : 'success'" effect="plain">
                       {{ sc.source === 'user' ? '人工修改' : 'AI 生成' }}
                     </el-tag>
-                    <el-tag v-if="sc.location" size="small" effect="plain">{{ sc.location }}</el-tag>
+                    <!-- 镜头地点 ↔ 场景资产对应状态：绿=已入池对应，橙=尚未入池 -->
+                    <el-tooltip
+                      v-if="sc.location"
+                      :content="sceneAssetNames.has(sc.location.trim())
+                        ? `已对应场景资产「${sc.location.trim()}」，可到资产管理页生成场景图`
+                        : '该地点尚无对应场景资产：到资产管理页「启用资产」重新提取即可入池'"
+                      placement="top"
+                    >
+                      <el-tag
+                        size="small"
+                        :type="sceneAssetNames.has(sc.location.trim()) ? 'success' : 'warning'"
+                        effect="plain"
+                      >{{ sc.location }}</el-tag>
+                    </el-tooltip>
                   </div>
                   <div class="scene-field">
                     <span class="field-label">剧情</span>
-                    <QuotableText :source="`${bodyQuoteSource} · 场景${sc.scene_no} · 剧情`" scope="episode_body" :target-episode-id="selectedEpisode?.episode_id ?? null" class="quote-field">
-                      <el-input v-model="sc.plot" type="textarea" :rows="2" placeholder="场景剧情描述" />
+                    <QuotableText :source="`${bodyQuoteSource} · 剧情节点${sc.scene_no} · 剧情`" scope="episode_body" :target-episode-id="selectedEpisode?.episode_id ?? null" class="quote-field">
+                      <el-input v-model="sc.plot" type="textarea" :rows="2" placeholder="剧情节点描述" />
                     </QuotableText>
                   </div>
                   <div class="scene-field">
                     <span class="field-label">动作</span>
-                    <QuotableText :source="`${bodyQuoteSource} · 场景${sc.scene_no} · 动作`" scope="episode_body" :target-episode-id="selectedEpisode?.episode_id ?? null" class="quote-field">
+                    <QuotableText :source="`${bodyQuoteSource} · 剧情节点${sc.scene_no} · 动作`" scope="episode_body" :target-episode-id="selectedEpisode?.episode_id ?? null" class="quote-field">
                       <el-input v-model="sc.action" type="textarea" :rows="2" placeholder="动作/画面描述" />
                     </QuotableText>
                   </div>
@@ -832,7 +865,7 @@ onBeforeUnmount(abortStream)
                       <el-input v-model="dl.line" class="dlg-line" placeholder="台词" />
                     </div>
                   </div>
-                  <el-empty v-else description="本场景暂无对白" :image-size="40" />
+                  <el-empty v-else description="本剧情节点暂无对白" :image-size="40" />
                 </div>
               </template>
             </el-tab-pane>
@@ -848,7 +881,7 @@ onBeforeUnmount(abortStream)
                     复制全文
                   </el-button>
                 </div>
-                <el-empty v-if="!scenes.length" description="本集暂无结构化场次" :image-size="60" />
+                <el-empty v-if="!scenes.length" description="本集暂无剧情节点" :image-size="60" />
                 <div
                   v-for="sc in scenes"
                   :key="sc.scene_no"
@@ -856,7 +889,7 @@ onBeforeUnmount(abortStream)
                   class="manga-scene"
                 >
                   <div class="manga-scene__head">
-                    <span class="scene-no">场景 {{ sc.scene_no }}</span>
+                    <span class="scene-no">剧情节点 {{ sc.scene_no }}</span>
                     <span class="scene-title">{{ sc.title }}</span>
                   </div>
                   <pre class="manga-pre">{{ renderMangaScene(sc) }}</pre>

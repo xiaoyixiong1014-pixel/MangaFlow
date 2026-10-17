@@ -108,11 +108,17 @@ export { health as scriptHealth }
 
 /**
  * 实体抽取（角色/场景/道具 + 别名冲突，同时写入 scripts.fences）。
+ * 按集工作流：episodeId 传值时只抽取该剧集绑定的剧本行（缺省聚合全部）。
  * @param projectId 项目 ID
+ * @param episodeId 可选剧集 ID（全局剧集切换器上下文；缺省=全部）
  * @returns 抽取结果
  */
-export function extract(projectId: number): Promise<ExtractResult> {
-  return client.post(`/projects/${projectId}/script/extract`).then((r) => r.data)
+export function extract(projectId: number, episodeId?: number): Promise<ExtractResult> {
+  return client
+    .post(`/projects/${projectId}/script/extract`, null, {
+      params: { episode_id: episodeId },
+    })
+    .then((r) => r.data)
 }
 
 /**
@@ -167,10 +173,14 @@ export function sendScriptToCanvas(
 /**
  * 查询项目四类资产聚合。
  * @param projectId 项目 ID
- * @param params 可选查询参数（tag：按标签过滤，A-05）
- * @returns 角色/场景/道具/风格列表
+ * @param params 可选查询参数（episode_id：按集工作流当前集 ID，
+ *               传值时响应带 episode_enabled 该集启用名单）
+ * @returns 角色/场景/道具/风格列表（及按集启用名单）
  */
-export function listAssets(projectId: number, params?: { tag?: string }): Promise<AssetsGroup> {
+export function listAssets(
+  projectId: number,
+  params?: { episode_id?: number },
+): Promise<AssetsGroup> {
   return client
     .get(`/projects/${projectId}/assets`, { params })
     .then((r) => r.data)
@@ -179,42 +189,21 @@ export function listAssets(projectId: number, params?: { tag?: string }): Promis
 /** 资产列表的类别键（对应批量删除路由 asset_type 复数形式） */
 export type AssetKind = 'characters' | 'scenes' | 'props' | 'styles'
 
-/** 指定类别列表响应（GET /projects/{id}/assets?type=x） */
-export interface AssetTypePage<T> {
-  /** 当前页资产列表 */
-  items: T[]
-  /** 总数 */
-  total: number
-  /** 页码 */
-  page: number
-  /** 每页条数 */
-  page_size: number
-}
-
-/** AssetKind → 后端 type 查询参数（单数形式）的映射 */
-const KIND_TO_TYPE: Record<AssetKind, string> = {
-  characters: 'character',
-  scenes: 'scene',
-  props: 'prop',
-  styles: 'style',
-}
-
 /**
- * 按类别查询资产分页列表（A-05 标签过滤数据源：后端 ?tag= JSONB 包含匹配）。
+ * AI 识别场景/道具提示词六要素（agent 从剧本正文提取）。
  * @param projectId 项目 ID
- * @param kind 资产类别（characters/scenes/props/styles）
- * @param tag 可选标签过滤
- * @returns 分页列表响应
+ * @param type 资产类型 scene/prop
+ * @param id 资产 ID
+ * @returns {type, elements: 六要素键值（anchors 为字符串数组）}
+ * @throws 400 剧本正文无相关内容；502 AI 识别失败
  */
-export function listAssetsByType(
+export function suggestPrompt(
   projectId: number,
-  kind: AssetKind,
-  tag?: string,
-): Promise<AssetTypePage<CharacterAsset | SceneAsset | PropAsset | StyleAsset>> {
+  type: 'scene' | 'prop',
+  id: number,
+): Promise<{ type: string; elements: Record<string, unknown> }> {
   return client
-    .get(`/projects/${projectId}/assets`, {
-      params: { type: KIND_TO_TYPE[kind], tag: tag || undefined, page_size: 200 },
-    })
+    .post(`/projects/${projectId}/assets/${type}/${id}/suggest-prompt`)
     .then((r) => r.data)
 }
 
@@ -381,15 +370,42 @@ export function copyAsset(
 
 /**
  * 发起分镜拆解（LLM 依据剧本拆出镜头序列）。
+ * 按集工作流：episodeId 传值时只拆解并重建该剧集分镜（其他集保留）；
+ * 缺省全量重建全部。
  * @param projectId 项目 ID
  * @param payload 拆解参数（可空，透传后端）
+ * @param episodeId 可选剧集 ID（全局剧集切换器上下文；缺省=全量重建）
  * @returns 拆解概要（宽松结构）
  */
 export function decompose(
   projectId: number,
   payload?: Record<string, unknown>,
+  episodeId?: number,
 ): Promise<Record<string, unknown>> {
-  return client.post(`/projects/${projectId}/storyboards/decompose`, payload ?? {}).then((r) => r.data)
+  return client
+    .post(`/projects/${projectId}/storyboards/decompose`, payload ?? {}, {
+      params: { episode_id: episodeId },
+    })
+    .then((r) => r.data)
+}
+
+/**
+ * 批量重渲染过期镜头（P0-3 版本透传）。
+ * @param projectId 项目 ID
+ * @param episodeId 可选剧集过滤
+ * @returns {"queued","skipped","storyboard_ids","total_cost"}
+ */
+export function renderStale(projectId: number, episodeId?: number): Promise<{
+  queued: number
+  skipped: number
+  storyboard_ids: number[]
+  total_cost: number
+}> {
+  return client
+    .post(`/projects/${projectId}/storyboards/render-stale`, null, {
+      params: { episode_id: episodeId },
+    })
+    .then((r) => r.data)
 }
 
 /**
@@ -639,8 +655,25 @@ export function generateCharacterPortrait(
   characterId: number,
   prompt?: string,
 ): Promise<Record<string, unknown>> {
+  return generateAssetImage(projectId, 'character', characterId, prompt)
+}
+
+/**
+ * 发起资产图生成（角色定妆照 / 场景概念图 / 道具标准图，同构后端通用端点）。
+ * @param projectId 项目 ID
+ * @param type 资产类型 character/scene/prop
+ * @param id 资产 ID
+ * @param prompt 覆盖用提示词（缺省用资产 visual_prompt）
+ * @returns 任务字典（id/type/phase/status/cost_points 等）
+ */
+export function generateAssetImage(
+  projectId: number,
+  type: 'character' | 'scene' | 'prop',
+  id: number,
+  prompt?: string,
+): Promise<Record<string, unknown>> {
   return client
-    .post(`/projects/${projectId}/assets/characters/${characterId}/generate`, {
+    .post(`/projects/${projectId}/assets/${type}s/${id}/generate`, {
       prompt: prompt ?? null,
     })
     .then((r) => r.data)
@@ -678,6 +711,36 @@ export function updateCharacter(
  */
 export function deleteCharacter(projectId: number, characterId: number): Promise<MessageResponse> {
   return client.delete(`/projects/${projectId}/assets/characters/${characterId}`).then((r) => r.data)
+}
+
+/**
+ * 软删除场景（分镜强绑引用不受影响，scene_id 外键 SET NULL）。
+ * @param projectId 项目 ID
+ * @param sceneId 场景 ID
+ * @returns 消息响应
+ */
+export function deleteScene(projectId: number, sceneId: number): Promise<MessageResponse> {
+  return client.delete(`/projects/${projectId}/assets/scenes/${sceneId}`).then((r) => r.data)
+}
+
+/**
+ * 软删除道具。
+ * @param projectId 项目 ID
+ * @param propId 道具 ID
+ * @returns 消息响应
+ */
+export function deleteProp(projectId: number, propId: number): Promise<MessageResponse> {
+  return client.delete(`/projects/${projectId}/assets/props/${propId}`).then((r) => r.data)
+}
+
+/**
+ * 软删除风格（与四类资产单删语义一致）。
+ * @param projectId 项目 ID
+ * @param styleId 风格 ID
+ * @returns 消息响应
+ */
+export function deleteStyle(projectId: number, styleId: number): Promise<MessageResponse> {
+  return client.delete(`/projects/${projectId}/assets/styles/${styleId}`).then((r) => r.data)
 }
 
 /**

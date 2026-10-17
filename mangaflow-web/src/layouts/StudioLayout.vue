@@ -4,12 +4,12 @@
   五阶段：①剧本 ②资产 ③分镜 ④生成 ⑤发布，当前路由高亮、可点击互跳。
   进入时拉取项目详情写入 project store，供各阶段页共享。
   S-06：步骤条旁增加剧集切换器（选项来自项目详情 episodes）——选中剧集写入
-  project store（currentEpisodeId），剧本/分镜/生成/发布等依赖页 watch 后
-  按 episode_id 重新加载；项目无剧集时仅显示「默认剧集」占位项（= 不传
-  episode_id，行为与既有接口一致）。
+  project store（currentEpisodeId），剧本/资产/分镜/生成/发布等依赖页 watch 后
+  按 episode_id 重新加载；按集工作流必须选中具体剧集（「默认剧集」占位项已移除，
+  项目加载后自动选中第 1 集；项目无剧集时切换器禁用，各页按无集上下文运行）。
 -->
 <script setup lang="ts">
-import { computed, onMounted } from 'vue'
+import { computed, onMounted, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import * as projectsApi from '@/api/projects'
@@ -26,12 +26,25 @@ const projectId = computed(() => Number(route.params.id))
 const episodes = computed(() => projectStore.currentProject?.episodes ?? [])
 
 /**
- * 切换器选中值（展示用）：null 映射为 0（「默认剧集」占位项的选项值）。
+ * 切换器选中值（展示用）：直接映射 store 的 currentEpisodeId。
+ * null（未选中）时 el-select 显示 placeholder（仅发生在无剧集项目）。
  */
 const selectedEpisode = computed({
-  get: () => projectStore.currentEpisodeId ?? 0,
-  set: (val: number) => projectStore.setCurrentEpisode(val === 0 ? null : val),
+  get: () => projectStore.currentEpisodeId ?? undefined,
+  set: (val: number) => projectStore.setCurrentEpisode(val),
 })
+
+// 「默认剧集」占位项移除后：项目剧集加载完成且尚未选中时，自动选中第 1 集
+// （保证按集工作流始终有明确的集上下文；无剧集项目保持 null 不强选）
+watch(
+  episodes,
+  (list) => {
+    if (projectStore.currentEpisodeId == null && list.length) {
+      projectStore.setCurrentEpisode(list[0]!.id)
+    }
+  },
+  { immediate: true },
+)
 
 /** 五阶段步骤定义（key 对应工作区子路由片段） */
 const steps = [
@@ -77,14 +90,16 @@ onMounted(async () => {
       </button>
       <span class="project-name">{{ projectStore.currentProject?.title ?? '加载中…' }}</span>
 
-      <!-- 剧集切换器（S-06）：默认剧集 = 不传 episode_id，行为与既有接口一致 -->
+      <!-- 剧集切换器（S-06）：仅列实际剧集，项目加载后自动选中第 1 集；
+           无剧集项目禁用（各页按无集上下文运行，不传 episode_id） -->
       <el-select
         v-model="selectedEpisode"
         class="episode-select"
         size="small"
+        :disabled="!episodes.length"
+        :placeholder="episodes.length ? '选择剧集' : '暂无剧集'"
         aria-label="剧集切换"
       >
-        <el-option :value="0" label="默认剧集" />
         <el-option
           v-for="ep in episodes"
           :key="ep.id"

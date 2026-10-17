@@ -286,6 +286,7 @@ async def create_keyframe_tasks(
     storyboard: Storyboard,
     phase: str,
     prompt_editable: Optional[str],
+    scope_episode_id: Optional[int] = None,
 ) -> Tuple[List[Task], int]:
     """创建关键帧生成任务（打样 trial 单分镜 / 全量 full 全部分镜）。
 
@@ -295,6 +296,8 @@ async def create_keyframe_tasks(
         storyboard: 请求指定的分镜（trial 的目标；full 时用于定位用户编辑层）。
         phase: "trial" 或 "full"。
         prompt_editable: 用户本次提交的可编辑提示词（仅 trial 生效）。
+        scope_episode_id: 按集工作流（S-06）：full 全量时限定该剧集的分镜
+            （None=项目全部分镜；trial 单分镜不受影响）。
 
     Returns:
         Tuple[List[Task], int]: （新建任务列表，冻结积分总额）。
@@ -305,14 +308,17 @@ async def create_keyframe_tasks(
     if phase == "trial":
         targets: List[Storyboard] = [storyboard]
     else:
+        full_conds = [Storyboard.project_id == project.id]
+        if scope_episode_id is not None:
+            full_conds.append(Storyboard.episode_id == scope_episode_id)
         rows = await db.execute(
             select(Storyboard)
-            .where(Storyboard.project_id == project.id)
+            .where(*full_conds)
             .order_by(Storyboard.sequence)
         )
         targets = list(rows.scalars().all())
         if not targets:
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目暂无分镜，无法全量生成")
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该范围暂无分镜，无法全量生成")
 
     await _ensure_no_active_image_task(db, [sb.id for sb in targets], phase)
 
@@ -616,3 +622,89 @@ async def create_retry_task(db: AsyncSession, task: Task) -> Task:
         meta=task.meta,
         idempotency_key=f"retry_{task.id}_{uuid4().hex[:8]}",
     )
+
+
+async def render_stale_storyboards(
+    db: AsyncSession,
+    *,
+    project: Project,
+    episode_id: Optional[int] = None,
+) -> dict:
+    """批量重渲染过期镜头（P0-3 版本透传：「仅重渲染受影响镜头」入口）。
+
+    流程：取项目分镜列表 → 过滤 stale=True（引用资产版本快照与当前版本不一致）
+    → 跳过已有排队/进行中关键帧任务的镜头 → 逐镜复用关键帧任务构建逻辑
+    （freeze_and_create_task，10 积分/帧）入队重渲染。
+    复用 /regen 计数端点会造成语义混淆，故此处独立实现且不递增 regen_count。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+        episode_id: 可选剧集过滤（与分镜列表口径一致；None=全部）。
+
+    Returns:
+        dict: {"queued": 成功入队数, "skipped": 跳过数（已在队列）,
+              "storyboard_ids": 入队镜头 ID 列表, "total_cost": 冻结积分总额}。
+
+    Raises:
+        HTTPException: 409 —— 积分余额不足；403/429 —— 分级处罚准入拦截。
+    """
+    from app.services.storyboard_service import list_storyboards  # 延迟导入避免循环依赖
+
+    outs = await list_storyboards(db, project, episode_id)
+    stale_ids = [o["id"] for o in outs if o.get("stale")]
+    if not stale_ids:
+        return {"queued": 0, "skipped": 0, "storyboard_ids": [], "total_cost": 0}
+
+    # 幂等防重：已有排队/进行中关键帧任务（trial/full 任一阶段）的镜头跳过
+    busy_ids = set(
+        (await db.execute(
+            select(Task.storyboard_id).where(
+                Task.type == "image",
+                Task.phase.in_(["trial", "full"]),
+                Task.status.in_(_ACTIVE_STATUS),
+                Task.storyboard_id.in_(stale_ids),
+            )
+        )
+    ).scalars().all())
+    target_ids = [sid for sid in stale_ids if sid not in busy_ids]
+    skipped = len(stale_ids) - len(target_ids)
+    if not target_ids:
+        return {"queued": 0, "skipped": skipped, "storyboard_ids": [], "total_cost": 0}
+
+    # 余额预检（总成本 = 目标镜数 × 单帧价，一次冻结循环前统一校验）
+    total_cost = len(target_ids) * IMAGE_COST_PER_FRAME
+    await _precheck_balance(db, project.user_id, total_cost)
+
+    queued_ids: List[int] = []
+    target_set = set(target_ids)
+    for o in outs:
+        if o["id"] not in target_set:
+            continue
+        sb = await db.get(Storyboard, o["id"])
+        if sb is None:
+            continue
+        prompt = build_prompt(sb.prompt_locked, sb.prompt_editable, project.style)
+        await freeze_and_create_task(
+            db,
+            project=project,
+            task_type="image",
+            phase="full",
+            cost_points=IMAGE_COST_PER_FRAME,
+            storyboard_id=sb.id,
+            meta={
+                "prompt": prompt,
+                "target_type": "storyboard_keyframe",
+                "target_id": sb.id,
+                # P0-3 溯源：标记本次入队为过期重渲染
+                "render_reason": "stale",
+            },
+            idempotency_key=f"keyframe_{sb.id}_full_{uuid4().hex[:8]}",
+        )
+        queued_ids.append(sb.id)
+    return {
+        "queued": len(queued_ids),
+        "skipped": skipped,
+        "storyboard_ids": queued_ids,
+        "total_cost": total_cost,
+    }

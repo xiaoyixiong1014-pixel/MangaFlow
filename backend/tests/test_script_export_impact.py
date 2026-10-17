@@ -365,8 +365,8 @@ def test_render_fountain_pure():
         }]},
     }]
     text = render_fountain(episodes)
-    # 缺 int_ext/time_of_day → 回退「场景N 标题」
-    assert "场景3 无名场景" in text
+    # 缺 int_ext/time_of_day → 回退「镜头N 标题」
+    assert "镜头3 无名场景" in text
     # 动作行取 plot（无 action 时）
     assert "剧情展开" in text
     # 角色名大写 + 对白紧随

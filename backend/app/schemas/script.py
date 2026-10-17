@@ -381,11 +381,15 @@ class ExtractConfirmRequest(BaseModel):
         characters: 确认入池的角色列表。
         scenes: 确认入池的场景列表。
         props: 确认入池的道具列表。
+        episode_id: 按集工作流的当前集 ID（可空=兼容旧调用不记名单）；
+            传值时确认入池的资产名 union 追加到该集 enabled_assets 启用名单，
+            资产管理页按集视图据此显示「该集已启用的资产」。
     """
 
     characters: List[ConfirmCharacterItem] = Field(default_factory=list)
     scenes: List[ConfirmSceneItem] = Field(default_factory=list)
     props: List[ConfirmPropItem] = Field(default_factory=list)
+    episode_id: Optional[int] = Field(default=None, description="当前集 ID（按集启用名单落库）")
 
 
 class ExtractConfirmOut(BaseModel):

@@ -96,10 +96,18 @@ _CHARACTER_PLANNER_SYSTEM_PROMPT = (
     "必须仅输出一个严格合法的 JSON 对象（禁止 markdown 代码块围栏、禁止任何解释文字），"
     "结构如下：\n"
     '{"characters":[{"name":"角色名","role_type":"lead","age":"约30岁",'
-    '"personality":"性格设定","appearance":"外观设定","motivation":"行为动机",'
+    '"personality":"性格设定","appearance":"形象特征（发型/五官/体型/肤色等)",'
+    '"outfit":"服装配饰完整拆解（上装/下装/鞋履/配饰/标志性物品，逐项列明）",'
+    '"style_note":"风格与画质特点（画风/光线/画质关键词，如赛璐璐动漫、柔光、高细节）",'
+    '"motivation":"行为动机",'
     '"arc":"人物弧光","relations":[{"target":"对方角色名","relation":"关系描述"}]}]}\n'
     "要求：4~8 个角色；主角（role_type 取 lead）至少 1 名；"
     "role_type 只能取 lead/support/villain/extra；"
+    "appearance/outfit/style_note 是角色圣经的视觉三段：appearance 写清发型、"
+    "五官、体型、肤色等形象特征；outfit 逐项拆解服装与配饰（上装/下装/鞋履/"
+    "配饰/标志性物品，具体到颜色与材质）；style_note 写明该角色出图的画风、"
+    "光线与画质关键词（须与项目视觉风格一致）；三段内容将直接用于跨镜头生图"
+    "一致性锁定，务必具体可画；"
     "relations 的 target 必须指向班底中的其他角色名；全部使用中文。"
 )
 
@@ -347,6 +355,8 @@ def _normalize_character_candidates(data: dict) -> List[dict]:
             "age": _clean_str(item.get("age"), 20),
             "personality": _clean_str(item.get("personality"), 500),
             "appearance": _clean_str(item.get("appearance"), 500),
+            "outfit": _clean_str(item.get("outfit"), 500),
+            "style_note": _clean_str(item.get("style_note"), 300),
             "motivation": _clean_str(item.get("motivation"), 500),
             "arc": _clean_str(item.get("arc"), 500),
             "relations": relations,

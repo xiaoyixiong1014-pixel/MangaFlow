@@ -11,7 +11,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import Script
+from app.models import Character, Script
 from tests.conftest import create_project, register_user, unique_suffix
 
 # 两个测试场景（写入剧本 content.scenes，结构与 AI 生成结果同构）
@@ -88,6 +88,20 @@ async def _make_scripted_project(client, auth, db, *, with_assets: bool = True) 
             json={"name": "林小满", "description": "主角"},
         )
         assert char_resp.status_code == 200, char_resp.text
+        # P0-1 锁定门禁：拆解测试假设资产已就绪（定妆完成并锁定），
+        # ORM 直置就绪态避免门禁 409 干扰拆解逻辑本身
+        char_orm = (
+            await db.execute(
+                select(Character).where(
+                    Character.project_id == pid,
+                    Character.name == "林小满",
+                )
+            )
+        ).scalar_one()
+        char_orm.face_locked = True
+        char_orm.generation_status = "done"
+        char_orm.asset_url = "/storage/generated/test_portrait.png"
+        await db.commit()
         for scene in _SCENES:
             scene_resp = await client.post(
                 f"/api/projects/{pid}/assets/scenes",

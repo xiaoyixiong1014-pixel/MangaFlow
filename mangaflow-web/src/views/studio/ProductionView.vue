@@ -331,6 +331,8 @@ async function fullKeyframes(): Promise<void> {
   try {
     const res = await productionApi.keyframes(projectId.value, boards.value[0]!.id, {
       phase: 'full',
+      // S-06 按集工作流：选中具体集时全量只生成该集镜头（None=全部）
+      episode_id: currentEpisodeId.value ?? undefined,
     })
     ElMessage.success(`全量任务已提交（${res.tasks.length} 个任务，冻结 ${res.total_cost} 积分）`)
     panelVisible.value = true

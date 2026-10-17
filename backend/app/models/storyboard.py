@@ -35,6 +35,7 @@ class Storyboard(Base):
         audio_url: 配音 URL。
         status: 状态 pending/generating/done/failed。
         regen_count: 重生成次数（RD-25 触发画布引导）。
+        scene_version: 绑定场景时 scenes.asset_version 快照（P0-3，NULL=旧数据视为一致）。
     """
 
     __tablename__ = "storyboards"
@@ -73,6 +74,9 @@ class Storyboard(Base):
                                         comment="状态：pending/generating/done/failed")
     regen_count: Mapped[int] = mapped_column(nullable=False, server_default="0",
                                              comment="重生成次数（RD-25）")
+    # P0-3 版本透传：绑定场景资产时的版本快照（NULL=旧数据视为一致，防存量全量误报）
+    scene_version: Mapped[Optional[int]] = mapped_column(
+        nullable=True, comment="绑定场景时 scenes.asset_version 快照（P0-3）")
 
 
 class StoryboardCharacter(Base):
@@ -86,6 +90,8 @@ class StoryboardCharacter(Base):
         character_id: 角色资产 ID（外键 RESTRICT）。
         variant_id: 该镜头使用的造型变体 ID（外键 RESTRICT）。
         link_confidence: 实体链接置信度（NUMERIC(4,3)，低置信标黄）。
+        character_version: 引用时 characters.asset_version 快照（P0-3，NULL=旧数据视为一致）。
+        variant_version: 引用时 asset_variants.asset_version 快照（P0-3，variant_id 非空时记录）。
     """
 
     __tablename__ = "storyboard_characters"
@@ -105,3 +111,8 @@ class StoryboardCharacter(Base):
         comment="该镜头使用的造型变体 ID")
     link_confidence: Mapped[Optional[float]] = mapped_column(
         Numeric(4, 3), nullable=True, comment="实体链接置信度（低置信标黄）")
+    # P0-3 版本透传：引用资产时的版本快照（NULL=旧数据视为一致，防存量全量误报）
+    character_version: Mapped[Optional[int]] = mapped_column(
+        nullable=True, comment="引用时 characters.asset_version 快照（P0-3）")
+    variant_version: Mapped[Optional[int]] = mapped_column(
+        nullable=True, comment="引用时 asset_variants.asset_version 快照（P0-3）")

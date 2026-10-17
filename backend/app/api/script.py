@@ -456,6 +456,7 @@ async def script_health(
 @router.post("/api/projects/{project_id}/script/extract", response_model=ExtractResultOut)
 async def script_extract(
     project_id: int,
+    episode_id: Optional[int] = Query(default=None),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ExtractResultOut:
@@ -464,20 +465,27 @@ async def script_extract(
     LLM 失败自动降级为规则结果；别名冲突检测（名字互相包含）产出 conflicts；
     confidence<0.7 的条目标记 low_confidence=true。
 
+    按集工作流（S-06 全局剧集上下文）：episode_id 传值时只抽取该剧集绑定的
+    剧本行（fences 落该集剧本行）；缺省聚合项目全部剧本行（既有行为不变）。
+
     Args:
         project_id: 项目 ID。
+        episode_id: 可选剧集 ID（按集抽取范围；None=聚合全部剧本行）。
         user: 当前用户。
         db: 请求级异步数据库会话。
 
     Returns:
-        ExtractResultOut: {"characters","scenes","props","conflicts"}。
+        ExtractResultOut: {"characters","scenes","props","conflicts","stats"}。
 
     Raises:
-        HTTPException: 400 —— 剧本无原始输入文本；404 —— 项目或剧本不存在。
+        HTTPException: 400 —— 范围内剧本无内容；404 —— 项目或剧本不存在。
     """
     project = await get_owned_project(db, project_id, user.id)
-    script = await get_script_or_404(db, project)
-    result = await extract_entities(db, project, script)
+    if episode_id is not None:
+        script = await get_script_scoped_or_404(db, project, episode_id)
+    else:
+        script = await get_script_or_404(db, project)
+    result = await extract_entities(db, project, script, scope_episode_id=episode_id)
     return ExtractResultOut.model_validate(result)
 
 

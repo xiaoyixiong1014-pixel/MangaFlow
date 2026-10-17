@@ -206,7 +206,7 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         return _fallback_shots(scene)
 
 
-def _match_scene(scene: Dict[str, Any], scene_rows: List[Scene]) -> Tuple[Optional[int], str]:
+def _match_scene(scene: Dict[str, Any], scene_rows: List[Scene]) -> Tuple[Optional[Scene], str]:
     """按场景名匹配场景资产（精确相等或互相包含）。
 
     匹配命中置信度 0.9（应用层匹配策略语义，storyboards 表无独立字段存储；
@@ -217,13 +217,13 @@ def _match_scene(scene: Dict[str, Any], scene_rows: List[Scene]) -> Tuple[Option
         scene_rows: 项目内场景资产行列表。
 
     Returns:
-        Tuple[Optional[int], str]: (scene_id 或 None, 参与提示词的场景名)。
+        Tuple[Optional[Scene], str]: (命中的场景 ORM 对象或 None, 参与提示词的场景名)。
     """
     title = str(scene.get("title") or "").strip()
     if title:
         for row in scene_rows:
             if row.name == title or row.name in title or title in row.name:
-                return row.id, row.name
+                return row, row.name
     return None, title or "未匹配场景"
 
 
@@ -291,8 +291,46 @@ def _build_prompt_locked(
     )
 
 
+def compute_stale_reasons(
+    sb: Storyboard,
+    links: List[Dict[str, Any]],
+    char_version_map: Dict[int, int],
+    char_name_map: Dict[int, str],
+    scene_version_map: Dict[int, int],
+) -> Tuple[bool, List[str]]:
+    """计算单镜过期状态（P0-3 版本透传，模块级纯函数供列表与批量重渲染共用）。
+
+    判定规则（快照 NULL = 旧数据视为一致，防存量分镜全量误报）：
+    - 任一角色关联的 character_version 与该角色当前 asset_version 不一致 → 过期；
+    - scene_version 与绑定场景当前 asset_version 不一致 → 过期。
+
+    Args:
+        sb: 分镜 ORM 对象（取 scene_id/scene_version）。
+        links: 该镜的角色关联输出列表（含 character_id）。
+        char_version_map: 角色 ID → 当前 asset_version。
+        char_name_map: 角色 ID → 角色名（过期原因文案用）。
+        scene_version_map: 场景 ID → 当前 asset_version。
+
+    Returns:
+        Tuple[bool, List[str]]: (是否过期, 过期原因文案列表)。
+    """
+    reasons: List[str] = []
+    for link in links:
+        cur = char_version_map.get(link["character_id"])
+        snap = link.get("character_version")
+        if snap is not None and cur is not None and snap != cur:
+            reasons.append(f"角色「{char_name_map.get(link['character_id'], link['character_id'])}」定妆照已更新")
+    if sb.scene_id and sb.scene_version is not None:
+        cur_scene = scene_version_map.get(sb.scene_id)
+        if cur_scene is not None and sb.scene_version != cur_scene:
+            reasons.append("绑定场景概念图已更新")
+    return bool(reasons), reasons
+
+
 async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[str, Any]]:
     """把分镜 ORM 列表转换为输出 dict（批量联查角色关联与场景名，避免 N+1）。
+
+    P0-3：输出追加 stale / stale_reasons（引用版本快照 vs 资产当前版本）。
 
     Args:
         db: 异步数据库会话。
@@ -304,34 +342,45 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
     if not sbs:
         return []
     ids = [sb.id for sb in sbs]
-    # 批量取分镜-角色关联（联角色名）
+    # 批量取分镜-角色关联（联角色名与当前版本，供 stale 计算）
     link_rows = (
         await db.execute(
-            select(StoryboardCharacter, Character.name)
+            select(StoryboardCharacter, Character.name, Character.asset_version)
             .join(Character, Character.id == StoryboardCharacter.character_id)
             .where(StoryboardCharacter.storyboard_id.in_(ids))
             .order_by(StoryboardCharacter.id.asc())
         )
     ).all()
     links_by_sb: Dict[int, List[Dict[str, Any]]] = {}
-    for link, cname in link_rows:
+    char_version_map: Dict[int, int] = {}
+    char_name_map: Dict[int, str] = {}
+    for link, cname, cversion in link_rows:
         links_by_sb.setdefault(link.storyboard_id, []).append({
             "character_id": link.character_id,
             "name": cname,
             "variant_id": link.variant_id,
             "link_confidence": float(link.link_confidence) if link.link_confidence is not None else None,
+            "character_version": link.character_version,
         })
-    # 批量取场景名
+        char_version_map[link.character_id] = int(cversion or 1)
+        char_name_map[link.character_id] = cname
+    # 批量取场景名与当前版本
     scene_ids = {sb.scene_id for sb in sbs if sb.scene_id}
     scene_names: Dict[int, str] = {}
+    scene_version_map: Dict[int, int] = {}
     if scene_ids:
         rows = (
-            await db.execute(select(Scene.id, Scene.name).where(Scene.id.in_(scene_ids)))
+            await db.execute(select(Scene.id, Scene.name, Scene.asset_version)
+                             .where(Scene.id.in_(scene_ids)))
         ).all()
-        scene_names = {sid: name for sid, name in rows}
+        scene_names = {sid: name for sid, name, _ in rows}
+        scene_version_map = {sid: int(ver or 1) for sid, _, ver in rows}
 
     out: List[Dict[str, Any]] = []
     for sb in sbs:
+        links = links_by_sb.get(sb.id, [])
+        stale, stale_reasons = compute_stale_reasons(
+            sb, links, char_version_map, char_name_map, scene_version_map)
         out.append({
             "id": sb.id,
             "sequence": sb.sequence,
@@ -352,7 +401,10 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
             "audio_url": sb.audio_url,
             "status": sb.status,
             "regen_count": sb.regen_count,
-            "characters": links_by_sb.get(sb.id, []),
+            # P0-3 版本透传：引用过期标记（前端标黄 + 批量重渲染）
+            "stale": stale,
+            "stale_reasons": stale_reasons,
+            "characters": links,
         })
     return out
 
@@ -375,38 +427,110 @@ async def _resequence(db: AsyncSession, project_id: int) -> None:
         sb.sequence = idx
 
 
-async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str, Any]:
+async def check_lock_readiness(db: AsyncSession, project: Project) -> List[Dict[str, Any]]:
+    """校验项目主要角色定妆照锁定就绪度（P0-1 锁定门禁）。
+
+    主要角色判定（复用 P-1 角色定位字段 role_type 分级）：
+    lead 主角 / support 配角 / villain 反派 视为主要；extra 群像放行；
+    role_type 为 NULL（旧数据/快速模式产物）保守视为主要，靠快速模式兜底。
+
+    未就绪按序判定（取首个命中原因）：
+    - 无图（asset_url IS NULL）且 generation_status=pending → "未生成定妆照"；
+    - generation_status=failed → "生成失败"；
+    - generation_status=generating → "生成中"（严格拦截防引用半成品）；
+    - face_locked=False → "未锁定"。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project: 已校验归属的项目。
+
+    Returns:
+        List[Dict[str, Any]]: 未就绪角色清单
+            [{"character_id","name","role_type","face_locked","generation_status",
+              "has_image","reason"}]，空列表 = 全部就绪。
+    """
+    rows = (
+        await db.execute(
+            select(Character).where(
+                Character.project_id == project.id, Character.deleted_at.is_(None),
+                # 按集工作流：门禁只看已启用角色（角色设定确认未启用的不拦截）
+                Character.enabled_at.is_not(None))
+        )
+    ).scalars().all()
+    unready: List[Dict[str, Any]] = []
+    for ch in rows:
+        if ch.role_type == "extra":
+            continue  # 群像不做定妆强制（对应小云雀只锁 3~5 主角的策略）
+        if ch.asset_url is None and ch.generation_status == "pending":
+            reason = "未生成定妆照"
+        elif ch.generation_status == "failed":
+            reason = "生成失败"
+        elif ch.generation_status == "generating":
+            reason = "生成中"
+        elif not ch.face_locked:
+            reason = "未锁定"
+        else:
+            continue  # 就绪
+        unready.append({
+            "character_id": ch.id,
+            "name": ch.name,
+            "role_type": ch.role_type,
+            "face_locked": ch.face_locked,
+            "generation_status": ch.generation_status,
+            "has_image": ch.asset_url is not None,
+            "reason": reason,
+        })
+    return unready
+
+
+async def decompose_storyboards(
+    db: AsyncSession,
+    project: Project,
+    skip_lock_check: bool = False,
+    scope_episode_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """AI 拆解：读剧本 content.scenes 逐场景生成 1~3 镜并建 storyboards 行。
 
     - LLM 失败走规则降级（每场景固定 2 镜、每镜 5s，离线降级路径）；
     - 剧本按项目全部 Script 行合并读取（默认行 episode_id NULL 排最前，其余按剧集
       sequence 升序），兼容分阶段流水线每集一行的落库形态；
+      scope_episode_id 传值（按集拆解）时只读取该剧集绑定的剧本行；
     - 每镜 episode_id 随来源剧本行落库（前端可按剧集过滤分镜）；
     - scene_id 按场景名匹配场景资产（未匹配落 NULL）；
     - storyboard_characters 关联对白中出现的角色（link_confidence=0.8）；
     - prompt_locked 写入五要素模板；status='pending'；project.status='storyboard'；
-    - 幂等为全量重建语义：先删除项目既有分镜再重建。
+    - 幂等重建语义：scope_episode_id 传值时只删除并重建该集分镜（跨集全局
+      重排 sequence），缺省全量重建（既有行为）；
+    - P0-1 锁定门禁：skip_lock_check=False 时校验主要角色定妆照就绪，未就绪
+      抛 409（携带清单）且不清空既有分镜。
 
     Args:
         db: 异步数据库会话。
         project: 已校验归属的项目。
+        skip_lock_check: 快速模式——跳过锁定门禁（可能造成角色形象不一致）。
+        scope_episode_id: 按集拆解范围剧集 ID（None=全量重建，按集工作流传值）。
 
     Returns:
         Dict[str, Any]: {"total": 新建分镜数, "degraded": 是否发生过规则降级}。
 
     Raises:
-        HTTPException: 400 —— 项目无剧本或剧本无场景数据。
+        HTTPException: 400 —— 项目无剧本或范围内剧本无场景数据；
+            409 —— 主要角色定妆照未就绪（body 含未就绪清单）。
     """
-    # 读取项目全部剧本行（下游接收修复 2026-10-15）：分阶段流水线按剧集落库
+    # 读取剧本行（下游接收修复 2026-10-15）：分阶段流水线按剧集落库
     # （每集一行，uk_scripts_project = (project_id, episode_id)），旧快速路径
     # 为单行默认行（episode_id NULL）。此前 scalar_one_or_none 在行数 >1 时
     # 抛 MultipleResultsFound（500），导致流水线产出无法被下游分镜接收。
+    # 按集拆解（S-06）：scope_episode_id 传值时只读取该集剧本行。
+    script_conds = [Script.project_id == project.id]
+    if scope_episode_id is not None:
+        script_conds.append(Script.episode_id == scope_episode_id)
     if (
         await db.execute(
-            select(Script).where(Script.project_id == project.id).limit(1)
+            select(Script).where(*script_conds).limit(1)
         )
     ).scalar_one_or_none() is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目尚无剧本，请先生成剧本")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该范围尚无剧本，请先生成剧本")
 
     # 剧集序号映射：默认行（episode_id NULL）视为第 0 集排最前，
     # 其余按所属剧集 sequence 升序、同序按 Script.id 稳定排序
@@ -418,7 +542,7 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
     }
     script_rows = (
         await db.execute(
-            select(Script).where(Script.project_id == project.id).order_by(Script.id.asc())
+            select(Script).where(*script_conds).order_by(Script.id.asc())
         )
     ).scalars().all()
     script_rows.sort(
@@ -436,19 +560,35 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
     if not scene_entries:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="剧本中无场景数据，无法拆解")
 
-    # 项目内场景 / 角色资产（用于强绑与实体链接）
+    # P0-1 锁定门禁：在删除既有分镜之前校验（409 拦截时不清空用户既有分镜）
+    if not skip_lock_check:
+        unready = await check_lock_readiness(db, project)
+        if unready:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
+                "code": "asset_lock_not_ready",
+                "message": f"{len(unready)} 个主要角色定妆照未就绪，已拦截分镜生成",
+                "unready": unready,
+            })
+
+    # 项目内场景 / 角色资产（用于强绑与实体链接；角色仅取已启用的——
+    # 按集工作流：角色设定确认未启用的角色不参与分镜实体链接）
     scene_rows = (
         await db.execute(select(Scene).where(Scene.project_id == project.id))
     ).scalars().all()
     char_rows = (
         await db.execute(
             select(Character).where(
-                Character.project_id == project.id, Character.deleted_at.is_(None))
+                Character.project_id == project.id, Character.deleted_at.is_(None),
+                Character.enabled_at.is_not(None))
         )
     ).scalars().all()
 
-    # 幂等：全量重建语义——先删项目既有分镜（storyboard_characters 由外键级联删除）
-    await db.execute(delete(Storyboard).where(Storyboard.project_id == project.id))
+    # 幂等重建：按集拆解时只删该集分镜（跨集全局重排 sequence），
+    # 缺省全量重建删全部（storyboard_characters 由外键级联删除）
+    delete_conds = [Storyboard.project_id == project.id]
+    if scope_episode_id is not None:
+        delete_conds.append(Storyboard.episode_id == scope_episode_id)
+    await db.execute(delete(Storyboard).where(*delete_conds))
 
     seq = 0
     degraded = False
@@ -456,7 +596,7 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
         shots = await _llm_shots(scene)
         if any("规则降级" in str(s.get("visual_description") or "") for s in shots):
             degraded = True
-        scene_id, scene_name = _match_scene(scene, scene_rows)
+        scene_row, scene_name = _match_scene(scene, scene_rows)
         for shot in shots:
             seq += 1
             shot_type = shot["shot_type"]
@@ -473,7 +613,9 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
                 duration=shot["duration"],
                 visual_description=visual_description or None,
                 dialogue=dialogue_text or None,
-                scene_id=scene_id,
+                scene_id=scene_row.id if scene_row else None,
+                # P0-3：绑定场景时写入当前版本快照（NULL 场景无快照）
+                scene_version=scene_row.asset_version if scene_row else None,
                 prompt_locked="",   # 关联角色确定后回填
                 prompt_editable="",
                 status="pending",
@@ -488,6 +630,8 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
                     storyboard_id=sb.id,
                     character_id=ch.id,
                     variant_id=None,
+                    # P0-3：引用角色时写入当前定妆照版本快照（判过期依据）
+                    character_version=ch.asset_version or 1,
                     link_confidence=LINK_CONFIDENCE,
                 ))
             # 五要素锁定层提示词（RD-04）：角色要素注入外貌圣经固定前缀
@@ -497,8 +641,47 @@ async def decompose_storyboards(db: AsyncSession, project: Project) -> Dict[str,
             )
 
     project.status = "storyboard"
+    # 按集拆解：其他集分镜保留旧 sequence，跨集全局重排为连续 1..n
+    # （默认剧集分镜排最前，其余按剧集 sequence；缺省全量重建时 seq 本就连续）
+    if scope_episode_id is not None:
+        await _resequence_episodes(db, project.id)
     await db.commit()
     return {"total": seq, "degraded": degraded}
+
+
+async def _resequence_episodes(db: AsyncSession, project_id: int) -> None:
+    """跨集全局重排分镜 sequence（内部函数，按集拆解后调用）。
+
+    排序口径：默认剧集（episode_id NULL）分镜排最前，其余按所属剧集 sequence
+    升序、集内按既有 sequence 与 ID 稳定排序，统一重写为连续 1..n。
+
+    Args:
+        db: 异步数据库会话。
+        project_id: 项目 ID。
+
+    Returns:
+        None。
+
+    Raises:
+        无：纯排序重写，不产生业务异常路径。
+    """
+    episode_order: Dict[int, int] = {
+        ep.id: (ep.sequence if ep.sequence is not None else 0)
+        for ep in (
+            await db.execute(select(Episode).where(Episode.project_id == project_id))
+        ).scalars().all()
+    }
+    sbs = (
+        await db.execute(select(Storyboard).where(Storyboard.project_id == project_id))
+    ).scalars().all()
+
+    def _sort_key(sb: Storyboard) -> Tuple[int, int, int]:
+        """排序键（内部）：（剧集顺序，集内 sequence，ID 稳定序）。"""
+        ep_order = 0 if sb.episode_id is None else episode_order.get(sb.episode_id, 10**9)
+        return (ep_order, sb.sequence, sb.id)
+
+    for idx, sb in enumerate(sorted(sbs, key=_sort_key), start=1):
+        sb.sequence = idx
 
 
 async def list_storyboards(
@@ -551,6 +734,8 @@ async def update_storyboard(
         if scene is None or scene.project_id != project.id:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="场景不存在或不属于本项目")
         sb.scene_id = req.scene_id
+        # P0-3：改绑场景时同步刷新版本快照
+        sb.scene_version = scene.asset_version or 1
 
     for field in ("shot_type", "camera_movement", "duration",
                   "visual_description", "dialogue", "prompt_editable"):
@@ -586,6 +771,8 @@ async def update_storyboard(
                 storyboard_id=sb.id,
                 character_id=link.character_id,
                 variant_id=link.variant_id,
+                # P0-3：改绑角色时写入当前定妆照版本快照（variant 未指定变体版本）
+                character_version=ch.asset_version or 1,
                 link_confidence=link.link_confidence,
             ))
 

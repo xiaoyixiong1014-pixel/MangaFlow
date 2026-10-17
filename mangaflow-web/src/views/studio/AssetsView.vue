@@ -3,9 +3,13 @@
 
   对应原型 S-04（资产管理）+ S-05（资产变体面板），路由 /projects/:id/assets。
   功能：
-  - 四 Tab（角色/场景/道具/风格，各 pane 显式声明 name 与 activeTab 对齐，修复
+  - 三 Tab（角色/场景/道具，各 pane 显式声明 name 与 activeTab 对齐，修复
     v-model 初值不匹配自动索引导致的内容区空白缺陷 C-BUG-1）+ 「生成全部主照」
-    批量按钮（确认框提示张数与积分）；
+    批量按钮（确认框提示张数与积分）；风格不再作为资产 Tab 展示（画风由
+    项目创建时选定，后端风格行仅作生成管线锚点，用户不可见）；
+  - 卡片操作统一形态：批量删除选择圈浮于图片左上角（纯圆圈，选中态品牌绿
+    填充+光晕+微放大）；底部操作行 = 上传替换（左）+ 更多（右，dropdown
+    收拢提示词/锁定/删除等，道具无参考图字段故无上传替换）；
   - 角色卡网格：有图 el-image 预览 / 无图占位渐变 + 生成按钮；状态 Tag（pending/
     generating/done/failed，仅 generating（确有生成任务在跑）时每 3s 轮询刷新，
     直至全部终态或达到轮询上限自动停止；pending 为实体抽取后的初始态、无任务，
@@ -16,24 +20,26 @@
     重生成 / 编辑提示词（双层抽屉：锁定层只读 visual_prompt + 可编辑层 textarea）/
     上传替换（A-04：el-upload → POST /api/media/upload → PATCH reference_image_url）/
     删除（confirm + 软删）；
-  - A-05 标签：卡片展示 tags（el-tag）；工具栏标签下拉（数据源=当前项目资产 tags
-    去重聚合）经后端 ?tag= JSONB 包含匹配过滤当前 Tab 列表；「标签」轻量弹窗
-    （el-select multiple allow-create，≤10 个）编辑四类资产 tags；
-  - A-05 批量删除：四类 Tab 卡片多选（选择框）+「批量删除」按钮（选中 >0 可用，
+  - A-05 批量删除：卡片多选（左上角选择圈）+「批量删除」按钮（选中 >0 可用，
     confirm 二次确认后调 batch-delete 接口，跳过项提示原因）；
-  - 场景卡/道具卡简化：编辑提示词 + 锁定切换；场景无图显示「空场景」占位（RD-19）；
-  - 风格 Tab：卡列表 + 设为默认（updateStyle is_default）；
+  - 按集工作流（S-06）：顶部全局剧集切换器联动——按集视图仅显示该集经「启用资产」
+    确认入池的资产（后端 episodes.enabled_assets 名单经 GET /assets?episode_id=
+    响应的 episode_enabled 下发），未启用过的集显示空态引导；
+  - 场景卡/道具卡：编辑提示词 + 锁定切换（收进更多菜单）；场景无图显示
+    「空场景」占位（RD-19）；
   - 一致性校验：consistencyCheck → el-dialog 并排对比（原图 + 变体图）+
     相似度进度条（passed 绿 / 未通过红）。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Lock } from '@element-plus/icons-vue'
+import { Lock, Loading } from '@element-plus/icons-vue'
 import * as studioApi from '@/api/studio'
 import * as mediaApi from '@/api/media'
 import * as pipelineApi from '@/api/scriptPipeline'
+import * as productionApi from '@/api/production'
+import { useProjectStore } from '@/stores/project'
 import type { UploadFile } from 'element-plus'
 import type {
   AssetVariant,
@@ -41,15 +47,78 @@ import type {
   CharacterAsset,
   ConsistencyCheckResult,
   CrossProjectAsset,
+  EpisodeEnabledNames,
   PropAsset,
   SceneAsset,
-  StyleAsset,
 } from '@/types'
 
 const route = useRoute()
+const router = useRouter()
+const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+// ============================================================
+// S-06 按集工作上下文（全局剧集切换器联动）
+// ============================================================
+
+/** 当前选中剧集 ID（顶部全局切换器写入；null = 默认剧集/全部，不过滤） */
+const episodeScope = computed(() => projectStore.currentEpisodeId)
+
+/** 当前选中剧集条目（工具行展示集名） */
+const episodeScopeItem = computed(
+  () => projectStore.currentProject?.episodes.find((e) => e.id === episodeScope.value) ?? null,
+)
+
+/** 视图过滤模式：episode 仅本集相关 / all 全部资产（无集上下文时强制 all） */
+const filterMode = ref<'episode' | 'all'>('episode')
+
+/**
+ * 该集已启用资产名名单（GET /assets?episode_id= 响应的 episode_enabled，
+ * 后端取 episodes.enabled_assets——该集经「启用资产」确认入池的资产名 union，
+ * 规范化四键：characters/scenes/props/styles 各为名字数组）。
+ * null = 请求未携带集上下文（无集上下文不过滤）；名单对象存在但键为空数组
+ * = 该集未启用过该类资产（按集视图显示空态，引导用户点「启用资产」）。
+ */
+const episodeEnabled = ref<EpisodeEnabledNames | null>(null)
+
+// 切换全局剧集：重置过滤模式为"仅本集相关"并重拉资产（带该集启用名单）
+watch(episodeScope, () => {
+  filterMode.value = 'episode'
+  void loadAssets()
+})
+
+/** 按集过滤是否生效（选中集 + 过滤模式=episode） */
+const episodeFilterActive = computed(
+  () => episodeScope.value != null && filterMode.value === 'episode',
+)
+
+/**
+ * 「启用资产」入口：按集工作流要求先选定集数，未选集时提示不跳转。
+ * @returns 无
+ */
+function gotoExtract(): void {
+  if (episodeScope.value == null) {
+    ElMessage.warning('请在左上角选择好集数')
+    return
+  }
+  void router.push(`/projects/${projectId.value}/script/extract`)
+}
+
+/**
+ * 判定资产名是否在该集启用名单内（精确匹配）。
+ * 名单对象存在但键缺数组（该集未启用过该类）→ 视为空数组 → 不命中 → 隐藏；
+ * 仅当 episodeEnabled 为 null（请求未带集上下文）时不过滤。
+ * @param kind 资产类别键
+ * @param name 资产名
+ * @returns 是否该集已启用
+ */
+function isEnabledInEpisode(kind: 'characters' | 'scenes' | 'props' | 'styles', name: string): boolean {
+  if (episodeEnabled.value === null) return true // 无集上下文 → 不按集隐藏
+  const names = episodeEnabled.value[kind] ?? []
+  return names.includes(name.trim())
+}
 
 // ============================================================
 // 资产列表
@@ -64,6 +133,29 @@ const assets = ref<AssetsGroup>({ characters: [], scenes: [], props: [], styles:
 /** 当前激活 Tab（与 el-tab-pane 显式 name 一一对应） */
 const activeTab = ref<'characters' | 'scenes' | 'props' | 'styles'>('characters')
 
+// ---------- 按集过滤视图（资产库项目级共享；按集视图=该集启用名单，未启用集为空态） ----------
+
+/** 当前 Tab 可见角色（按集过滤生效时仅该集启用名单内的角色，否则全量） */
+const visibleCharacters = computed(() =>
+  episodeFilterActive.value
+    ? assets.value.characters.filter((c) => isEnabledInEpisode('characters', c.name))
+    : assets.value.characters,
+)
+
+/** 当前 Tab 可见场景（按集过滤生效时仅该集启用名单内的场景，否则全量） */
+const visibleScenes = computed(() =>
+  episodeFilterActive.value
+    ? assets.value.scenes.filter((s) => isEnabledInEpisode('scenes', s.name))
+    : assets.value.scenes,
+)
+
+/** 当前 Tab 可见道具（按集过滤生效时仅该集启用名单内的道具，否则全量） */
+const visibleProps = computed(() =>
+  episodeFilterActive.value
+    ? assets.value.props.filter((p) => isEnabledInEpisode('props', p.name))
+    : assets.value.props,
+)
+
 /** 请求序号（竞态保护：响应返回时若已有更新的请求发出，则丢弃本次过期响应） */
 let loadSeq = 0
 /** 组件是否已卸载（卸载后在途响应禁止回写状态） */
@@ -73,8 +165,8 @@ let disposed = false
  * 拉取四类资产列表（quiet=true 时不切换骨架屏，供轮询与操作后刷新使用）。
  * 带请求序号竞态保护：仅允许最新一次请求回写状态，丢弃过期响应；
  * 失败时非静默进入错误兜底态、静默轮询保持旧数据不惊扰用户。
- * A-05：聚合拉取后若某 Tab 设置了标签筛选，再按 Tab 调后端 ?tag= 过滤结果覆盖
- * 该 Tab 列表（保持接口语义：过滤在后端 JSONB @> 完成）。
+ * 按集工作流：选中集时带 episode_id 请求，响应携带该集启用名单 episode_enabled
+ * （按集视图据此过滤；请求失败时名单置空对象 → 按集视图显示空态）。
  * @param quiet 是否静默刷新
  * @returns 无
  */
@@ -85,19 +177,15 @@ async function loadAssets(quiet = false): Promise<void> {
     loadError.value = false
   }
   try {
-    const group = await studioApi.listAssets(projectId.value)
+    const group = await studioApi.listAssets(
+      projectId.value,
+      episodeScope.value != null ? { episode_id: episodeScope.value } : undefined,
+    )
     // 过期响应或组件已卸载：直接丢弃，不回写状态
     if (disposed || seq !== loadSeq) return
     assets.value = group
-    rebuildTagOptionsCache(group)
-    // A-05：逐 Tab 应用标签筛选（有筛选的 Tab 用后端 ?tag= 过滤结果覆盖）
-    for (const kind of TAB_KEYS) {
-      const tag = tagFilters.value[kind]
-      if (!tag) continue
-      const page = await studioApi.listAssetsByType(projectId.value, kind, tag)
-      if (disposed || seq !== loadSeq) return
-      assets.value = { ...assets.value, [kind]: page.items } as AssetsGroup
-    }
+    // 未带 episode_id 的响应无名单字段 → null（无集上下文不过滤）
+    episodeEnabled.value = group.episode_enabled ?? null
   } catch {
     // 静默轮询失败保持旧数据；首屏失败进入错误兜底（不吞异常导致骨架屏卡死）
     if (!quiet && !disposed && seq === loadSeq) loadError.value = true
@@ -208,6 +296,76 @@ async function generatePortrait(c: CharacterAsset): Promise<void> {
   }
 }
 
+// ---------- 场景/道具图生成（与角色定妆照同构；无 generation_status 字段，走任务轮询） ----------
+
+/** 场景图生成请求进行中的场景 ID 集合（防重复点击） */
+const sceneGenBusyIds = ref<number[]>([])
+/** 道具图生成请求进行中的道具 ID 集合（防重复点击） */
+const propGenBusyIds = ref<number[]>([])
+
+/**
+ * 轮询任务至终态后刷新列表（场景/道具生成状态感知）。
+ * 2s 间隔，上限 90s；done 提示成功，failed/canceled 提示失败；超时静默刷新。
+ * @param taskId 任务 ID
+ * @param name 资产名（提示文案用）
+ * @returns 无
+ */
+async function pollAssetTask(taskId: number, name: string): Promise<void> {
+  let finalStatus = ''
+  for (let i = 0; i < 45; i++) {
+    await new Promise((resolve) => setTimeout(resolve, 2000))
+    const t = await productionApi.taskDetail(taskId)
+    if (['done', 'failed', 'canceled'].includes(t.status)) {
+      finalStatus = t.status
+      break
+    }
+  }
+  await loadAssets(true)
+  if (finalStatus === 'done') {
+    ElMessage.success(`「${name}」图片已生成`)
+  } else if (finalStatus) {
+    ElMessage.error(`「${name}」图片生成失败，请重试`)
+  }
+}
+
+/**
+ * 发起场景概念图生成并轮询至终态。
+ * @param s 目标场景
+ * @returns 无
+ */
+async function generateScene(s: SceneAsset): Promise<void> {
+  if (sceneGenBusyIds.value.includes(s.id)) return
+  sceneGenBusyIds.value = [...sceneGenBusyIds.value, s.id]
+  try {
+    const task = (await studioApi.generateAssetImage(projectId.value, 'scene', s.id)) as {
+      id: number
+    }
+    ElMessage.success(`已提交「${s.name}」场景图生成任务（冻结 10 积分）`)
+    await pollAssetTask(task.id, s.name)
+  } finally {
+    sceneGenBusyIds.value = sceneGenBusyIds.value.filter((i) => i !== s.id)
+  }
+}
+
+/**
+ * 发起道具标准图生成并轮询至终态。
+ * @param p 目标道具
+ * @returns 无
+ */
+async function generateProp(p: PropAsset): Promise<void> {
+  if (propGenBusyIds.value.includes(p.id)) return
+  propGenBusyIds.value = [...propGenBusyIds.value, p.id]
+  try {
+    const task = (await studioApi.generateAssetImage(projectId.value, 'prop', p.id)) as {
+      id: number
+    }
+    ElMessage.success(`已提交「${p.name}」道具图生成任务（冻结 10 积分）`)
+    await pollAssetTask(task.id, p.name)
+  } finally {
+    propGenBusyIds.value = propGenBusyIds.value.filter((i) => i !== p.id)
+  }
+}
+
 /**
  * 生成全部主照：对所有缺图角色批量提交（确认框提示张数与预估积分）。
  * @returns 无
@@ -238,38 +396,67 @@ async function generateAll(): Promise<void> {
 }
 
 // ============================================================
-// 锁定 / 解锁面部层（RD-12）
+// 一键锁定（当前 Tab 可见资产批量锁定）
 // ============================================================
 
+/** 一键锁定进行中（按钮 loading，防重复提交） */
+const lockingAll = ref(false)
+
 /**
- * 确认并锁定角色面部层（confirm 二次确认）。
- * @param c 目标角色
+ * 一键锁定当前 Tab 的可见资产：角色锁定面部层（face_locked，仅对已生成定妆照
+ * 的角色生效），场景/道具置 is_locked（生成保护）。总确认后逐个调用既有单锁
+ * 接口，完成后静默刷新列表；无可锁定项时提示不打断。
  * @returns 无
  */
-async function lockFace(c: CharacterAsset): Promise<void> {
+async function lockAllVisible(): Promise<void> {
+  const kind = activeTab.value
+  if (lockingAll.value) return
+  // 收集可锁定目标：角色=有定妆照且未锁；场景/道具=未锁定
+  const targets: Array<{ id: number; name: string }> = []
+  if (kind === 'characters') {
+    for (const c of visibleCharacters.value) {
+      if (c.asset_url && !c.face_locked) targets.push(c)
+    }
+  } else if (kind === 'scenes') {
+    for (const s of visibleScenes.value) {
+      if (!s.is_locked) targets.push(s)
+    }
+  } else if (kind === 'props') {
+    for (const p of visibleProps.value) {
+      if (!p.is_locked) targets.push(p)
+    }
+  } else {
+    return
+  }
+  if (!targets.length) {
+    ElMessage.info(`当前分类没有可锁定的${KIND_LABELS[kind]}`)
+    return
+  }
   try {
     await ElMessageBox.confirm(
-      `锁定后「${c.name}」的面部特征将在全项目保持一致，重生成不再影响面部。是否锁定？`,
-      '锁定面部',
-      { type: 'warning' },
+      `将锁定 ${targets.length} 个${KIND_LABELS[kind]}，锁定后重生成不再影响已锁定内容。是否继续？`,
+      '一键锁定',
+      { type: 'warning', confirmButtonText: '锁定', cancelButtonText: '取消' },
     )
   } catch {
     return
   }
-  const updated = await studioApi.lockCharacter(projectId.value, c.id)
-  Object.assign(c, updated)
-  ElMessage.success('面部已锁定')
-}
-
-/**
- * 解锁角色面部层。
- * @param c 目标角色
- * @returns 无
- */
-async function unlockFace(c: CharacterAsset): Promise<void> {
-  const updated = await studioApi.unlockCharacter(projectId.value, c.id)
-  Object.assign(c, updated)
-  ElMessage.success('面部已解锁')
+  lockingAll.value = true
+  try {
+    for (const t of targets) {
+      if (kind === 'characters') {
+        await studioApi.lockCharacter(projectId.value, t.id)
+      } else if (kind === 'scenes') {
+        await studioApi.updateScene(projectId.value, t.id, { is_locked: true })
+      } else {
+        await studioApi.updateProp(projectId.value, t.id, { is_locked: true })
+      }
+    }
+    ElMessage.success(`已锁定 ${targets.length} 个${KIND_LABELS[kind]}`)
+    await loadAssets(true)
+  } finally {
+    lockingAll.value = false
+  }
 }
 
 // ============================================================
@@ -306,6 +493,8 @@ function openPromptDrawer(
   promptName.value = target.name
   promptLockedText.value = target.visual_prompt
   promptEditableText.value = target.visual_prompt
+  suggestElements.value = null // 重置上次的六要素识别结果
+  suggestAnchors.value = ''
   promptVisible.value = true
 }
 
@@ -340,10 +529,85 @@ async function savePrompt(): Promise<void> {
     }
     promptLockedText.value = text
     promptVisible.value = false
-    ElMessage.success('提示词已更新')
+    ElMessage.success('提示词已更新，生成图片时将使用该提示词')
   } finally {
     promptSaving.value = false
   }
+}
+
+// ============================================================
+// 场景/道具提示词六要素 AI 识别（agent 从剧本正文提取，确认后生成图片）
+// ============================================================
+
+/** 六要素 AI 识别进行中（按钮 loading） */
+const suggestLoading = ref(false)
+/** 识别出的六要素（五键字符串 + anchors 数组；null=未识别，抽屉展示手写可编辑层） */
+const suggestElements = ref<Record<string, string> | null>(null)
+/** 核心锚点编辑文本（顿号/逗号分隔，确认时拆分为数组） */
+const suggestAnchors = ref('')
+
+/**
+ * 打开 AI 识别流（点击「AI 识别六要素」按钮）：调后端 LLM 从剧本正文提取
+ * 该场景/道具的六要素，填充结构化编辑区。
+ * @returns 无
+ */
+async function runSuggestPrompt(): Promise<void> {
+  if (!promptTarget || suggestLoading.value) return
+  const type = promptKind.value === 'scene' ? 'scene' : 'prop'
+  suggestLoading.value = true
+  try {
+    const res = await studioApi.suggestPrompt(projectId.value, type, promptTarget.id)
+    const el = res.elements as Record<string, unknown>
+    suggestElements.value = {
+      style_base: String(el.style_base ?? ''),
+      space_type: String(el.space_type ?? ''),
+      lighting: String(el.lighting ?? ''),
+      composition: String(el.composition ?? ''),
+      negative: String(el.negative ?? ''),
+      scale_ref: String(el.scale_ref ?? ''),
+      material: String(el.material ?? ''),
+      marker: String(el.marker ?? ''),
+      usage: String(el.usage ?? ''),
+      text_policy: String(el.text_policy ?? ''),
+    }
+    suggestAnchors.value = Array.isArray(el.anchors) ? el.anchors.map(String).join('、') : ''
+  } finally {
+    suggestLoading.value = false
+  }
+}
+
+/**
+ * 按六要素合成完整视觉提示词（场景/道具模板各异）。
+ * @returns 合成文本（未识别时返回空串）
+ */
+function composeElementsPrompt(): string {
+  const e = suggestElements.value
+  if (!e || !promptTarget) return ''
+  const anchors = suggestAnchors.value
+    .split(/[、,，]/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (promptKind.value === 'scene') {
+    return (
+      `统一${e.style_base}插画风格，场景：${promptTarget.name}（${e.space_type}）。` +
+      `核心锚点：${anchors.join('、')}。光照氛围：${e.lighting}。` +
+      `构图与视角：${e.composition}。负面约束：画面中不出现${e.negative}。`
+    )
+  }
+  return (
+    `道具：${promptTarget.name}。尺度参照：${e.scale_ref}。` +
+    `核心锚点：${anchors.join('、')}。材质与表面工艺：${e.material}。` +
+    `唯一标记：${e.marker}。功能与操作方式：${e.usage}。可读文字政策：${e.text_policy}。`
+  )
+}
+
+/**
+ * 确认六要素：合成提示词写入可编辑层并保存（保存后生成图片即用该提示词）。
+ * @returns 无
+ */
+async function confirmSuggestSave(): Promise<void> {
+  promptEditableText.value = composeElementsPrompt()
+  await savePrompt()
 }
 
 // ============================================================
@@ -500,28 +764,52 @@ const ccRightUrl = computed(
 const uploadingRefIds = ref<number[]>([])
 
 /**
- * 角色参考图上传替换回调（A-04）：选择文件后先调 POST /api/media/upload
- * 落库素材，再用返回 URL PATCH 角色 reference_image_url（后端生成定妆照
- * 时将该参考图作为锚点透传图像渠道），成功后回写角色卡状态。
+ * 参考图上传底层（A-04，角色/场景共用）：选择文件后先调 POST /api/media/upload
+ * 落库素材，再用返回 URL PATCH 对应资产 reference_image_url（生成时将该参考图
+ * 作为锚点透传图像渠道），成功后回写资产卡状态。
+ * @param kind 资产类别（characters/scenes；道具无参考图字段不接入）
+ * @param asset 目标资产（至少含 id/name）
+ * @param raw 原始图片文件（el-upload on-change 回调 raw；空则忽略）
+ * @returns 无
+ */
+async function uploadRefImage(
+  kind: 'characters' | 'scenes',
+  asset: { id: number; name: string },
+  raw?: File,
+): Promise<void> {
+  if (!raw) return
+  if (uploadingRefIds.value.includes(asset.id)) return
+  uploadingRefIds.value = [...uploadingRefIds.value, asset.id]
+  try {
+    const media = await mediaApi.upload(raw, { media_type: 'image', project_id: projectId.value })
+    const updated = kind === 'characters'
+      ? await studioApi.updateCharacter(projectId.value, asset.id, { reference_image_url: media.url })
+      : await studioApi.updateScene(projectId.value, asset.id, { reference_image_url: media.url })
+    Object.assign(asset, updated)
+    ElMessage.success(`「${asset.name}」参考图已上传并保存，下次生成时将作为参考`)
+  } finally {
+    uploadingRefIds.value = uploadingRefIds.value.filter((i) => i !== asset.id)
+  }
+}
+
+/**
+ * 角色参考图上传替换回调（A-04）。
  * @param character 目标角色
  * @param uploadFile el-upload on-change 回调的文件对象（raw 为原始 File）
  * @returns 无
  */
-async function onUploadReplace(character: CharacterAsset, uploadFile: UploadFile): Promise<void> {
-  const raw = uploadFile.raw
-  if (!raw) return
-  if (uploadingRefIds.value.includes(character.id)) return
-  uploadingRefIds.value = [...uploadingRefIds.value, character.id]
-  try {
-    const media = await mediaApi.upload(raw, { media_type: 'image', project_id: projectId.value })
-    const updated = await studioApi.updateCharacter(projectId.value, character.id, {
-      reference_image_url: media.url,
-    })
-    Object.assign(character, updated)
-    ElMessage.success(`「${character.name}」参考图已上传并保存，下次生成定妆照将作为参考`)
-  } finally {
-    uploadingRefIds.value = uploadingRefIds.value.filter((i) => i !== character.id)
-  }
+function onUploadReplace(character: CharacterAsset, uploadFile: UploadFile): void {
+  void uploadRefImage('characters', character, uploadFile.raw)
+}
+
+/**
+ * 场景参考图上传替换回调（A-04，与角色卡「上传替换」行为一致）。
+ * @param scene 目标场景
+ * @param uploadFile el-upload on-change 回调的文件对象（raw 为原始 File）
+ * @returns 无
+ */
+function onSceneUploadReplace(scene: SceneAsset, uploadFile: UploadFile): void {
+  void uploadRefImage('scenes', scene, uploadFile.raw)
 }
 
 // ============================================================
@@ -563,42 +851,48 @@ async function removeCharacter(c: CharacterAsset): Promise<void> {
 }
 
 // ============================================================
-// 场景 / 道具锁定切换
+// 删除场景 / 道具（confirm + 软删除，与角色单删语义一致）
 // ============================================================
 
 /**
- * 切换场景锁定状态。
+ * 删除场景（confirm 二次确认 + 软删除）。
+ * 场景无影响面预览端点，使用通用确认文案；分镜强绑引用由后端
+ * scene_id 外键 SET NULL 语义兜底，不会阻断删除。
  * @param s 目标场景
  * @returns 无
  */
-async function toggleSceneLock(s: SceneAsset): Promise<void> {
-  const updated = await studioApi.updateScene(projectId.value, s.id, { is_locked: !s.is_locked })
-  Object.assign(s, updated)
+async function removeScene(s: SceneAsset): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除场景「${s.name}」吗？删除后可联系管理员恢复。`,
+      '删除场景',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await studioApi.deleteScene(projectId.value, s.id)
+  ElMessage.success('场景已删除')
+  await loadAssets(true)
 }
 
 /**
- * 切换道具锁定状态。
+ * 删除道具（confirm 二次确认 + 软删除）。
  * @param p 目标道具
  * @returns 无
  */
-async function togglePropLock(p: PropAsset): Promise<void> {
-  const updated = await studioApi.updateProp(projectId.value, p.id, { is_locked: !p.is_locked })
-  Object.assign(p, updated)
-}
-
-// ============================================================
-// 风格设为默认
-// ============================================================
-
-/**
- * 把风格设为项目默认（后端自动清除其他默认）。
- * @param st 目标风格
- * @returns 无
- */
-async function setDefaultStyle(st: StyleAsset): Promise<void> {
-  const updated = await studioApi.updateStyle(projectId.value, st.id, { is_default: true })
-  Object.assign(st, updated)
-  ElMessage.success(`已将「${st.name}」设为默认风格`)
+async function removeProp(p: PropAsset): Promise<void> {
+  try {
+    await ElMessageBox.confirm(
+      `确定删除道具「${p.name}」吗？删除后可联系管理员恢复。`,
+      '删除道具',
+      { type: 'warning', confirmButtonText: '确认删除', cancelButtonText: '取消' },
+    )
+  } catch {
+    return
+  }
+  await studioApi.deleteProp(projectId.value, p.id)
+  ElMessage.success('道具已删除')
   await loadAssets(true)
 }
 
@@ -667,14 +961,11 @@ async function copyReuse(row: CrossProjectAsset): Promise<void> {
 }
 
 // ============================================================
-// A-05 标签筛选 / 标签编辑 / 批量删除
+// A-05 批量删除 / 标签编辑
 // ============================================================
 
 /** 资产类别键（复数形式，与后端 batch-delete 路由 asset_type 一致） */
 type AssetKind = studioApi.AssetKind
-
-/** 四类 Tab 的固定顺序（loadAssets 逐 Tab 应用标签筛选时遍历） */
-const TAB_KEYS: AssetKind[] = ['characters', 'scenes', 'props', 'styles']
 
 /** 类别 → 中文文案（批量删除确认文案用） */
 const KIND_LABELS: Record<AssetKind, string> = {
@@ -684,24 +975,8 @@ const KIND_LABELS: Record<AssetKind, string> = {
   styles: '风格',
 }
 
-/** 各 Tab 生效的标签筛选（undefined = 不过滤；过滤经后端 ?tag= 完成） */
-const tagFilters = ref<Record<AssetKind, string | undefined>>({
-  characters: undefined,
-  scenes: undefined,
-  props: undefined,
-  styles: undefined,
-})
-
 /** 各 Tab 勾选待批量删除的资产 ID */
 const selectedIds = ref<Record<AssetKind, number[]>>({
-  characters: [],
-  scenes: [],
-  props: [],
-  styles: [],
-})
-
-/** 标签选项缓存（每次未过滤聚合拉取后重建，过滤态下拉仍展示全量标签） */
-const tagOptionsCache = ref<Record<AssetKind, string[]>>({
   characters: [],
   scenes: [],
   props: [],
@@ -711,34 +986,8 @@ const tagOptionsCache = ref<Record<AssetKind, string[]>>({
 /** 批量删除进行中（防重复提交） */
 const batchDeleting = ref(false)
 
-/**
- * 从聚合数据重建各 Tab 的标签去重选项（中文序排序）。
- * @param group 四类资产聚合数据
- * @returns 无
- */
-function rebuildTagOptionsCache(group: AssetsGroup): void {
-  for (const kind of TAB_KEYS) {
-    const set = new Set<string>()
-    for (const a of group[kind] as Array<{ tags?: string[] }>) {
-      for (const t of a.tags ?? []) set.add(t)
-    }
-    tagOptionsCache.value[kind] = [...set].sort((x, y) => x.localeCompare(y, 'zh'))
-  }
-}
-
-/** 当前 Tab 的标签下拉选项 */
-const activeTagOptions = computed(() => tagOptionsCache.value[activeTab.value])
 /** 当前 Tab 勾选的资产 ID 列表 */
 const activeSelectedIds = computed(() => selectedIds.value[activeTab.value])
-
-/**
- * 标签筛选变更：清空当前 Tab 勾选并重新拉取（后端 ?tag= 过滤语义）。
- * @returns 无
- */
-function onTagFilterChange(): void {
-  selectedIds.value[activeTab.value] = []
-  void loadAssets(true)
-}
 
 /**
  * 勾选/取消勾选一张资产卡（批量删除多选）。
@@ -787,73 +1036,6 @@ async function batchDeleteSelected(): Promise<void> {
   }
 }
 
-// ---------- 标签编辑轻量弹窗 ----------
-/** 标签编辑弹窗可见性 */
-const tagEditVisible = ref(false)
-/** 编辑目标类别 */
-const tagEditKind = ref<AssetKind>('characters')
-/** 编辑目标资产 ID */
-const tagEditId = ref(0)
-/** 编辑目标资产名（仅展示） */
-const tagEditName = ref('')
-/** 编辑中的标签数组（el-select multiple allow-create） */
-const tagEditValue = ref<string[]>([])
-/** 标签保存中（防重复提交） */
-const tagEditSaving = ref(false)
-
-/** 标签编辑弹窗的候选项（当前编辑类别的全量标签） */
-const tagEditOptions = computed(() => tagOptionsCache.value[tagEditKind.value])
-
-/**
- * 打开标签编辑弹窗（四类资产通用，预填已有 tags）。
- * @param kind 资产类别
- * @param asset 目标资产（任意一类）
- * @returns 无
- */
-function openTagEditor(
-  kind: AssetKind,
-  asset: CharacterAsset | SceneAsset | PropAsset | StyleAsset,
-): void {
-  tagEditKind.value = kind
-  tagEditId.value = asset.id
-  tagEditName.value = asset.name
-  tagEditValue.value = [...(asset.tags ?? [])]
-  tagEditVisible.value = true
-}
-
-/**
- * 保存标签编辑：按类别分发到对应更新接口（tags 数组整体替换），并回写本地卡片。
- * @returns 无
- */
-async function saveTagEdit(): Promise<void> {
-  if (tagEditSaving.value) return
-  tagEditSaving.value = true
-  try {
-    // 前端先做与后端一致的规范化（去空白、去空项、最多 10 个）
-    const tags = [...new Set(tagEditValue.value.map((t) => t.trim()).filter(Boolean))].slice(0, 10)
-    const kind = tagEditKind.value
-    const id = tagEditId.value
-    let updated: { tags?: string[] }
-    if (kind === 'characters') {
-      updated = await studioApi.updateCharacter(projectId.value, id, { tags })
-    } else if (kind === 'scenes') {
-      updated = await studioApi.updateScene(projectId.value, id, { tags })
-    } else if (kind === 'props') {
-      updated = await studioApi.updateProp(projectId.value, id, { tags })
-    } else {
-      updated = await studioApi.updateStyle(projectId.value, id, { tags })
-    }
-    const list = assets.value[kind] as Array<CharacterAsset | SceneAsset | PropAsset | StyleAsset>
-    const idx = list.findIndex((a) => a.id === id)
-    if (idx >= 0 && list[idx]) Object.assign(list[idx]!, updated)
-    rebuildTagOptionsCache(assets.value)
-    tagEditVisible.value = false
-    ElMessage.success('标签已保存')
-  } finally {
-    tagEditSaving.value = false
-  }
-}
-
 onMounted(() => {
   void loadAssets().then(ensurePolling)
 })
@@ -864,6 +1046,8 @@ onMounted(() => {
     <div class="view-head">
       <h2 class="page-title">资产管理</h2>
       <div class="head-actions">
+        <!-- 实体抽取入口（S-04）：按集工作流要求先在左上角选定集数，未选集拦截提示 -->
+        <el-button type="primary" plain @click="gotoExtract">启用资产</el-button>
         <el-button @click="openReuse">复用资产</el-button>
         <el-button
           v-if="activeTab === 'characters' && assets.characters.length"
@@ -891,29 +1075,29 @@ onMounted(() => {
       </template>
     </el-result>
 
-    <el-empty v-else-if="!assets.characters.length && !assets.scenes.length && !assets.props.length && !assets.styles.length"
-      description="还没有资产，请先回到剧本页完成「实体提取确认」"
+    <el-empty v-else-if="!assets.characters.length && !assets.scenes.length && !assets.props.length"
+      description="该项目还没有资产：在左上角选择集数后点击「启用资产」提取"
     >
-      <el-button type="primary" @click="$router.push(`/projects/${projectId}/script/extract`)">
-        去实体提取
-      </el-button>
+      <el-button type="primary" @click="gotoExtract">启用资产</el-button>
     </el-empty>
 
     <template v-else>
-      <!-- A-05 工具行：当前 Tab 的标签筛选（后端 ?tag= 过滤）+ 批量删除 -->
+      <!-- 工具行：当前集上下文（按集视图=该集启用名单）+ 批量删除 -->
       <div class="tab-toolbar">
-        <el-select
-          v-model="tagFilters[activeTab]"
-          class="tag-filter"
-          clearable
-          filterable
-          placeholder="按标签筛选当前分类"
-          @change="onTagFilterChange"
-          @clear="onTagFilterChange"
-        >
-          <el-option v-for="t in activeTagOptions" :key="t" :label="t" :value="t" />
-        </el-select>
-        <span class="toolbar-tip">已选 {{ activeSelectedIds.length }} 项</span>
+        <!-- S-06 按集工作上下文：顶部切换器选集后，资产视图默认只看该集启用名单 -->
+        <template v-if="episodeScope != null">
+          <el-tag size="small" effect="dark" type="info" class="scope-tag">
+            当前集：{{ episodeScopeItem ? `第${episodeScopeItem.sequence}集` : '未知' }}
+          </el-tag>
+          <el-radio-group v-model="filterMode" size="small">
+            <el-radio-button value="episode">仅本集相关</el-radio-button>
+            <el-radio-button value="all">全部资产</el-radio-button>
+          </el-radio-group>
+          <el-divider direction="vertical" />
+        </template>
+        <el-button type="success" plain :loading="lockingAll" @click="lockAllVisible">
+          一键锁定
+        </el-button>
         <el-button
           type="danger"
           plain
@@ -930,10 +1114,16 @@ onMounted(() => {
       <!-- 各 pane 显式声明 name 与 activeTab 对齐：Element Plus 对未命名 pane 自动按序
            赋 name（'0'/'1'/...），v-model 初值 'characters' 无法匹配会导致全部 pane
            v-show=false（内容区空白，C-BUG-1 空白根因） -->
-      <el-tab-pane name="characters" :label="`角色 (${assets.characters.length})`">
+      <el-tab-pane name="characters" :label="`角色 (${visibleCharacters.length})`">
         <div class="card-grid">
-          <el-card v-for="c in assets.characters" :key="c.id" shadow="hover" class="asset-card">
+          <el-card v-for="c in visibleCharacters" :key="c.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
+              <!-- 批量删除选择圈：浮于图片左上角（纯圆圈无文字） -->
+              <el-checkbox
+                class="pick-circle"
+                :model-value="selectedIds.characters.includes(c.id)"
+                @change="(v: any) => toggleSelected('characters', c.id, !!v)"
+              />
               <el-image
                 v-if="c.asset_url"
                 :src="c.asset_url"
@@ -953,7 +1143,15 @@ onMounted(() => {
                   生成定妆照
                 </el-button>
               </div>
-              <!-- 面部锁定徽标 -->
+              <!-- 生成中遮罩：重生成/首次生成期间覆盖图片区 -->
+              <div
+                v-if="genBusyIds.includes(c.id) || c.generation_status === 'generating'"
+                class="gen-overlay"
+              >
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>定妆照生成中…</span>
+              </div>
+              <!-- 面部锁定徽标（左上角选择圈右侧） -->
               <el-tooltip v-if="c.face_locked" content="面部已锁定" placement="top">
                 <el-icon class="lock-badge"><Lock /></el-icon>
               </el-tooltip>
@@ -977,27 +1175,20 @@ onMounted(() => {
               <div v-if="(c.tags ?? []).length" class="card-tags">
                 <el-tag v-for="t in c.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
               </div>
+              <!-- 底部操作行：上传替换（左）+ 更多（右，锁定/重生成/提示词/校验/删除收拢） -->
               <div class="card-ops">
-                <el-checkbox
-                  class="pick-box"
-                  :model-value="selectedIds.characters.includes(c.id)"
-                  @change="(v: any) => toggleSelected('characters', c.id, !!v)"
+                <!-- 上传替换（A-04：真实上传到 /api/media/upload 后回写参考图） -->
+                <el-upload
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  accept="image/*"
+                  :on-change="(f: UploadFile) => onUploadReplace(c, f)"
                 >
-                  选择
-                </el-checkbox>
-                <el-button size="small" text @click="openTagEditor('characters', c)">标签</el-button>
-                <el-button
-                  v-if="c.asset_url && !c.face_locked"
-                  size="small"
-                  type="success"
-                  plain
-                  @click="lockFace(c)"
-                >
-                  确认并锁定
-                </el-button>
-                <el-button v-if="c.face_locked" size="small" text @click="unlockFace(c)">解锁</el-button>
-                <el-button size="small" text type="primary" @click="openVariantDrawer(c)">变体</el-button>
-                <el-dropdown trigger="click" @command="(cmd: string) => {
+                  <el-button size="small" text :loading="uploadingRefIds.includes(c.id)">
+                    上传替换
+                  </el-button>
+                </el-upload>
+                <el-dropdown class="more-dd" trigger="click" @command="(cmd: string) => {
                   if (cmd === 'regen') generatePortrait(c)
                   else if (cmd === 'prompt') openPromptDrawer(c, 'character')
                   else if (cmd === 'cc') openConsistency(c)
@@ -1013,37 +1204,40 @@ onMounted(() => {
                     </el-dropdown-menu>
                   </template>
                 </el-dropdown>
-                <!-- 上传替换（A-04：真实上传到 /api/media/upload 后回写参考图） -->
-                <el-upload
-                  :auto-upload="false"
-                  :show-file-list="false"
-                  accept="image/*"
-                  :on-change="(f: UploadFile) => onUploadReplace(c, f)"
-                >
-                  <el-button size="small" text :loading="uploadingRefIds.includes(c.id)">
-                    上传替换
-                  </el-button>
-                </el-upload>
               </div>
             </div>
           </el-card>
           <el-empty
-            v-if="!assets.characters.length"
-            description="暂无角色资产"
+            v-if="!visibleCharacters.length"
+            :description="episodeFilterActive ? '本集尚未启用角色资产，点击右上角「启用资产」提取本集出场角色' : '暂无角色资产'"
             class="grid-empty"
           />
         </div>
       </el-tab-pane>
 
       <!-- ============ 场景 Tab ============ -->
-      <el-tab-pane name="scenes" :label="`场景 (${assets.scenes.length})`">
+      <el-tab-pane name="scenes" :label="`场景 (${visibleScenes.length})`">
         <div class="card-grid">
-          <el-card v-for="s in assets.scenes" :key="s.id" shadow="hover" class="asset-card">
+          <el-card v-for="s in visibleScenes" :key="s.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
-              <!-- 场景无图：空场景占位（RD-19） -->
+              <!-- 批量删除选择圈：浮于图片左上角（与角色卡一致） -->
+              <el-checkbox
+                class="pick-circle"
+                :model-value="selectedIds.scenes.includes(s.id)"
+                @change="(v: any) => toggleSelected('scenes', s.id, !!v)"
+              />
+              <!-- 场景无图：空场景占位（RD-19）+ 生成入口 -->
               <div v-if="!s.asset_url" class="img-placeholder scene-empty">
                 <span class="scene-empty-tag">空场景</span>
                 <span>{{ s.name }}</span>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="sceneGenBusyIds.includes(s.id)"
+                  @click="generateScene(s)"
+                >
+                  生成场景图
+                </el-button>
               </div>
               <el-image
                 v-else
@@ -1053,6 +1247,11 @@ onMounted(() => {
                 class="asset-img"
                 preview-teleported
               />
+              <!-- 生成中遮罩：重生成/首次生成期间覆盖图片区 -->
+              <div v-if="sceneGenBusyIds.includes(s.id)" class="gen-overlay">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>场景图生成中…</span>
+              </div>
               <el-tag v-if="s.is_locked" class="status-tag" size="small" effect="dark" type="success">
                 已锁定
               </el-tag>
@@ -1068,35 +1267,65 @@ onMounted(() => {
               <div v-if="(s.tags ?? []).length" class="card-tags">
                 <el-tag v-for="t in s.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
               </div>
+              <!-- 底部操作行：上传替换（左）+ 更多（右，提示词/锁定/删除收拢，与角色卡一致） -->
               <div class="card-ops">
-                <el-checkbox
-                  class="pick-box"
-                  :model-value="selectedIds.scenes.includes(s.id)"
-                  @change="(v: any) => toggleSelected('scenes', s.id, !!v)"
+                <el-upload
+                  :auto-upload="false"
+                  :show-file-list="false"
+                  accept="image/*"
+                  :on-change="(f: UploadFile) => onSceneUploadReplace(s, f)"
                 >
-                  选择
-                </el-checkbox>
-                <el-button size="small" text @click="openTagEditor('scenes', s)">标签</el-button>
-                <el-button size="small" text type="primary" @click="openPromptDrawer(s, 'scene')">
-                  编辑提示词
-                </el-button>
-                <el-button size="small" text @click="toggleSceneLock(s)">
-                  {{ s.is_locked ? '解锁' : '锁定' }}
-                </el-button>
+                  <el-button size="small" text :loading="uploadingRefIds.includes(s.id)">
+                    上传替换
+                  </el-button>
+                </el-upload>
+                <el-dropdown class="more-dd" trigger="click" @command="(cmd: string) => {
+                  if (cmd === 'regen') generateScene(s)
+                  else if (cmd === 'prompt') openPromptDrawer(s, 'scene')
+                  else if (cmd === 'del') removeScene(s)
+                }">
+                  <el-button size="small" text>更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-if="s.asset_url" command="regen">重生成</el-dropdown-item>
+                      <el-dropdown-item command="prompt">编辑提示词</el-dropdown-item>
+                      <el-dropdown-item command="del" divided>删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
             </div>
           </el-card>
-          <el-empty v-if="!assets.scenes.length" description="暂无场景资产" class="grid-empty" />
+          <el-empty
+            v-if="!visibleScenes.length"
+            :description="episodeFilterActive ? '本集尚未启用场景资产，点击右上角「启用资产」从剧本正文提取' : '暂无场景资产'"
+            class="grid-empty"
+          />
         </div>
       </el-tab-pane>
 
       <!-- ============ 道具 Tab ============ -->
-      <el-tab-pane name="props" :label="`道具 (${assets.props.length})`">
+      <el-tab-pane name="props" :label="`道具 (${visibleProps.length})`">
         <div class="card-grid">
-          <el-card v-for="p in assets.props" :key="p.id" shadow="hover" class="asset-card">
+          <el-card v-for="p in visibleProps" :key="p.id" shadow="hover" class="asset-card">
             <div class="img-wrap">
+              <!-- 批量删除选择圈：浮于图片左上角（与角色卡一致） -->
+              <el-checkbox
+                class="pick-circle"
+                :model-value="selectedIds.props.includes(p.id)"
+                @change="(v: any) => toggleSelected('props', p.id, !!v)"
+              />
+              <!-- 道具无图：占位 + 生成入口 -->
               <div v-if="!p.asset_url" class="img-placeholder">
                 <span>{{ p.name }}</span>
+                <el-button
+                  size="small"
+                  type="primary"
+                  :loading="propGenBusyIds.includes(p.id)"
+                  @click="generateProp(p)"
+                >
+                  生成道具图
+                </el-button>
               </div>
               <el-image
                 v-else
@@ -1106,6 +1335,11 @@ onMounted(() => {
                 class="asset-img"
                 preview-teleported
               />
+              <!-- 生成中遮罩：重生成/首次生成期间覆盖图片区 -->
+              <div v-if="propGenBusyIds.includes(p.id)" class="gen-overlay">
+                <el-icon class="is-loading"><Loading /></el-icon>
+                <span>道具图生成中…</span>
+              </div>
               <el-tag v-if="p.is_locked" class="status-tag" size="small" effect="dark" type="success">
                 已锁定
               </el-tag>
@@ -1117,124 +1351,151 @@ onMounted(() => {
               <div v-if="(p.tags ?? []).length" class="card-tags">
                 <el-tag v-for="t in p.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
               </div>
+              <!-- 底部操作行：更多（右，提示词/锁定/删除收拢，与角色卡一致）；
+                   道具无参考图字段（A-04 仅角色/场景），不提供上传替换 -->
               <div class="card-ops">
-                <el-checkbox
-                  class="pick-box"
-                  :model-value="selectedIds.props.includes(p.id)"
-                  @change="(v: any) => toggleSelected('props', p.id, !!v)"
-                >
-                  选择
-                </el-checkbox>
-                <el-button size="small" text @click="openTagEditor('props', p)">标签</el-button>
-                <el-button size="small" text type="primary" @click="openPromptDrawer(p, 'prop')">
-                  编辑提示词
-                </el-button>
-                <el-button size="small" text @click="togglePropLock(p)">
-                  {{ p.is_locked ? '解锁' : '锁定' }}
-                </el-button>
+                <el-dropdown class="more-dd" trigger="click" @command="(cmd: string) => {
+                  if (cmd === 'regen') generateProp(p)
+                  else if (cmd === 'prompt') openPromptDrawer(p, 'prop')
+                  else if (cmd === 'del') removeProp(p)
+                }">
+                  <el-button size="small" text>更多</el-button>
+                  <template #dropdown>
+                    <el-dropdown-menu>
+                      <el-dropdown-item v-if="p.asset_url" command="regen">重生成</el-dropdown-item>
+                      <el-dropdown-item command="prompt">编辑提示词</el-dropdown-item>
+                      <el-dropdown-item command="del" divided>删除</el-dropdown-item>
+                    </el-dropdown-menu>
+                  </template>
+                </el-dropdown>
               </div>
             </div>
           </el-card>
-          <el-empty v-if="!assets.props.length" description="暂无道具资产" class="grid-empty" />
+          <el-empty
+            v-if="!visibleProps.length"
+            :description="episodeFilterActive ? '本集尚未启用道具资产，点击右上角「启用资产」从剧本正文提取' : '暂无道具资产'"
+            class="grid-empty"
+          />
         </div>
       </el-tab-pane>
 
-      <!-- ============ 风格 Tab ============ -->
-      <el-tab-pane name="styles" :label="`风格 (${assets.styles.length})`">
-        <div class="card-grid">
-          <el-card v-for="st in assets.styles" :key="st.id" shadow="hover" class="asset-card">
-            <div class="img-wrap">
-              <div v-if="!st.reference_url" class="img-placeholder">
-                <span>{{ st.name }}</span>
-              </div>
-              <el-image
-                v-else
-                :src="st.reference_url"
-                :preview-src-list="[st.reference_url]"
-                fit="cover"
-                class="asset-img"
-                preview-teleported
-              />
-              <el-tag v-if="st.is_default" class="status-tag" size="small" effect="dark">
-                默认
-              </el-tag>
-            </div>
-            <div class="card-info">
-              <div class="card-name">{{ st.name }}</div>
-              <div class="card-desc">{{ st.preset_code || st.visual_prompt }}</div>
-              <!-- A-05 标签展示 -->
-              <div v-if="(st.tags ?? []).length" class="card-tags">
-                <el-tag v-for="t in st.tags" :key="t" size="small" effect="plain">{{ t }}</el-tag>
-              </div>
-              <div class="card-ops">
-                <el-checkbox
-                  class="pick-box"
-                  :model-value="selectedIds.styles.includes(st.id)"
-                  @change="(v: any) => toggleSelected('styles', st.id, !!v)"
-                >
-                  选择
-                </el-checkbox>
-                <el-button size="small" text @click="openTagEditor('styles', st)">标签</el-button>
-                <el-button
-                  size="small"
-                  type="primary"
-                  plain
-                  :disabled="st.is_default"
-                  @click="setDefaultStyle(st)"
-                >
-                  设为默认
-                </el-button>
-              </div>
-            </div>
-          </el-card>
-          <el-empty v-if="!assets.styles.length" description="暂无风格资产" class="grid-empty" />
-        </div>
-      </el-tab-pane>
       </el-tabs>
-
-      <!-- ============ A-05 标签编辑轻量弹窗（四类资产通用） ============ -->
-      <el-dialog
-        v-model="tagEditVisible"
-        :title="`编辑标签 · ${tagEditName}`"
-        width="440px"
-        append-to-body
-      >
-        <el-select
-          v-model="tagEditValue"
-          multiple
-          filterable
-          allow-create
-          default-first-option
-          :multiple-limit="10"
-          placeholder="输入标签后回车创建，最多 10 个、每项 20 字以内"
-          style="width: 100%"
-        >
-          <el-option v-for="t in tagEditOptions" :key="t" :label="t" :value="t" />
-        </el-select>
-        <template #footer>
-          <el-button @click="tagEditVisible = false">取消</el-button>
-          <el-button type="primary" :loading="tagEditSaving" @click="saveTagEdit">保存</el-button>
-        </template>
-      </el-dialog>
     </template>
 
-    <!-- ============ 提示词编辑抽屉（两层：锁定层只读 + 可编辑层） ============ -->
+    <!-- ============ 提示词编辑抽屉（角色：锁定层只读 + 可编辑层；
+         场景/道具：AI 六要素识别 → 编辑 → 确认合成保存） ============ -->
     <el-drawer v-model="promptVisible" :title="`编辑提示词 · ${promptName}`" size="440px" append-to-body>
-      <div class="layer-label">
-        系统锁定层（只读，约束角色/场景一致性的标准化提示词）
-      </div>
-      <div class="locked-layer">{{ promptLockedText || '（空）' }}</div>
-      <div class="layer-label">用户可编辑层（保存后覆盖生效）</div>
-      <el-input
-        v-model="promptEditableText"
-        type="textarea"
-        :rows="6"
-        placeholder="调整细节描述，例：侧光、胶片质感、唯美二次元"
-      />
-      <div class="drawer-ops">
-        <el-button @click="promptVisible = false">取消</el-button>
-        <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存</el-button>
-      </div>
+      <!-- 角色：提示词直接取自角色设定（锁定层 + 可编辑覆盖层） -->
+      <template v-if="promptKind === 'character'">
+        <div class="layer-label">
+          系统锁定层（只读，约束角色一致性的标准化提示词）
+        </div>
+        <div class="locked-layer">{{ promptLockedText || '（空）' }}</div>
+        <div class="layer-label">用户可编辑层（保存后覆盖生效）</div>
+        <el-input
+          v-model="promptEditableText"
+          type="textarea"
+          :rows="6"
+          placeholder="调整细节描述，例：侧光、胶片质感、唯美二次元"
+        />
+        <div class="drawer-ops">
+          <el-button @click="promptVisible = false">取消</el-button>
+          <el-button type="primary" :loading="promptSaving" @click="savePrompt">保存</el-button>
+        </div>
+      </template>
+
+      <!-- 场景/道具：AI 识别六要素（剧本正文提取）→ 编辑 → 确认合成保存 -->
+      <template v-else>
+        <div class="layer-label">当前提示词（锁定层，只读）</div>
+        <div class="locked-layer">{{ promptLockedText || '（空）' }}</div>
+
+        <el-button
+          type="primary"
+          plain
+          style="width: 100%"
+          :loading="suggestLoading"
+          @click="runSuggestPrompt"
+        >
+          {{ suggestLoading ? 'AI 正在从剧本正文识别…' : 'AI 识别六要素（从剧本正文提取）' }}
+        </el-button>
+        <p v-if="!suggestElements" class="suggest-tip">
+          场景将识别：画风基底、空间类型、核心锚点（3–5 个）、光照氛围、构图/视角偏好、负面约束；
+          道具将识别：尺度参照、核心锚点（3–5 个）、材质与表面工艺、唯一标记、功能与操作方式、可读文字政策。
+        </p>
+
+        <template v-if="suggestElements">
+          <div class="layer-label">
+            {{ promptKind === 'scene' ? '场景六要素' : '道具六要素' }}（可修改，确认后合成提示词）
+          </div>
+          <template v-if="promptKind === 'scene'">
+            <div class="element-item">
+              <span class="element-label">画风基底</span>
+              <el-input v-model="suggestElements.style_base" placeholder="画风描述" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">空间类型</span>
+              <el-input v-model="suggestElements.space_type" placeholder="功能性空间" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">核心锚点（3–5 个，顿号分隔）</span>
+              <el-input v-model="suggestAnchors" placeholder="物体/结构，顿号分隔" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">光照氛围</span>
+              <el-input v-model="suggestElements.lighting" placeholder="光照描述" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">构图/视角偏好</span>
+              <el-input v-model="suggestElements.composition" placeholder="构图与视角" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">负面约束</span>
+              <el-input v-model="suggestElements.negative" placeholder="画面中不应出现的元素" />
+            </div>
+          </template>
+          <template v-else>
+            <div class="element-item">
+              <span class="element-label">尺度参照</span>
+              <el-input v-model="suggestElements.scale_ref" placeholder="与常见物体的相对大小" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">核心锚点（3–5 个，顿号分隔）</span>
+              <el-input v-model="suggestAnchors" placeholder="形状/部件特征，顿号分隔" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">材质与表面工艺</span>
+              <el-input v-model="suggestElements.material" placeholder="材质与工艺" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">唯一标记</span>
+              <el-input v-model="suggestElements.marker" placeholder="可辨识的独有特征" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">功能与操作方式</span>
+              <el-input v-model="suggestElements.usage" placeholder="功能与操作" />
+            </div>
+            <div class="element-item">
+              <span class="element-label">可读文字政策</span>
+              <el-input v-model="suggestElements.text_policy" placeholder="表面文字处理方式" />
+            </div>
+          </template>
+
+          <div class="layer-label">合成提示词预览</div>
+          <div class="locked-layer">{{ composeElementsPrompt() || '（请完善要素）' }}</div>
+        </template>
+
+        <div class="drawer-ops">
+          <el-button @click="promptVisible = false">取消</el-button>
+          <el-button
+            type="primary"
+            :loading="promptSaving"
+            :disabled="!suggestElements"
+            @click="confirmSuggestSave"
+          >
+            确认并保存
+          </el-button>
+        </div>
+      </template>
     </el-drawer>
 
     <!-- ============ S-05 变体抽屉 ============ -->
@@ -1467,20 +1728,20 @@ onMounted(() => {
 .view-head .page-title {
   margin: 0;
 }
-/* A-05 工具行：标签筛选 + 批量删除 */
+/* 工具行：当前集上下文 + 批量删除 */
 .tab-toolbar {
   display: flex;
   align-items: center;
   gap: var(--mf-sp-3);
   margin-bottom: var(--mf-sp-3);
 }
-.tag-filter {
-  width: 220px;
+/* S-06 当前集标签（按集工作上下文） */
+.scope-tag {
+  flex-shrink: 0;
 }
-.toolbar-tip {
-  color: var(--mf-text-3);
-  font-size: var(--mf-fs-sm);
-  margin-right: auto;
+/* 批量删除按钮靠右（原标签筛选/已选计数控件已移除） */
+.tab-toolbar > .el-button:last-child {
+  margin-left: auto;
 }
 /* A-05 卡片标签展示行与多选框 */
 .card-tags {
@@ -1536,7 +1797,8 @@ onMounted(() => {
 .lock-badge {
   position: absolute;
   top: 8px;
-  left: 8px;
+  /* 左上角让位于批量删除选择圈（pick-circle），右移一圈位 */
+  left: 36px;
   background: rgba(0, 0, 0, 0.55);
   color: #ffd04b;
   border-radius: 50%;
@@ -1547,11 +1809,57 @@ onMounted(() => {
   top: 8px;
   right: 8px;
 }
+/* 生成中遮罩：覆盖整张图片区（重生成/首次生成期间给出明确加载反馈） */
+.gen-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: var(--mf-fs-sm);
+}
+.gen-overlay .el-icon {
+  font-size: 26px;
+}
 /* A-04 参考图标识：位于锁定徽标下方（left 与 lock-badge 对齐） */
 .ref-badge {
   position: absolute;
   top: 40px;
+  left: 36px;
+}
+/* 角色卡批量删除选择圈：浮于图片左上角，圆形半透明白底保证图片上可见 */
+.pick-circle {
+  position: absolute;
+  top: 8px;
   left: 8px;
+  z-index: 3;
+  height: auto;
+  margin-right: 0;
+}
+.pick-circle :deep(.el-checkbox__inner) {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.85);
+  border-color: rgba(0, 0, 0, 0.35);
+  transition: transform var(--mf-dur) var(--mf-ease), background var(--mf-dur) var(--mf-ease),
+    box-shadow var(--mf-dur) var(--mf-ease);
+}
+/* 不显示对勾：选中反馈由填充色 + 光晕 + 微放大承担 */
+.pick-circle :deep(.el-checkbox__inner::after) {
+  display: none;
+}
+/* 选中态：品牌绿填充 + 浅绿光晕 + 微放大（无对勾），浮于图片上有明显反馈 */
+.pick-circle :deep(.el-checkbox__input.is-checked .el-checkbox__inner) {
+  background: var(--mf-brand);
+  border-color: var(--mf-brand);
+  box-shadow: 0 0 0 3px var(--mf-brand-soft);
+  transform: scale(1.12);
 }
 .card-info {
   padding: var(--mf-sp-3);
@@ -1575,6 +1883,10 @@ onMounted(() => {
   flex-wrap: wrap;
   gap: 2px;
 }
+/* 角色卡「更多」下拉靠右（底部操作行仅剩上传替换 + 更多） */
+.card-ops .more-dd {
+  margin-left: auto;
+}
 .layer-label {
   color: var(--mf-text-2);
   font-size: var(--mf-fs-sm);
@@ -1592,6 +1904,22 @@ onMounted(() => {
 .drawer-ops {
   margin-top: var(--mf-sp-4);
   text-align: right;
+}
+/* 场景/道具六要素识别：说明文案与要素编辑行 */
+.suggest-tip {
+  margin: var(--mf-sp-2) 0;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-sm);
+  line-height: 1.7;
+}
+.element-item {
+  margin-bottom: var(--mf-sp-2);
+}
+.element-label {
+  display: block;
+  margin-bottom: 4px;
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
 }
 .variant-list {
   display: flex;

@@ -198,18 +198,26 @@ def build_profile_description(
     appearance: Optional[str],
     motivation: Optional[str],
     arc: Optional[str],
+    outfit: Optional[str] = None,
+    style_note: Optional[str] = None,
 ) -> Optional[str]:
-    """把人设四要素拼接为 characters.description 摘要文本。
+    """把人设要素拼接为 characters.description 摘要文本。
+
+    视觉三段（外观/服装配饰/风格画质）连排在动机/弧光之前，便于
+    extract_appearance_from_description 按段提取「外观+服装配饰+风格画质」
+    作为角色圣经视觉锁定描述。
 
     Args:
         personality: 性格设定。
-        appearance: 外观设定。
+        appearance: 形象特征。
         motivation: 行为动机。
         arc: 人物弧光。
+        outfit: 服装配饰完整拆解（可选）。
+        style_note: 风格与画质特点（可选）。
 
     Returns:
-        Optional[str]: 「性格：…；外观：…；动机：…；弧光：…」形式摘要；
-            四项全空时返回 None。
+        Optional[str]: 「性格：…；外观：…；服装配饰：…；风格画质：…；
+            动机：…；弧光：…」形式摘要；全空时返回 None。
 
     Raises:
         无：纯字符串拼装。
@@ -219,6 +227,10 @@ def build_profile_description(
         parts.append(f"性格：{personality}")
     if appearance:
         parts.append(f"外观：{appearance}")
+    if outfit:
+        parts.append(f"服装配饰：{outfit}")
+    if style_note:
+        parts.append(f"风格画质：{style_note}")
     if motivation:
         parts.append(f"动机：{motivation}")
     if arc:
@@ -424,6 +436,8 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
             "age": item.get("age") or cand.get("age"),
             "personality": item.get("personality") or cand.get("personality"),
             "appearance": item.get("appearance") or cand.get("appearance"),
+            "outfit": item.get("outfit") or cand.get("outfit"),
+            "style_note": item.get("style_note") or cand.get("style_note"),
             "motivation": item.get("motivation") or cand.get("motivation"),
             "arc": item.get("arc") or cand.get("arc"),
             "relations": (item.get("relations")
@@ -432,7 +446,13 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
         }
         description = build_profile_description(
             values["personality"], values["appearance"],
-            values["motivation"], values["arc"])
+            values["motivation"], values["arc"],
+            outfit=values["outfit"], style_note=values["style_note"])
+        # 角色圣经视觉三段（形象特征 + 服装配饰 + 风格画质），生图一致性锁定用
+        visual_bible = build_character_bible_prompt(
+            name, values["age"],
+            "；".join(v for v in (
+                values["appearance"], values["outfit"], values["style_note"]) if v))
 
         # 幂等入池：同名（未删）角色更新人设字段，否则新建
         exist = (
@@ -448,10 +468,19 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
             exist.role_type = values["role_type"]
             exist.age = values["age"]
             exist.personality = values["personality"]
+            exist.outfit = values["outfit"]
+            exist.style_note = values["style_note"]
             exist.motivation = values["motivation"]
             exist.arc = values["arc"]
             exist.relations = values["relations"]
             exist.description = description or exist.description
+            # 圣经 visual_prompt：仅在存在视觉设定时同步重建（保留用户手改的
+            # 定制提示词——视觉三段全空不动 visual_prompt）
+            if (values["appearance"] or values["outfit"] or values["style_note"]):
+                exist.visual_prompt = (
+                    f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+                    f"{visual_bible}。"
+                    "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。")
             exist.confirmed_at = confirmed_at
         else:
             db.add(Character(
@@ -459,20 +488,22 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
                 name=name,
                 aliases=[],
                 description=description,
-                # 角色圣经固定前缀（AI 漫剧行业惯例）：生图提示词以纯视觉锁定
-                # 描述开头（姓名+年龄感+外貌），跨镜头保持一致性；appearance
-                # 缺失时回退既有缺省模板（description 兜底）
+                # 角色圣经固定前缀（AI 漫剧行业惯例）：生图提示词以视觉三段
+                # （形象特征+服装配饰+风格画质）开头，跨镜头保持一致性；
+                # 三段全空时回退既有缺省模板（description 兜底）
                 visual_prompt=(
-                    f"统一风格插画，角色圣经（固定外貌，跨图一致）："
-                    f"{build_character_bible_prompt(name, values['age'], values['appearance'])}。"
-                    "全身立绘，纯色背景，高细节；五官/发型/服装严格按上述设定，禁止变更。"
-                    if (values["appearance"] or values["age"])
+                    f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+                    f"{visual_bible}。"
+                    "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。"
+                    if (values["appearance"] or values["outfit"] or values["style_note"] or values["age"])
                     else DEFAULT_VISUAL_TEMPLATE.format(
                         name=name, description=description or name)
                 ),
                 role_type=values["role_type"],
                 age=values["age"],
                 personality=values["personality"],
+                outfit=values["outfit"],
+                style_note=values["style_note"],
                 motivation=values["motivation"],
                 arc=values["arc"],
                 relations=values["relations"],

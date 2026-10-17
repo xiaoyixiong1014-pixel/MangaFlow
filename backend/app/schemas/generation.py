@@ -16,10 +16,13 @@ class KeyframeCreateRequest(BaseModel):
     Attributes:
         phase: 生成阶段 trial（打样，单分镜）/ full（全量，项目全部分镜）。
         prompt_editable: 用户可编辑提示词补充（仅 trial 生效，拼接在锁定层之后）。
+        episode_id: 按集工作流（S-06）：full 全量时限定该剧集的分镜
+            （None=项目全部分镜，既有行为；trial 单分镜不受影响）。
     """
 
     phase: Literal["trial", "full"] = "trial"
     prompt_editable: Optional[str] = Field(default=None, max_length=2000)
+    episode_id: Optional[int] = None
 
 
 class VideoCreateRequest(BaseModel):

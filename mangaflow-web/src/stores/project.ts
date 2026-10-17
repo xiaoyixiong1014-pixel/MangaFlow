@@ -21,7 +21,8 @@ export const useProjectStore = defineStore('project', () => {
   const currentEpisodeId = ref<number | null>(null)
 
   /**
-   * 设置当前项目（StudioLayout 拉取详情后调用；剧集选择重置回默认剧集）。
+   * 设置当前项目（StudioLayout 拉取详情后调用；剧集选择重置为 null，
+   * 由 StudioLayout 的 watch 自动选中第 1 集——「默认剧集」占位项已移除）。
    * @param project 项目详情
    */
   function setProject(project: ProjectDetail): void {
@@ -31,7 +32,7 @@ export const useProjectStore = defineStore('project', () => {
 
   /**
    * 切换当前剧集（剧集切换器触发；依赖页 watch 该状态后重新加载）。
-   * @param episodeId 剧集 ID（null 表示默认剧集）
+   * @param episodeId 剧集 ID（null 仅用于清空上下文，正常路径始终选具体剧集）
    */
   function setCurrentEpisode(episodeId: number | null): void {
     currentEpisodeId.value = episodeId

@@ -16,7 +16,7 @@ asset_embeddings（资产特征向量）。
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import TIMESTAMP, BigInteger, ForeignKey, Index, String
+from sqlalchemy import TIMESTAMP, BigInteger, CheckConstraint, ForeignKey, Index, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -94,11 +94,14 @@ class AssetEmbedding(Base):
         asset_id: 资产 ID（多态引用不建外键）。
         embedding: 特征向量（原 vector(1024)，JSONB 承载，预留 pgvector 升级点）。
         model: 提取向量的模型名。
+        kind: 向量类别（P0-4）：text 文本特征 / face 面部档案特征。
     """
 
     __tablename__ = "asset_embeddings"
     __table_args__ = (
+        CheckConstraint("kind IN ('text', 'face')", name="ck_ae_kind"),
         Index("idx_ae_asset", "asset_type", "asset_id"),
+        Index("idx_ae_asset_kind", "asset_type", "asset_id", "kind"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
@@ -108,3 +111,7 @@ class AssetEmbedding(Base):
     embedding: Mapped[Optional[dict]] = mapped_column(
         JSONB, nullable=True, comment="特征向量（JSONB，预留 pgvector 升级点）")
     model: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, comment="提取向量的模型名")
+    # P0-4 视觉一致性：区分文本特征向量与面部档案特征向量（存量行默认 text）
+    kind: Mapped[str] = mapped_column(
+        String(20), nullable=False, server_default="text",
+        comment="向量类别：text 文本特征 / face 面部档案特征（P0-4）")

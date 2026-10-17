@@ -13,18 +13,41 @@
   - 确认走 confirmExtract(勾选项)，成功跳 /projects/:id/assets。
 -->
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { TableInstance } from 'element-plus'
 import * as studioApi from '@/api/studio'
+import { useProjectStore } from '@/stores/project'
 import type { ExtractedEntity, ExtractResult, ScriptOut } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
+const projectStore = useProjectStore()
 
 /** 当前项目 ID（取路由参数） */
 const projectId = computed(() => Number(route.params.id))
+
+/** 当前选中剧集 ID（S-06 全局剧集切换器；null = 默认剧集/全部，抽取聚合全部剧本行） */
+const currentEpisodeId = computed(() => projectStore.currentEpisodeId)
+
+/** 当前剧集条目（展示集名；null = 默认剧集上下文） */
+const currentEpisode = computed(
+  () => projectStore.currentProject?.episodes.find((e) => e.id === currentEpisodeId.value) ?? null,
+)
+
+/** 当前抽取范围文案（顶部统计行用） */
+const scopeLabel = computed(() =>
+  currentEpisode.value ? `第${currentEpisode.value.sequence}集 · ${currentEpisode.value.title}` : '全部剧集',
+)
+
+/** 项目画风（风格资产将按它自动创建；抽取不产风格，确认入池时落池） */
+const projectStyle = computed(() => projectStore.currentProject?.style ?? '')
+
+// 切换全局剧集：自动按新范围重新抽取（按集工作流的核心联动）
+watch(currentEpisodeId, () => {
+  if (extracted.value || extracting.value) void runExtract()
+})
 
 // ============================================================
 // 提取流程状态
@@ -112,20 +135,26 @@ function stopFakeProgress(): void {
 
 /**
  * 执行实体提取（进入页面自动调用；「重新提取」复用）。
+ * 按集工作流：未选集（默认剧集上下文）时提示用户先选集，不执行抽取。
  * @returns 无
  */
 async function runExtract(): Promise<void> {
   if (extracting.value) return // 防重复点击
+  if (currentEpisodeId.value == null) {
+    // 按集工作流：资产须在选定集数后按集生成
+    ElMessage.warning('请在左上角选择好集数')
+    return
+  }
   extracting.value = true
   extracted.value = false
   result.value = null
   startFakeProgress()
   try {
-    // 首次进入需先确认剧本存在（404 时全局拦截器提示）
+    // 首次进入需先确认剧本存在（404 时全局拦截器提示；按集上下文定位该集剧本行）
     if (!scriptOut) {
-      scriptOut = await studioApi.getInput(projectId.value)
+      scriptOut = await studioApi.getInput(projectId.value, currentEpisodeId.value ?? undefined)
     }
-    const res = await studioApi.extract(projectId.value)
+    const res = await studioApi.extract(projectId.value, currentEpisodeId.value ?? undefined)
     result.value = res
     characters.value = res.characters.map((c) => toEditable(c, 'character'))
     scenes.value = res.scenes.map((s) => toEditable(s, 'scene'))
@@ -291,6 +320,8 @@ async function submitConfirm(): Promise<void> {
         description: p.description,
         visual_prompt: p.visual_prompt,
       })),
+      // 按集工作流：确认名单 union 落该集启用名单（资产管理页按集视图据此显示）
+      episode_id: currentEpisodeId.value ?? undefined,
     })
     ElMessage.success('资产已生成，进入资产管理')
     await router.push(`/projects/${projectId.value}/assets`)
@@ -302,6 +333,21 @@ async function submitConfirm(): Promise<void> {
 /** 低置信行标黄样式（RD-06/RD-24 标黄约定） */
 const lowConfRowClass = ({ row }: { row: EditableEntity }): string =>
   row.low_confidence ? 'low-conf-row' : ''
+
+// ============================================================
+// P0-2 抽取统计反馈（消除场景/道具为 0 的静默失败）
+// ============================================================
+
+/**
+ * 抽取统计行文案（来源 + 计数）。
+ * @returns 统计文案；无 stats（旧后端）时返回空串不展示
+ */
+const statsText = computed((): string => {
+  const stats = result.value?.stats
+  if (!stats) return ''
+  const sourceLabel = stats.source === 'llm' ? 'AI 模型' : '规则兜底'
+  return `解析出角色 ${stats.characters} · 场景 ${stats.scenes} · 道具 ${stats.props}（抽取来源：${sourceLabel}）`
+})
 
 onMounted(runExtract)
 onBeforeUnmount(() => {
@@ -324,14 +370,30 @@ onBeforeUnmount(() => {
       </div>
     </el-card>
 
-    <!-- 引导空态：提取失败或重置后 -->
+    <!-- 引导空态：提取失败 / 重置后 / 未选集 -->
     <el-card v-else-if="!extracted" shadow="never">
-      <el-empty description="尚未完成实体提取">
+      <el-empty
+        :description="currentEpisodeId == null
+          ? '尚未选择集数：请在左上角选择好集数后开始提取（角色/场景/道具将按该集分集大纲与剧本正文提取）'
+          : `尚未完成实体提取（范围：${scopeLabel}）`"
+      >
         <el-button type="primary" @click="runExtract">开始提取</el-button>
       </el-empty>
     </el-card>
 
     <template v-else>
+      <!-- P0-2 抽取统计反馈：解析计数 + 来源 + 抽取范围与风格说明 -->
+      <el-alert
+        v-if="statsText"
+        :type="result?.scenes.length ? 'info' : 'warning'"
+        show-icon
+        :closable="false"
+        :title="statsText"
+        :description="result?.scenes.length
+          ? `抽取范围：${scopeLabel}；风格资产将按项目画风「${projectStyle || '默认画风'}」在确认入池时自动创建`
+          : '未识别到场景实体：分镜将无法强绑场景资产。请检查该集剧本是否含「内景/外景」标记或场景名，或在下方场景 Tab 手动补充。'"
+      />
+
       <!-- 冲突裁决区（RD-06：必须裁决才能提交） -->
       <el-card v-if="result && result.conflicts.length" shadow="never" class="conflict-card">
         <template #header>

@@ -286,6 +286,8 @@ export interface Catalog {
 export interface Channel {
   /** 渠道 ID */
   id: number
+  /** 渠道备注名（可空，仅展示用） */
+  name?: string | null
   /** 协议类型（当前 openai） */
   protocol: string
   /** 接口地址 */
@@ -304,6 +306,8 @@ export interface Channel {
 
 /** 渠道创建请求体 */
 export interface ChannelCreatePayload {
+  /** 渠道备注名（可空） */
+  name?: string
   /** 协议类型，默认 openai */
   protocol?: string
   /** 接口地址（http/https 开头） */
@@ -314,6 +318,22 @@ export interface ChannelCreatePayload {
   models?: Record<string, unknown>
 }
 
+/** 渠道更新请求体（PUT /models/channels/{id}，全字段可选：null/缺省=不修改） */
+export interface ChannelUpdatePayload {
+  /** 渠道备注名（空串=清空） */
+  name?: string
+  /** 协议类型：openai / openai_responses / anthropic */
+  protocol?: string
+  /** 接口地址（http/https 开头） */
+  base_url?: string
+  /** 新 API Key 明文（缺省=保持原 Key） */
+  api_key?: string
+  /** 模型目录 */
+  models?: Record<string, unknown>
+  /** 是否启用 */
+  enabled?: boolean
+}
+
 /** 渠道连通性测试响应 */
 export interface ChannelTestResult {
   /** 是否连通成功 */
@@ -322,6 +342,26 @@ export interface ChannelTestResult {
   error?: string | null
   /** 测试后的健康状态 */
   health_status: string
+}
+
+/** 拉取渠道真实模型列表请求体（POST /models/probe-models） */
+export interface ChannelProbeModelsPayload {
+  /** 协议类型：openai / openai_responses / anthropic */
+  protocol?: string
+  /** 接口地址（http/https 开头） */
+  base_url: string
+  /** API Key 明文（仅本次请求使用，不落库） */
+  api_key: string
+}
+
+/** 渠道真实模型列表响应 */
+export interface ChannelProbeModelsResult {
+  /** 是否拉取成功 */
+  ok: boolean
+  /** 模型 ID 列表（成功时非空） */
+  models: string[]
+  /** 失败原因（成功时为空） */
+  error?: string | null
 }
 
 // ============================================================
@@ -525,6 +565,19 @@ export interface ExtractResult {
   props: ExtractedEntity[]
   /** 别名冲突列表 */
   conflicts: ExtractConflict[]
+  /** 抽取统计反馈（P0-2：计数+来源，消除静默失败；旧后端无此字段） */
+  stats?: {
+    /** 解析出的角色数 */
+    characters: number
+    /** 解析出的场景数 */
+    scenes: number
+    /** 解析出的道具数 */
+    props: number
+    /** 实际抽取路径：llm AI 模型 / rule 规则兜底 */
+    source: 'llm' | 'rule'
+    /** 抽取源文本长度 */
+    source_text_chars: number
+  }
 }
 
 /** 实体确认入池条目（角色/场景/道具共用结构，按需取字段） */
@@ -547,6 +600,8 @@ export interface ExtractConfirmPayload {
   scenes?: ConfirmEntityItem[]
   /** 确认入池的道具列表 */
   props?: ConfirmEntityItem[]
+  /** 按集工作流当前集 ID（传值时确认名单 union 落该集启用名单，可空） */
+  episode_id?: number
 }
 
 /** 实体确认结果（返回各类资产现有总数） */
@@ -669,6 +724,18 @@ export interface StyleAsset {
   updated_at?: string | null
 }
 
+/** 该集已启用资产名名单（episodes.enabled_assets，GET /assets?episode_id= 响应附带） */
+export interface EpisodeEnabledNames {
+  /** 该集启用的角色名列表 */
+  characters?: string[]
+  /** 该集启用的场景名列表 */
+  scenes?: string[]
+  /** 该集启用的道具名列表 */
+  props?: string[]
+  /** 该集启用的风格名列表 */
+  styles?: string[]
+}
+
 /** 四类资产聚合输出（GET /projects/{id}/assets） */
 export interface AssetsGroup {
   /** 角色列表 */
@@ -679,6 +746,8 @@ export interface AssetsGroup {
   props: PropAsset[]
   /** 风格列表 */
   styles: StyleAsset[]
+  /** 该集已启用资产名名单（请求带 episode_id 时返回；空对象=该集未启用过任何资产） */
+  episode_enabled?: EpisodeEnabledNames | null
 }
 
 /** 资产变体（对应 VariantOut） */
@@ -809,6 +878,10 @@ export interface Storyboard {
   regen_count: number
   /** 关联角色列表 */
   characters: SbCharacterLink[]
+  /** 引用资产是否已过期（P0-3：角色定妆照/场景图更新后 true，前端标黄） */
+  stale?: boolean
+  /** 过期原因文案列表（tooltip 展示） */
+  stale_reasons?: string[]
 }
 
 /** 分镜更新请求体 */

@@ -5,7 +5,8 @@
  * RD-03/episode_scenes 结构对齐：action/location/time_of_day/int_ext/sfx/
  * emotion + dialogue[].type/emotion/character_id）渲染为「漫剧规范文本」：
  * - 场景标题行：【场景：{地点}，{时段}，{内/外景}】（字段空值优雅跳过，
- *   全空时回退为场次标题）；
+ *   全空时回退为场次标题）——术语约定：场次段编号在前端呈现为「镜头N」
+ *   （为分镜准备），【场景：…】行描述的地点即资产管理中的「场景」；
  * - 动作行：action 文本；sfx 存在时追加【音效：…】行；
  * - 台词行：按 dialogue.type 区分标注——
  *   · 对白（缺省）→「角色名（情绪）：台词」（无情绪时省略括号）；
@@ -127,7 +128,7 @@ export function renderMangaScene(
   lines.push(
     headerParts.length
       ? `【场景：${headerParts.join('，')}】`
-      : `【场景：${cleanText(scene.title) || `场景 ${scene.scene_no}`}】`,
+      : `【场景：${cleanText(scene.title) || `镜头 ${scene.scene_no}`}】`,
   )
 
   // 动作行 + 音效行（sfx 逐项过滤空值后以「、」连接）

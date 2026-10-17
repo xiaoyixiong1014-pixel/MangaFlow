@@ -105,6 +105,8 @@ class CharacterOut(BaseModel):
     source: str = "manual"
     reference_image_url: Optional[str] = None
     tags: TagsOutField = Field(default_factory=list)
+    outfit: Optional[str] = None
+    style_note: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -244,6 +246,8 @@ class CharacterUpdateRequest(BaseModel):
         aliases: 别名列表。
         reference_image_url: 参考图 URL（A-04：上传后回写，生成时透传渠道）。
         tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
+        outfit: 服装配饰完整拆解（角色圣经视觉段，None 不修改）。
+        style_note: 风格与画质特点（角色圣经视觉段，None 不修改）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -253,6 +257,10 @@ class CharacterUpdateRequest(BaseModel):
     reference_image_url: Optional[str] = Field(default=None, max_length=500,
                                                description="参考图 URL（A-04）")
     tags: TagsField = None
+    outfit: Optional[str] = Field(default=None, max_length=2000,
+                                  description="服装配饰完整拆解（角色圣经视觉段）")
+    style_note: Optional[str] = Field(default=None, max_length=1000,
+                                      description="风格与画质特点（角色圣经视觉段）")
 
 
 class SceneCreateRequest(BaseModel):

@@ -139,7 +139,7 @@ def test_duibai_guochang():
     ]
     report = run_health_check(_project(), _script(scenes))
     hits = [it for it in report["issues"] if "建议拆分" in it["message"]]
-    assert hits and hits[0]["location"] == "场景1"
+    assert hits and hits[0]["location"] == "镜头1"
     assert "第1条对白" in hits[0]["message"]
 
 
@@ -164,7 +164,7 @@ def test_que_dongzuo_miaoxie():
     ]
     report = run_health_check(_project(), _script(new_scenes))
     hits = [it for it in report["issues"] if "缺少动作描写" in it["message"]]
-    assert len(hits) == 1 and hits[0]["location"] == "场景2"
+    assert len(hits) == 1 and hits[0]["location"] == "镜头2"
 
     # 旧 Schema：全部场次无 action 键 → 自动跳过该规则
     old_scenes = [
@@ -287,12 +287,12 @@ async def test_anji_tijian(client: httpx.AsyncClient, auth, db):
     ep2 = Episode(project_id=pid, sequence=2, title="第二集", status="scripted")
     db.add_all([ep1, ep2])
     await db.flush()
-    # 第 1 集：对白 150 字 → 「第1集 · 场景1」对白过长
+    # 第 1 集：对白 150 字 → 「第1集 · 镜头1」对白过长
     db.add(Script(project_id=pid, episode_id=ep1.id, version=1, content={
         "scenes": [{"scene_no": 1, "title": "A", "plot": "p", "emotion": "爆发",
                     "dialogue": [{"character": "林小满", "line": "字" * 150}],
                     "duration_sec": 180}]}))
-    # 第 2 集：action 为空（新 Schema）→ 「第2集 · 场景1」缺动作描写
+    # 第 2 集：action 为空（新 Schema）→ 「第2集 · 镜头1」缺动作描写
     db.add(Script(project_id=pid, episode_id=ep2.id, version=1, content={
         "scenes": [{"scene_no": 1, "title": "B", "plot": "p", "action": "", "emotion": "爆发",
                     "dialogue": [], "duration_sec": 180}]}))
@@ -302,8 +302,8 @@ async def test_anji_tijian(client: httpx.AsyncClient, auth, db):
     resp = await client.post(f"/api/projects/{pid}/script/health", headers=auth["headers"])
     assert resp.status_code == 200, resp.text
     locations = [it["location"] for it in resp.json()["issues"]]
-    assert "第1集 · 场景1" in locations
-    assert "第2集 · 场景1" in locations
+    assert "第1集 · 镜头1" in locations
+    assert "第2集 · 镜头1" in locations
 
     # 指定 episode_id：仅体检该集，location 无集号前缀
     resp_one = await client.post(
@@ -313,7 +313,7 @@ async def test_anji_tijian(client: httpx.AsyncClient, auth, db):
     )
     assert resp_one.status_code == 200, resp_one.text
     one_locations = [it["location"] for it in resp_one.json()["issues"]]
-    assert "场景1" in one_locations
+    assert "镜头1" in one_locations
     assert not any(loc.startswith("第") for loc in one_locations)
 
 

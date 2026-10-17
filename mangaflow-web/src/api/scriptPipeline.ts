@@ -51,8 +51,12 @@ export interface CharacterProfile {
   age: string | null
   /** 性格设定 */
   personality: string | null
-  /** 外观设定 */
+  /** 形象特征（角色圣经视觉段一：发型/五官/体型/肤色） */
   appearance: string | null
+  /** 服装配饰完整拆解（角色圣经视觉段二：上装/下装/鞋履/配饰） */
+  outfit: string | null
+  /** 风格与画质特点（角色圣经视觉段三：画风/光线/画质关键词） */
+  style_note: string | null
   /** 行为动机 */
   motivation: string | null
   /** 人物弧光（角色成长线） */
@@ -77,8 +81,12 @@ export interface CharacterUpsertPayload {
   age?: string | null
   /** 性格设定（不传=不修改） */
   personality?: string | null
-  /** 外观设定（不传=不修改） */
+  /** 形象特征（不传=不修改） */
   appearance?: string | null
+  /** 服装配饰完整拆解（不传=不修改） */
+  outfit?: string | null
+  /** 风格与画质特点（不传=不修改） */
+  style_note?: string | null
   /** 行为动机（不传=不修改） */
   motivation?: string | null
   /** 人物弧光（不传=不修改） */
@@ -97,8 +105,12 @@ export interface CharacterConfirmItemPayload {
   age?: string | null
   /** 性格设定（不传=沿用候选值） */
   personality?: string | null
-  /** 外观设定（不传=沿用候选值） */
+  /** 形象特征（不传=沿用候选值） */
   appearance?: string | null
+  /** 服装配饰完整拆解（不传=沿用候选值） */
+  outfit?: string | null
+  /** 风格与画质特点（不传=沿用候选值） */
+  style_note?: string | null
   /** 行为动机（不传=沿用候选值） */
   motivation?: string | null
   /** 人物弧光（不传=沿用候选值） */

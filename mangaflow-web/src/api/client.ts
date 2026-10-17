@@ -26,6 +26,11 @@ export function extractDetail(error: AxiosError): string {
   const data = error.response?.data as { detail?: unknown } | undefined
   const detail = data?.detail
   if (typeof detail === 'string' && detail) return detail
+  // 结构化 detail（FastAPI dict detail）：优先取 message 字段（如 P0-1 锁定门禁 409）
+  if (detail && typeof detail === 'object' && 'message' in detail) {
+    const msg = (detail as { message?: unknown }).message
+    if (typeof msg === 'string' && msg) return msg
+  }
   return '请求失败，请稍后重试'
 }
 

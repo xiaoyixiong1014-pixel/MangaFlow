@@ -57,7 +57,7 @@ from app.schemas.asset import (
 from app.services import normalize_pagination
 from app.services.asset_service import (
     consistency_check,
-    create_character_image_task,
+    create_asset_image_task,
     create_variant,
     ensure_unique_name,
     get_asset_or_404,
@@ -67,6 +67,7 @@ from app.services.asset_service import (
     cross_project_assets,
     semantic_search_assets,
     set_default_style,
+    suggest_asset_prompt,
     unlock_character,
     upsert_asset_embedding,
 )
@@ -124,6 +125,8 @@ async def list_assets(
     type: Optional[str] = Query(default=None, alias="type"),
     tag: Optional[str] = Query(default=None, max_length=20,
                                description="按标签过滤（A-05：JSONB 数组包含匹配 @>）"),
+    episode_id: Optional[int] = Query(default=None,
+                                      description="按集工作流当前集 ID（传值时响应带该集启用名单 episode_enabled）"),
     page: int = Query(default=1, ge=1),
     page_size: int = Query(default=10, ge=1),
     user: User = Depends(get_current_user),
@@ -135,13 +138,16 @@ async def list_assets(
         project_id: 项目 ID。
         type: 资产类型 character/scene/prop/style（可空）。
         tag: 标签过滤（A-05，可空；命中条件为 tags JSONB 数组包含该标签）。
+        episode_id: 按集工作流当前集 ID（可空；传值时聚合响应额外携带
+            episode_enabled={"characters":[名...],...}——该集经「启用资产」确认
+            入池的资产名名单，前端按集视图据此过滤，未启用过的集显示空态）。
         page: 页码（仅指定 type 时生效）。
         page_size: 每页条数（仅指定 type 时生效）。
         user: 当前用户。
         db: 请求级异步数据库会话。
 
     Returns:
-        dict: type 缺省 → {"characters","scenes","props","styles"}；
+        dict: type 缺省 → {"characters","scenes","props","styles"[,"episode_enabled"]}；
             指定 type → {"items","total","page","page_size"}。
 
     Raises:
@@ -149,6 +155,20 @@ async def list_assets(
     """
     project = await get_owned_project(db, project_id, user.id)
     page, page_size = normalize_pagination(page, page_size)
+
+    # 按集启用名单（聚合响应附带）：读该集 episodes.enabled_assets，
+    # 规范化输出四键（未启用过的集各键为空数组）→ 前端按集视图显示空态
+    # （引导「启用资产」）；键缺失与空数组语义不同，必须统一为空数组
+    episode_enabled: Optional[dict] = None
+    if type is None and episode_id is not None:
+        from app.models import Episode  # 局部导入避免模块级导入顺序耦合
+        ep = await db.get(Episode, episode_id)
+        if ep is not None and ep.project_id == project.id:
+            raw = dict(ep.enabled_assets or {})
+            episode_enabled = {
+                key: list(raw.get(key) or [])
+                for key in ("characters", "scenes", "props", "styles")
+            }
 
     if type is None:
         # 四类资产聚合返回（各自全量，软删行除外；tag 过滤对四类同时生效）
@@ -160,14 +180,18 @@ async def list_assets(
             await db.execute(
                 select(Character)
                 .where(Character.project_id == project.id, Character.deleted_at.is_(None),
+                       # 按集工作流：角色设定确认的角色（enabled_at=NULL）不进资产管理，
+                       # 仅显示经「启用资产」确认入池（enabled_at 非空）的角色
+                       Character.enabled_at.is_not(None),
                        *([tag_conds["characters"]] if tag_conds else []))
                 .order_by(Character.id.asc())
             )
         ).scalars().all()
         scenes = (
             await db.execute(
-                select(Scene).where(Scene.project_id == project.id,
-                                    *([tag_conds["scenes"]] if tag_conds else []))
+                select(Scene)
+                .where(Scene.project_id == project.id, Scene.deleted_at.is_(None),
+                       *([tag_conds["scenes"]] if tag_conds else []))
                 .order_by(Scene.id.asc())
             )
         ).scalars().all()
@@ -181,8 +205,9 @@ async def list_assets(
         ).scalars().all()
         styles = (
             await db.execute(
-                select(Style).where(Style.project_id == project.id,
-                                    *([tag_conds["styles"]] if tag_conds else []))
+                select(Style)
+                .where(Style.project_id == project.id, Style.deleted_at.is_(None),
+                       *([tag_conds["styles"]] if tag_conds else []))
                 .order_by(Style.id.asc())
             )
         ).scalars().all()
@@ -192,7 +217,10 @@ async def list_assets(
             props=[PropOut.model_validate(r) for r in props],
             styles=[StyleOut.model_validate(r) for r in styles],
         )
-        return group.model_dump()
+        out = group.model_dump()
+        if episode_id is not None:
+            out["episode_enabled"] = episode_enabled
+        return out
 
     if type not in _ASSET_TYPES:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="type 仅支持 character/scene/prop/style")
@@ -200,8 +228,11 @@ async def list_assets(
     cls = {"character": Character, "scene": Scene, "prop": Prop, "style": Style}[type]
     out_cls = {"character": CharacterOut, "scene": SceneOut, "prop": PropOut, "style": StyleOut}[type]
     conds = [cls.project_id == project.id]
-    if type != "style":
-        conds.append(cls.deleted_at.is_(None))  # style 无软删字段
+    # P2 软删统一：四类资产（含 style）均排除软删行
+    conds.append(cls.deleted_at.is_(None))
+    if type == "character":
+        # 按集工作流：仅显示经「启用资产」确认入池的角色
+        conds.append(Character.enabled_at.is_not(None))
     if tag:
         # A-05 标签包含匹配：JSONB @>（等价 tags @> '["tag"]'::jsonb）
         conds.append(cls.tags.contains([tag]))
@@ -257,6 +288,8 @@ async def create_character(
         # visual_prompt 缺省模板（A-06 标准化提示词）
         visual_prompt=req.visual_prompt or DEFAULT_VISUAL_TEMPLATE.format(
             name=req.name.strip(), description=req.description or req.name.strip()),
+        # 手工创建即启用（按集工作流：enabled_at=NULL 仅用于角色设定确认的流水线数据）
+        enabled_at=datetime.now(timezone.utc),
     )
     db.add(character)
     await db.commit()
@@ -302,6 +335,10 @@ async def update_character(
         character.description = req.description
     if req.visual_prompt is not None:
         character.visual_prompt = req.visual_prompt
+    if req.outfit is not None:
+        character.outfit = req.outfit
+    if req.style_note is not None:
+        character.style_note = req.style_note
     if req.aliases is not None:
         character.aliases = req.aliases
     if req.reference_image_url is not None:
@@ -362,6 +399,9 @@ async def generate_character_image(
 ) -> dict:
     """角色定妆照生成：冻结 10 积分（RD-28）+ 建 image 任务入队 + 置 generating。
 
+    create_character_image_task 通用化为 create_asset_image_task 后按类型分派，
+    scene/prop 由同构 generate 端点提供生成入口。
+
     Args:
         project_id: 项目 ID。
         character_id: 角色 ID。
@@ -378,7 +418,65 @@ async def generate_character_image(
     project = await get_owned_project(db, project_id, user.id)
     character = await get_asset_or_404(db, project.id, "character", character_id)
     body = req or CharacterGenerateRequest()
-    return await create_character_image_task(db, project, character, body.prompt)
+    return await create_asset_image_task(db, project, "character", character, body.prompt)
+
+
+@router.post("/api/projects/{project_id}/assets/scenes/{scene_id}/generate")
+async def generate_scene_image(
+    project_id: int,
+    scene_id: int,
+    req: Optional[CharacterGenerateRequest] = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """场景概念图生成：冻结 10 积分 + 建 image 任务入队（与角色定妆照同构）。
+
+    Args:
+        project_id: 项目 ID。
+        scene_id: 场景 ID。
+        req: 生成请求（prompt 可缺省，缺省用场景 visual_prompt）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: 任务字典（id/type/phase/status/cost_points/idempotency_key/meta/progress）。
+
+    Raises:
+        HTTPException: 404 —— 项目/场景不存在；409 —— 积分不足或已有进行中任务。
+    """
+    project = await get_owned_project(db, project_id, user.id)
+    scene = await get_asset_or_404(db, project.id, "scene", scene_id)
+    body = req or CharacterGenerateRequest()
+    return await create_asset_image_task(db, project, "scene", scene, body.prompt)
+
+
+@router.post("/api/projects/{project_id}/assets/props/{prop_id}/generate")
+async def generate_prop_image(
+    project_id: int,
+    prop_id: int,
+    req: Optional[CharacterGenerateRequest] = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """道具标准图生成：冻结 10 积分 + 建 image 任务入队（与角色定妆照同构）。
+
+    Args:
+        project_id: 项目 ID。
+        prop_id: 道具 ID。
+        req: 生成请求（prompt 可缺省，缺省用道具 visual_prompt）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: 任务字典（id/type/phase/status/cost_points/idempotency_key/meta/progress）。
+
+    Raises:
+        HTTPException: 404 —— 项目/道具不存在；409 —— 积分不足或已有进行中任务。
+    """
+    project = await get_owned_project(db, project_id, user.id)
+    prop = await get_asset_or_404(db, project.id, "prop", prop_id)
+    body = req or CharacterGenerateRequest()
+    return await create_asset_image_task(db, project, "prop", prop, body.prompt)
 
 
 @router.post("/api/projects/{project_id}/assets/characters/{character_id}/lock", response_model=CharacterOut)
@@ -838,6 +936,42 @@ async def list_prop_variants(
     return [VariantOut.model_validate(r) for r in rows]
 
 
+@router.post("/api/projects/{project_id}/assets/{asset_type}/{asset_id}/suggest-prompt")
+async def suggest_prompt(
+    project_id: int,
+    asset_type: str,
+    asset_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """AI 识别场景/道具提示词六要素（agent 从剧本正文提取，用户确认后用于生成图片）。
+
+    仅支持 scene/prop（角色提示词直接取自角色设定，无需识别）：
+    - 场景六要素：画风基底 / 空间类型 / 核心锚点(3~5) / 光照氛围 / 构图视角 / 负面约束；
+    - 道具六要素：尺度参照 / 核心锚点(3~5) / 材质工艺 / 唯一标记 / 功能操作 / 可读文字政策。
+
+    Args:
+        project_id: 项目 ID。
+        asset_type: 资产类型 scene/prop。
+        asset_id: 资产 ID。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"type": asset_type, "elements": {六要素键: 值}}。
+
+    Raises:
+        HTTPException: 400 —— asset_type 非法或剧本正文无相关内容；
+            404 —— 项目/资产不存在；502 —— LLM 识别失败。
+    """
+    if asset_type not in ("scene", "prop"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="仅支持 scene/prop 的提示词识别")
+    project = await get_owned_project(db, project_id, user.id)
+    asset = await get_asset_or_404(db, project.id, asset_type, asset_id)
+    return await suggest_asset_prompt(db, project, asset_type, asset)
+
+
 # ---------------------------------------------------------------------------
 # 风格资产 CRUD（is_default 项目内互斥）
 # ---------------------------------------------------------------------------
@@ -938,6 +1072,34 @@ async def update_style(
     return StyleOut.model_validate(style)
 
 
+@router.delete("/api/projects/{project_id}/assets/styles/{style_id}")
+async def delete_style(
+    project_id: int,
+    style_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """软删除风格（P2 软删统一后与四类资产单删语义一致：deleted_at=now）。
+
+    Args:
+        project_id: 项目 ID。
+        style_id: 风格 ID。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"message": "风格已删除"}。
+
+    Raises:
+        HTTPException: 404 —— 项目/风格不存在。
+    """
+    project = await get_owned_project(db, project_id, user.id)
+    style = await get_asset_or_404(db, project.id, "style", style_id)
+    style.deleted_at = datetime.now(timezone.utc)
+    await db.commit()
+    return {"message": "风格已删除"}
+
+
 # ---------------------------------------------------------------------------
 # 资产批量删除（A-05）
 # ---------------------------------------------------------------------------
@@ -956,8 +1118,7 @@ async def batch_delete_assets(
     - 命中（属于当前项目且未软删）→ 软删除计入 deleted；
     - 未命中（不存在/不属于当前项目/已软删）→ 不中断整体操作，计入
       skipped 并给出原因（等价于单删的 404 场景）。
-    例外：styles 无软删字段（也不存在单删端点），命中时按物理删除处理
-    （styles 表无外键引用，删除安全）。
+    P2 软删统一：四类资产（含 styles）一律软删除（styles 原物理删除特判移除）。
 
     Args:
         project_id: 项目 ID。
@@ -984,24 +1145,19 @@ async def batch_delete_assets(
 
     project = await get_owned_project(db, project_id, user.id)
     cls = {"characters": Character, "scenes": Scene, "props": Prop, "styles": Style}[asset_type]
-    has_soft_delete = asset_type != "styles"  # style 无软删字段 → 物理删除
 
     deleted = 0
     skipped: list = []
     now = datetime.now(timezone.utc)
     for asset_id in ids:
-        conds = [cls.id == asset_id, cls.project_id == project.id]
-        if has_soft_delete:
-            conds.append(cls.deleted_at.is_(None))  # 已软删行视为未命中（单删此时 404）
+        conds = [cls.id == asset_id, cls.project_id == project.id,
+                 cls.deleted_at.is_(None)]  # 已软删行视为未命中（单删此时 404）
         row = (await db.execute(select(cls).where(*conds))).scalar_one_or_none()
         if row is None:
             skipped.append({"id": asset_id,
                             "reason": "资产不存在、不属于当前项目或已删除"})
             continue
-        if has_soft_delete:
-            row.deleted_at = now  # 与单删一致：仅置 deleted_at，不做引用保护
-        else:
-            await db.delete(row)  # style：无软删列，物理删除
+        row.deleted_at = now  # 与单删一致：仅置 deleted_at，不做引用保护
         deleted += 1
     await db.commit()
     return {"deleted": deleted, "skipped": skipped}
@@ -1134,16 +1290,8 @@ async def copy_asset_to_project(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="源资产不存在")
 
     new_name = f"{src.name} (副本)"
-    if asset_type == "style":
-        # style 无 deleted_at 字段，ensure_unique_name 不覆盖，手动查重
-        existed = await db.scalar(
-            select(func.count()).select_from(Style).where(
-                Style.project_id == project.id, Style.name == new_name)
-        )
-        if existed:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="同名 style 资产已存在")
-    else:
-        await ensure_unique_name(db, project.id, asset_type, new_name)
+    # P2 软删统一后 ensure_unique_name 覆盖四类（含 style，软删行除外）
+    await ensure_unique_name(db, project.id, asset_type, new_name)
 
     # 四类资产共有列：project_id / name / description / visual_prompt
     # （asset_url 仅 character/scene/prop 有，style 为 reference_url，分支内赋值）
@@ -1160,6 +1308,7 @@ async def copy_asset_to_project(
         dup.asset_url = src.asset_url
         dup.generation_status = "pending"  # 生成状态置回未生成
         dup.outfit_variant_id = None  # 变体归属源项目，副本不继承
+        dup.enabled_at = datetime.now(timezone.utc)  # 复制入当前项目即启用
     elif asset_type == "scene":
         dup.asset_url = src.asset_url
         dup.space_signature = getattr(src, "space_signature", None)

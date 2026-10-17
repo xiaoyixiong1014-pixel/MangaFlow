@@ -210,7 +210,7 @@ async def collect_entity_impact(
                 continue
             script_refs += count
             scene_no = scene.get("scene_no") or idx + 1
-            label = f"场景{scene_no}"
+            label = f"镜头{scene_no}"
             if episode_no is not None:
                 label = f"第{episode_no}集 · {label}"
             if label not in script_locations and len(script_locations) < _IMPACT_LOCATION_LIMIT:
@@ -355,7 +355,7 @@ def _render_scenes_text(plain: Dict[str, Any]) -> str:
             continue
         scene_no = scene.get("scene_no") or idx + 1
         title = str(scene.get("title") or "").strip()
-        lines.append(f"场景{scene_no} {title}".strip())
+        lines.append(f"镜头{scene_no} {title}".strip())
         plot = str(scene.get("plot") or "").strip()
         if plot:
             lines.append(plot)
@@ -405,7 +405,7 @@ def _fountain_scene_heading(scene: Dict[str, Any], index: int) -> str:
     """构造 Fountain 场景标题行（内部函数，纯函数，大写）。
 
     规则：int_ext 为 int/ext 且 location 非空时用 `INT./EXT. 地点 - 时间`
-    （time_of_day 缺失则省略「 - 时间」）；否则回退 `场景N 标题`。
+    （time_of_day 缺失则省略「 - 时间」）；否则回退 `镜头N 标题`。
 
     Args:
         scene: 场次 dict。
@@ -428,7 +428,7 @@ def _fountain_scene_heading(scene: Dict[str, Any], index: int) -> str:
         return heading.upper()
     scene_no = scene.get("scene_no") or index
     title = str(scene.get("title") or "").strip()
-    return f"场景{scene_no} {title}".strip().upper()
+    return f"镜头{scene_no} {title}".strip().upper()
 
 
 def _fountain_speaker(dialogue: Dict[str, Any]) -> str:

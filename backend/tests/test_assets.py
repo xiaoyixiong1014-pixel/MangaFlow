@@ -266,3 +266,120 @@ async def test_yizhixing_jiaoyan_fanhui_similarity(client, auth):
     assert body["passed"] == (body["score"] >= body["threshold"])
     assert "一致性" in body["report"]
     assert {"visual_prompt_sim", "description_sim", "locked_bonus"} <= set(body["details"])
+
+
+async def test_suggest_prompt_liuyaosu_shibie(client, auth, db):
+    """AI 提示词六要素识别：场景/道具从剧本正文提取六要素（用户确认后生成图片）。
+
+    测试环境 LLM 可达（deepseek 200）：断言接口返回六键齐全（场景六键
+    + anchors 数组），不硬断言具体值（LLM 输出内容随剧本变化）。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    from app.models import Scene, Script
+
+    project = await create_project(client, auth["headers"], title=f"识别项目_{unique_suffix()}")
+    pid = project["id"]
+    content = {
+        "scenes": [
+            {"scene_no": 1, "title": "加班", "location": "深夜写字楼格子间",
+             "time_of_day": "夜", "int_ext": "内景",
+             "plot": "王小满在工位摸鱼，屏幕光照亮他的脸。",
+             "dialogue": [{"character": "王小满", "line": "摸鱼才能活命。"}]},
+        ]
+    }
+    db.add(Script(project_id=pid, content=content, raw_text=""))
+    db.add(Scene(project_id=pid, name="深夜写字楼格子间", visual_prompt="旧提示词"))
+    await db.commit()
+
+    scene = (await db.execute(
+        select(Scene).where(Scene.project_id == pid, Scene.name == "深夜写字楼格子间")
+    )).scalar_one()
+    resp = await client.post(
+        f"/api/projects/{pid}/assets/scene/{scene.id}/suggest-prompt",
+        headers=auth["headers"],
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["type"] == "scene"
+    elements = body["elements"]
+    # 场景六要素键齐全（LLM 实际输出值不硬断言）
+    for key in ("style_base", "space_type", "anchors", "lighting", "composition", "negative"):
+        assert key in elements
+    assert isinstance(elements["anchors"], list)
+
+    # 非法类型 400
+    resp2 = await client.post(
+        f"/api/projects/{pid}/assets/character/{scene.id}/suggest-prompt",
+        headers=auth["headers"],
+    )
+    assert resp2.status_code == 400
+
+
+async def test_shengcheng_changjing_daotu_tu(client, auth, db):
+    """场景/道具图生成：任务入队冻结积分 → done 后回写 asset_url（与角色定妆照同构）。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    from app.models import Prop, Scene
+
+    project = await create_project(client, auth["headers"], title=f"场景道具生成_{unique_suffix()}")
+    pid = project["id"]
+    db.add(Scene(project_id=pid, name="咖啡馆", visual_prompt="场景提示词"))
+    db.add(Prop(project_id=pid, name="怀表", visual_prompt="道具提示词"))
+    await db.commit()
+    scene = (await db.execute(
+        select(Scene).where(Scene.project_id == pid, Scene.name == "咖啡馆")
+    )).scalar_one()
+    prop = (await db.execute(
+        select(Prop).where(Prop.project_id == pid, Prop.name == "怀表")
+    )).scalar_one()
+
+    # 场景图生成入队 → 轮询终态 → asset_url 回写
+    resp = await client.post(
+        f"/api/projects/{pid}/assets/scenes/{scene.id}/generate", headers=auth["headers"]
+    )
+    assert resp.status_code == 200, resp.text
+    task = resp.json()
+    assert task["cost_points"] == 10
+    assert task["meta"]["target_type"] == "scene"
+    final = await wait_task_terminal(client, auth["headers"], task["id"], timeout=30.0)
+    assert final["status"] == "done", final
+    await db.refresh(scene)
+    assert scene.asset_url
+
+    # 道具图生成入队 → 轮询终态 → asset_url 回写
+    resp2 = await client.post(
+        f"/api/projects/{pid}/assets/props/{prop.id}/generate", headers=auth["headers"]
+    )
+    assert resp2.status_code == 200, resp2.text
+    task2 = resp2.json()
+    assert task2["meta"]["target_type"] == "prop"
+    final2 = await wait_task_terminal(client, auth["headers"], task2["id"], timeout=30.0)
+    assert final2["status"] == "done", final2
+    await db.refresh(prop)
+    assert prop.asset_url
+
+    # 未终态防重复：首个任务已完成可再次发起（幂等闸门按未终态判断）
+    resp3 = await client.post(
+        f"/api/projects/{pid}/assets/scenes/{scene.id}/generate", headers=auth["headers"]
+    )
+    assert resp3.status_code == 200, resp3.text

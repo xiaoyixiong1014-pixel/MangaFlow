@@ -183,6 +183,8 @@ function fillForm(item: DisplayCharacter): void {
     age: item.age ?? '',
     personality: item.personality ?? '',
     appearance: item.appearance ?? '',
+    outfit: item.outfit ?? '',
+    style_note: item.style_note ?? '',
     motivation: item.motivation ?? '',
     arc: item.arc ?? '',
     relations: item.relations.map((r) => ({ target: r.target, relation: r.relation })),
@@ -207,8 +209,12 @@ interface CharacterForm {
   age: string
   /** 性格设定 */
   personality: string
-  /** 外观设定 */
+  /** 形象特征（角色圣经视觉段一：发型/五官/体型/肤色） */
   appearance: string
+  /** 服装配饰完整拆解（角色圣经视觉段二：上装/下装/鞋履/配饰） */
+  outfit: string
+  /** 风格与画质特点（角色圣经视觉段三：画风/光线/画质） */
+  style_note: string
   /** 行为动机 */
   motivation: string
   /** 人物弧光 */
@@ -224,7 +230,8 @@ interface CharacterForm {
 function emptyForm(): CharacterForm {
   return {
     name: '', role_type: null, age: '', personality: '',
-    appearance: '', motivation: '', arc: '', relations: [],
+    appearance: '', outfit: '', style_note: '',
+    motivation: '', arc: '', relations: [],
   }
 }
 
@@ -327,6 +334,8 @@ async function handleSaveChar(): Promise<void> {
       age: form.value.age.trim() || null,
       personality: form.value.personality.trim() || null,
       appearance: form.value.appearance.trim() || null,
+      outfit: form.value.outfit.trim() || null,
+      style_note: form.value.style_note.trim() || null,
       motivation: form.value.motivation.trim() || null,
       arc: form.value.arc.trim() || null,
       relations,
@@ -456,6 +465,8 @@ async function handleConfirm(): Promise<void> {
         age: c.age,
         personality: c.personality,
         appearance: c.appearance,
+        outfit: c.outfit,
+        style_note: c.style_note,
         motivation: c.motivation,
         arc: c.arc,
         relations: c.relations,
@@ -580,6 +591,10 @@ defineExpose({
               <span class="char-label">性格</span>
               <span class="char-value char-value--clamp">{{ item.personality || '—' }}</span>
             </div>
+            <div class="char-field">
+              <span class="char-label">服装</span>
+              <span class="char-value char-value--clamp">{{ item.outfit || '—' }}</span>
+            </div>
           </el-card>
         </div>
 
@@ -662,9 +677,19 @@ defineExpose({
                 <el-input v-model="form.personality" type="textarea" :rows="2" placeholder="性格设定" />
               </QuotableText>
             </el-form-item>
-            <el-form-item label="外貌">
-              <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 外貌`" scope="characters" class="quote-field">
-                <el-input v-model="form.appearance" type="textarea" :rows="2" placeholder="外观设定（确认后映射角色 description 摘要）" />
+            <el-form-item label="形象特征">
+              <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 形象特征`" scope="characters" class="quote-field">
+                <el-input v-model="form.appearance" type="textarea" :rows="2" placeholder="形象特征：发型/五官/体型/肤色等（生图一致性锁定）" />
+              </QuotableText>
+            </el-form-item>
+            <el-form-item label="服装配饰">
+              <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 服装配饰`" scope="characters" class="quote-field">
+                <el-input v-model="form.outfit" type="textarea" :rows="3" placeholder="服装配饰完整拆解：上装/下装/鞋履/配饰/标志性物品，具体到颜色与材质" />
+              </QuotableText>
+            </el-form-item>
+            <el-form-item label="风格画质">
+              <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 风格画质`" scope="characters" class="quote-field">
+                <el-input v-model="form.style_note" type="textarea" :rows="2" placeholder="风格与画质：画风/光线/画质关键词（与项目视觉风格一致）" />
               </QuotableText>
             </el-form-item>
             <el-form-item label="动机">

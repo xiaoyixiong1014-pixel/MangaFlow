@@ -65,7 +65,9 @@ class CharacterProfileOut(BaseModel):
         role_type: 角色定位 lead/support/villain/extra。
         age: 年龄设定（弹性表述，如「约30岁」「少年」）。
         personality: 性格设定。
-        appearance: 外观设定（落库映射 characters.description）。
+        appearance: 形象特征（发型/五官/体型/肤色等角色圣经视觉段）。
+        outfit: 服装配饰完整拆解（上装/下装/鞋履/配饰/标志性物品，逐项列明）。
+        style_note: 风格与画质特点（画风/光线/画质关键词）。
         motivation: 行为动机。
         arc: 人物弧光（角色成长线）。
         relations: 人物关系数组 [{target, relation}]。
@@ -82,7 +84,9 @@ class CharacterProfileOut(BaseModel):
     role_type: Optional[RoleType] = Field(default=None, description="角色定位：lead/support/villain/extra")
     age: Optional[str] = Field(default=None, description="年龄设定（弹性表述）")
     personality: Optional[str] = Field(default=None, description="性格设定")
-    appearance: Optional[str] = Field(default=None, description="外观设定（落库映射 characters.description）")
+    appearance: Optional[str] = Field(default=None, description="形象特征（角色圣经视觉段一）")
+    outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（角色圣经视觉段二）")
+    style_note: Optional[str] = Field(default=None, description="风格与画质特点（角色圣经视觉段三）")
     motivation: Optional[str] = Field(default=None, description="行为动机")
     arc: Optional[str] = Field(default=None, description="人物弧光（角色成长线）")
     relations: List[CharacterRelation] = Field(default_factory=list, description="人物关系数组")
@@ -116,7 +120,9 @@ class CharacterProfileUpsert(BaseModel):
         role_type: 角色定位（None 表示不修改）。
         age: 年龄设定（None 表示不修改）。
         personality: 性格设定（None 表示不修改）。
-        appearance: 外观设定（None 表示不修改）。
+        appearance: 形象特征（None 表示不修改）。
+        outfit: 服装配饰完整拆解（None 表示不修改）。
+        style_note: 风格与画质特点（None 表示不修改）。
         motivation: 行为动机（None 表示不修改）。
         arc: 人物弧光（None 表示不修改）。
         relations: 人物关系数组（None 表示不修改）。
@@ -127,7 +133,9 @@ class CharacterProfileUpsert(BaseModel):
     role_type: Optional[RoleType] = Field(default=None, description="角色定位（None=不修改）")
     age: Optional[str] = Field(default=None, max_length=20, description="年龄设定（None=不修改）")
     personality: Optional[str] = Field(default=None, description="性格设定（None=不修改）")
-    appearance: Optional[str] = Field(default=None, description="外观设定（None=不修改）")
+    appearance: Optional[str] = Field(default=None, description="形象特征（None=不修改）")
+    outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=不修改）")
+    style_note: Optional[str] = Field(default=None, description="风格与画质特点（None=不修改）")
     motivation: Optional[str] = Field(default=None, description="行为动机（None=不修改）")
     arc: Optional[str] = Field(default=None, description="人物弧光（None=不修改）")
     relations: Optional[List[CharacterRelation]] = Field(
@@ -173,7 +181,9 @@ class CharacterConfirmItem(BaseModel):
         role_type: 角色定位（None=沿用候选值）。
         age: 年龄设定（None=沿用候选值）。
         personality: 性格设定（None=沿用候选值）。
-        appearance: 外观设定（None=沿用候选值）。
+        appearance: 形象特征（None=沿用候选值）。
+        outfit: 服装配饰完整拆解（None=沿用候选值）。
+        style_note: 风格与画质特点（None=沿用候选值）。
         motivation: 行为动机（None=沿用候选值）。
         arc: 人物弧光（None=沿用候选值）。
         relations: 人物关系数组（None=沿用候选值）。
@@ -183,7 +193,9 @@ class CharacterConfirmItem(BaseModel):
     role_type: Optional[RoleType] = Field(default=None, description="角色定位（None=沿用候选）")
     age: Optional[str] = Field(default=None, max_length=20, description="年龄设定（None=沿用候选）")
     personality: Optional[str] = Field(default=None, description="性格设定（None=沿用候选）")
-    appearance: Optional[str] = Field(default=None, description="外观设定（None=沿用候选）")
+    appearance: Optional[str] = Field(default=None, description="形象特征（None=沿用候选）")
+    outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=沿用候选）")
+    style_note: Optional[str] = Field(default=None, description="风格与画质特点（None=沿用候选）")
     motivation: Optional[str] = Field(default=None, description="行为动机（None=沿用候选）")
     arc: Optional[str] = Field(default=None, description="人物弧光（None=沿用候选）")
     relations: Optional[List[CharacterRelation]] = Field(

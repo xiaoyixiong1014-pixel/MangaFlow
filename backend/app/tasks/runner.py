@@ -58,6 +58,7 @@ from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.metrics import mark_task, task_running_delta
 from app.models import (
+    AssetEmbedding,
     AssetVariant,
     Character,
     MediaAsset,
@@ -70,6 +71,7 @@ from app.models import (
 )
 from app.providers import vision_review
 from app.providers.image_agnes import generate_image_real
+from app.providers.image_dashscope import generate_image_dashscope
 from app.providers.image_mock import generate_image
 from app.providers.tts_bailian import generate_tts_real
 from app.providers.tts_mock import generate_tts
@@ -79,6 +81,7 @@ from app.providers.video_wan import generate_video_wan
 from app.services import model_router, notification_service
 from app.services.billing_service import consume_frozen, refund_frozen
 from app.services.compose_service import compose_film
+from app.services.generation_service import freeze_and_create_task
 from app.services.model_router import ResolvedChannel
 from app.services.review_service import (
     apply_violation_penalty,
@@ -446,12 +449,15 @@ async def _fail_task(db, task: Task, user_id: int, code: str, message: str, bear
 async def _succeed_task(db, task: Task, user_id: int) -> None:
     """任务成功落库：冻结扣费 + 状态/进度终态（RD-28 闭环）+ 通知中心推送。
 
-    计费闭环分两路（D3 演示占位治理）：
+    计费闭环分三路（D3 演示占位治理 / 自有 Key 豁免）：
     - 任务 meta 命中 placeholder 标记（mock 兜底演示占位产物）时执行豁免：
       不扣费，冻结积分全额退回可用余额（退款幂等键用独立前缀
       "ph-refund-{task_id}"，与失败退款 "task_{id}_refund" 互不冲突），
       流水备注含「演示占位豁免」；仅对实际冻结了积分（cost_points>0）的
       任务执行；
+    - 任务 meta 命中 own_channel_exempt 标记（实际使用用户自有 Key 渠道
+      生成）时同样豁免扣费，冻结积分全额退回（幂等键
+      "own-refund-{task_id}"，备注含「自有 Key 豁免」，平台承担）；
     - 其余任务照常 consume_frozen 扣费。
 
     扣费/退款后检查钱包可用余额，低于配额预警线（低余额阈值 * 0.2，当日
@@ -469,7 +475,8 @@ async def _succeed_task(db, task: Task, user_id: int) -> None:
     Raises:
         Exception: 扣费/退款/提交异常向上抛出。
     """
-    if (task.meta or {}).get("placeholder") and (task.cost_points or 0) > 0:
+    task_meta = task.meta or {}
+    if task_meta.get("placeholder") and (task.cost_points or 0) > 0:
         # 演示占位豁免：占位产物免计费，冻结积分全额退回可用余额（平台承担）
         await refund_frozen(
             db,
@@ -479,6 +486,17 @@ async def _succeed_task(db, task: Task, user_id: int) -> None:
             idempotency_key=f"ph-refund-{task.id}",
             bear="platform",
             remark=f"演示占位豁免：任务 {task.id}（{task.type}）产物为演示占位，冻结积分退回",
+        )
+    elif task_meta.get("own_channel_exempt") and (task.cost_points or 0) > 0:
+        # 自有 Key 豁免：实际使用用户自有渠道生成，免扣生成积分（平台承担）
+        await refund_frozen(
+            db,
+            user_id=user_id,
+            amount=task.cost_points,
+            ref_task_id=task.id,
+            idempotency_key=f"own-refund-{task.id}",
+            bear="platform",
+            remark=f"自有 Key 豁免：任务 {task.id}（{task.type}）使用自有模型渠道生成，冻结积分退回",
         )
     else:
         await consume_frozen(
@@ -828,19 +846,22 @@ async def _generate_with_fallback(
     db,
     capability: str,
     executor,
+    user_id: Optional[int] = None,
 ) -> tuple[Optional[Dict], Optional[ResolvedChannel], list]:
     """按渠道降级链依次尝试生成（渠道执行公共逻辑）。
 
-    通过 model_router.resolve_channels_chain 解析候选渠道链，并在链尾追加
-    本地 mock 哨兵渠道（channel_id=0）兜底；逐候选执行 executor(channel)，
-    成功（结果非 None）即返回；每个候选（无论成败）都回写渠道健康状态，
-    失败原因累积进 fallback 列表供任务 meta 溯源。
+    通过 model_router.resolve_channels_chain 解析候选渠道链（user_id 非空时
+    用户自有渠道优先参与路由），并在链尾追加本地 mock 哨兵渠道（channel_id=0）
+    兜底；逐候选执行 executor(channel)，成功（结果非 None）即返回；每个候选
+    （无论成败）都回写渠道健康状态，失败原因累积进 fallback 列表供任务 meta
+    溯源。
 
     Args:
         db: 异步数据库会话（解析渠道链与健康状态回写）。
         capability: 能力类型（image/video/tts，与任务 type 一致）。
         executor: 异步回调 async (channel: ResolvedChannel) -> Optional[Dict]，
             内部按 channel_id==0 分派 mock 或真实 provider。
+        user_id: 用户 ID（非空时其自有渠道优先参与路由；None 仅平台渠道）。
 
     Returns:
         tuple: (生成结果或 None, 实际使用的渠道或 None, fallback 失败列表)；
@@ -849,7 +870,7 @@ async def _generate_with_fallback(
     Raises:
         无：executor 抛出的异常被捕获并计入 fallback，不向上传播。
     """
-    chain = await model_router.resolve_channels_chain(db, capability)
+    chain = await model_router.resolve_channels_chain(db, capability, user_id=user_id)
     chain.append(model_router.mock_sentinel(capability))
     fallback: list = []
     for channel in chain:
@@ -869,6 +890,163 @@ async def _generate_with_fallback(
         await model_router.record_result(db, channel.channel_id, False, error)
         logger.warning("能力 %s 渠道 %s 生成失败：%s", capability, channel.name, error)
     return None, None, fallback
+
+
+async def _face_consistency_gate(
+    db, task: Task, user_id: int, meta: dict, image_url: str
+) -> bool:
+    """面部一致性闸门（P0-4）：角色/变体图回写后与主形象档案比对。
+
+    行为分档：
+    - 首次生成（库中无 kind='face' 主档案）→ 建档放行（返回 True）；
+    - 影子模式（face_consistency_enforce=False，默认）→ 仅把 score 写
+      task.meta["face_score"] 供回测，放行；
+    - 强拦截（enforce=True）且 score < 阈值：
+      未重抽过（meta 无 consistency_retry）→ 自动重抽一次：原任务置 canceled
+      （平台承担退款）+ 重建同 meta 任务（meta["consistency_retry"]=1，重新冻结）；
+      已重抽过 → 任务置 failed（error_code=consistency_failed，平台承担退款），
+      防连环重抽死循环。
+
+    Args:
+        db: 异步数据库会话（调用方资产回写已提交）。
+        task: 已完成的图像任务对象（gate 可能将其改判终态）。
+        user_id: 用户 ID（退款对象）。
+        meta: 任务 meta（target_type/target_id/consistency_retry）。
+        image_url: 本次生成的图像 URL。
+
+    Returns:
+        bool: True=放行走 _succeed_task 扣费；False=任务已被 gate 终结
+            （canceled/failed），调用方不再处理。
+
+    Raises:
+        无：内部吞异常（视觉调用/向量比对失败按跳过校验放行，不阻塞主链路）。
+    """
+    from sqlalchemy import select as _select
+
+    from app.services.face_profile import build_face_profile, compare_face_profile
+
+    target_type = meta.get("target_type")
+    target_id = meta.get("target_id")
+    try:
+        target_id = int(target_id) if target_id else None
+    except (TypeError, ValueError):
+        target_id = None
+
+    # 仅角色定妆照与角色变体图参与面部一致性（场景/道具/关键帧不适用）
+    character: Character | None = None
+    if target_type == "character" and target_id:
+        character = await db.get(Character, target_id)
+    elif target_type == "variant" and target_id:
+        variant = await db.get(AssetVariant, target_id)
+        if variant is not None and variant.owner_type == "character":
+            character = await db.get(Character, variant.owner_id)
+    if character is None:
+        return True
+
+    # 主档案是否存在（kind='face' 向量行）——主 session 只读判断
+    master = (
+        await db.execute(
+            _select(AssetEmbedding).where(
+                AssetEmbedding.asset_type == "character",
+                AssetEmbedding.asset_id == character.id,
+                AssetEmbedding.kind == "face",
+            )
+        )
+    ).scalar_one_or_none()
+
+    # 建档/比对走独立会话：视觉调用与档案写入耗时长且内部可能 rollback，
+    # 隔离后不污染主 session 的 task 对象状态（与通知落库同模式）
+    async with SessionLocal() as sess:
+        if master is None:
+            # 首次生成：建档并放行
+            ch = await sess.get(Character, character.id)
+            if ch is not None:
+                await build_face_profile(sess, ch, image_url)
+            return True
+
+        ch = await sess.get(Character, character.id)
+        if ch is None:
+            return True
+        score = await compare_face_profile(sess, ch, image_url)
+    if score is None:
+        return True  # 比对失败按跳过校验处理
+
+    # 影子模式：记录 score 供回测，放行（基于 task.meta 合并，保留 provider 溯源）
+    task.meta = {**(task.meta or {}), "face_score": score}
+    await db.commit()
+    if not settings.face_consistency_enforce:
+        logger.info(
+            "面部一致性（影子）task=%s character=%s score=%.4f",
+            task.id, character.id, score,
+        )
+        return True
+
+    if score >= settings.face_consistency_threshold:
+        return True
+
+    # 强拦截：低于阈值
+    if not meta.get("consistency_retry"):
+        # 自动重抽一次：原任务置 canceled（平台退款）+ 重建任务（retry=1）
+        task.status = "canceled"
+        task.error_code = "consistency_retry"
+        task.error_message = (
+            f"面部一致性校验未通过（score={score:.4f} < {settings.face_consistency_threshold}），已自动重抽"
+        )
+        await refund_frozen(
+            db,
+            user_id=user_id,
+            amount=task.cost_points,
+            ref_task_id=task.id,
+            idempotency_key=f"task_{task.id}_refund",
+            bear="platform",
+            remark="面部一致性重抽，冻结积分退回",
+        )
+        await db.commit()
+        mark_task("canceled")
+        task_running_delta(-1)
+        # 重建同 meta 任务（重试标记 +1，重新冻结积分）
+        project = await db.get(Project, task.project_id)
+        if project is not None:
+            from uuid import uuid4 as _uuid4
+
+            await freeze_and_create_task(
+                db,
+                project=project,
+                task_type="image",
+                phase=task.phase,
+                cost_points=task.cost_points,
+                meta={**(task.meta or {}), "consistency_retry": 1},
+                idempotency_key=f"img_{character.id}_retry_{_uuid4().hex[:8]}",
+            )
+        logger.warning(
+            "面部一致性未通过，已自动重抽 task=%s character=%s score=%.4f",
+            task.id, character.id, score,
+        )
+        return False
+
+    # 已重抽过仍不达标：终态失败（平台承担退款），防死循环
+    task.status = "failed"
+    task.error_code = "consistency_failed"
+    task.error_message = (
+        f"重抽后面部一致性仍低于阈值（score={score:.4f} < {settings.face_consistency_threshold}）"
+    )
+    await refund_frozen(
+        db,
+        user_id=user_id,
+        amount=task.cost_points,
+        ref_task_id=task.id,
+        idempotency_key=f"task_{task.id}_refund",
+        bear="platform",
+        remark="面部一致性校验未通过，冻结积分退回",
+    )
+    await db.commit()
+    mark_task("failed")
+    task_running_delta(-1)
+    logger.warning(
+        "面部一致性重抽仍不达标 task=%s character=%s score=%.4f",
+        task.id, character.id, score,
+    )
+    return False
 
 
 async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
@@ -895,7 +1073,9 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
     out_dir = settings.storage_path() / "generated"
 
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
-        """单渠道图像生成回调：channel_id==0 走本地 mock，否则走 Agnes 真实渠道。
+        """单渠道图像生成回调：channel_id==0 走本地 mock；dashscope 协议走
+        百炼原生文生图（qwen-image 系列，OpenAI 兼容模式无 images 端点）；
+        其余走 OpenAI images 兼容真实渠道。
 
         Args:
             channel: 当前候选渠道。
@@ -909,17 +1089,22 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         if channel.channel_id == 0:
             return await generate_image(
                 prompt, out_dir, seed=task.id, reference_image_url=reference_image_url)
+        if channel.protocol == "dashscope":
+            return await generate_image_dashscope(
+                prompt, out_dir, task.id, channel, reference_image_url=reference_image_url)
         return await generate_image_real(
             prompt, out_dir, task.id, channel, reference_image_url=reference_image_url)
 
-    result, used_channel, fallback = await _generate_with_fallback(db, "image", _generate)
+    result, used_channel, fallback = await _generate_with_fallback(
+        db, "image", _generate, user_id=user_id)
     if result is None:
         await _fail_task(db, task, user_id, "platform_error", "图像供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
     # provider meta 合并进任务 meta（JSONB 整体重新赋值以触发变更检测）；
     # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）；
-    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
+    # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
     task.meta = {
         **meta,
@@ -927,6 +1112,9 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         "fallback_chain": fallback,
         "provider": provider,
         "placeholder": _is_placeholder_result(result, used_channel),
+        "own_channel_exempt": bool(
+            used_channel and used_channel.owner_user_id == user_id
+        ),
     }
 
     # 内容复审（Task 4.1 图像审核链）：LLM 机审优先，失败降级词表；
@@ -944,19 +1132,28 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
     if target_type == "character" and target_id:
         obj = await db.get(Character, target_id)
         if obj:
+            # P0-3 版本透传：仅替换/重生成时递增（首次生成保持版本 1）
+            if obj.asset_url:
+                obj.asset_version = (obj.asset_version or 1) + 1
             obj.asset_url = result["url"]
             obj.generation_status = "done"
     elif target_type == "scene" and target_id:
         obj = await db.get(Scene, target_id)
         if obj:
+            if obj.asset_url:
+                obj.asset_version = (obj.asset_version or 1) + 1
             obj.asset_url = result["url"]
     elif target_type == "prop" and target_id:
         obj = await db.get(Prop, target_id)
         if obj:
+            if obj.asset_url:
+                obj.asset_version = (obj.asset_version or 1) + 1
             obj.asset_url = result["url"]
     elif target_type == "variant" and target_id:
         obj = await db.get(AssetVariant, target_id)
         if obj:
+            if obj.asset_url:
+                obj.asset_version = (obj.asset_version or 1) + 1
             obj.asset_url = result["url"]
     elif target_type == "storyboard_keyframe" and target_id:
         sb = await db.get(Storyboard, target_id)
@@ -979,6 +1176,10 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         meta={"task_id": task.id, "target_type": target_type, "target_id": target_id},
     ))
     await db.commit()
+    # P0-4 面部一致性闸门：角色/角色变体图回写后比对主形象档案；
+    # 返回 False 表示任务已被闸门改判终态（canceled 重抽 / failed），跳过扣费
+    if not await _face_consistency_gate(db, task, user_id, meta, result["url"]):
+        return
     await _succeed_task(db, task, user_id)
 
 
@@ -1062,7 +1263,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     used_channel: Optional[ResolvedChannel] = None
     queue_rounds = int(meta.get("queue_wait_rounds", 0) or 0)
     for _ in range(_VIDEO_QUEUE_WAIT_ROUNDS):
-        result, used_channel, fallback = await _generate_with_fallback(db, "video", _generate)
+        result, used_channel, fallback = await _generate_with_fallback(
+            db, "video", _generate, user_id=user_id)
         queue_hit = any("队列满" in str(f.get("error", "")) for f in fallback)
         if result is not None or not queue_hit:
             break
@@ -1080,7 +1282,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         return
     task.result_url = result["url"]
     # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）；
-    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
+    # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
     task.meta = {
         **meta,
@@ -1088,6 +1291,9 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         "fallback_chain": fallback,
         "provider": provider,
         "placeholder": _is_placeholder_result(result, used_channel),
+        "own_channel_exempt": bool(
+            used_channel and used_channel.owner_user_id == user_id
+        ),
     }
 
     # 视频首帧视觉机审（Task 7 / R-08）：violate 时任务置 failed 退款并触发分级处罚；
@@ -1142,14 +1348,16 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
             return await generate_tts(text, voice, out_dir)
         return await generate_tts_real(text, voice, out_dir, channel)
 
-    result, used_channel, fallback = await _generate_with_fallback(db, "tts", _generate)
+    result, used_channel, fallback = await _generate_with_fallback(
+        db, "tts", _generate, user_id=user_id)
     if result is None:
         await _fail_task(db, task, user_id, "platform_error", "语音供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
     # provider meta 合并进任务 meta，duration_sec 置于其后防覆盖（RD-31 依据），
     # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）；
-    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）
+    # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
+    # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
     provider = (result.get("meta") or {}).get("provider") or (used_channel.name if used_channel else "mock")
     task.meta = {
         **meta,
@@ -1158,6 +1366,9 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         "fallback_chain": fallback,
         "provider": provider,
         "placeholder": _is_placeholder_result(result, used_channel),
+        "own_channel_exempt": bool(
+            used_channel and used_channel.owner_user_id == user_id
+        ),
     }
     storyboard_id = meta.get("storyboard_id")
     if storyboard_id:

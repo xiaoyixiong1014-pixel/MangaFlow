@@ -51,6 +51,8 @@ class Character(Base):
         role_type: 角色定位（P-1）：lead 主角 / support 配角 / villain 反派 / extra 群像。
         age: 年龄设定（P-1，字符串承载"约30岁/少年"等弹性表述）。
         personality: 性格设定（P-1）。
+        outfit: 服装配饰完整拆解（角色圣经：上装/下装/鞋履/配饰/标志性物品）。
+        style_note: 风格与画质特点（角色圣经：画风/光线/画质关键词）。
         motivation: 行为动机（P-1）。
         arc: 人物弧光（P-1）。
         relations: 人物关系数组（P-1，JSONB：[{target, relation}]）。
@@ -79,6 +81,12 @@ class Character(Base):
     # 预留 pgvector 升级点：原 vector(1024)，本机无 pgvector，以 JSONB 承载
     feature_vector: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="面部特征向量（JSONB，预留 pgvector 升级点）")
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="主定妆照 URL")
+    # P0-3 版本透传：定妆照首次生成置 1，替换/重生成回写时 +1（分镜引用记录快照判过期）
+    asset_version: Mapped[int] = mapped_column(
+        server_default="1", nullable=False, comment="资产图版本号（P0-3：图回写/替换时递增）")
+    # P0-4 视觉一致性：Agnes 视觉模型提取的结构化面部档案（JSON，可空=尚未建档）
+    face_profile: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, comment="面部档案（Agnes 视觉提取的结构化特征 JSON，P0-4）")
     face_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false",
                                               comment="面部层锁定（RD-12）")
     outfit_variant_id: Mapped[Optional[int]] = mapped_column(
@@ -101,6 +109,10 @@ class Character(Base):
         String(20), nullable=True, comment="年龄设定（P-1，字符串容纳约30岁/少年等弹性表述）")
     personality: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="性格设定（P-1）")
+    outfit: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="服装配饰完整拆解（角色圣经：上装/下装/鞋履/配饰）")
+    style_note: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="风格与画质特点（角色圣经：画风/光线/画质关键词）")
     motivation: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="行为动机（P-1）")
     arc: Mapped[Optional[str]] = mapped_column(
@@ -111,6 +123,11 @@ class Character(Base):
         TIMESTAMP(timezone=True), nullable=True, comment="角色设定确认时间（P-1；NULL=候选/未确认）")
     deleted_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
+    # 按集工作流：角色设定确认后 enabled_at=NULL（流水线内部数据，不进资产管理），
+    # 用户经「启用资产」抽取确认入池时置 now（出现在资产管理并可参与分镜/生成）
+    enabled_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True,
+        comment="资产启用时间（角色设定确认=NULL 不进资产管理；启用资产确认=now）")
 
 
 class Scene(Base):
@@ -143,6 +160,9 @@ class Scene(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="场景描述")
     visual_prompt: Mapped[str] = mapped_column(Text, nullable=False, comment="视觉提示词")
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="概念图 URL（空场景允许为空）")
+    # P0-3 版本透传：概念图首次生成置 1，替换/重生成回写时 +1
+    asset_version: Mapped[int] = mapped_column(
+        server_default="1", nullable=False, comment="资产图版本号（P0-3：图回写/替换时递增）")
     space_signature: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="空间布局签名（RD-19）")
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", comment="锁定状态")
     source: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual",
@@ -187,6 +207,9 @@ class Prop(Base):
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="描述")
     visual_prompt: Mapped[str] = mapped_column(Text, nullable=False, comment="视觉提示词")
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="标准图 URL")
+    # P0-3 版本透传：标准图首次生成置 1，替换/重生成回写时 +1
+    asset_version: Mapped[int] = mapped_column(
+        server_default="1", nullable=False, comment="资产图版本号（P0-3：图回写/替换时递增）")
     ownership: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True, comment="归属关系（RD-18）")
     is_locked: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="false", comment="锁定状态")
     source: Mapped[str] = mapped_column(String(30), nullable=False, server_default="manual",
@@ -208,6 +231,7 @@ class Style(Base):
         visual_prompt: 风格提示词（全局锚点）。
         is_default: 是否项目默认风格（部分唯一索引 uk_styles_default）。
         tags: 资产标签数组（A-05 标签搜索）。
+        deleted_at: 软删除时间（P2 统一：与 characters/scenes/props 软删语义对齐）。
     """
 
     __tablename__ = "styles"
@@ -227,6 +251,9 @@ class Style(Base):
                                              comment="是否项目默认风格")
     # A-05 资产标签：JSONB 字符串数组，列表接口支持 ?tag= 包含匹配（@>）
     tags: Mapped[Optional[list]] = mapped_column(JSONB, nullable=True, comment="资产标签数组（A-05 标签搜索）")
+    # P2 软删统一：与 characters/scenes/props 对齐（原 styles 为物理删除特判）
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(
+        TIMESTAMP(timezone=True), nullable=True, comment="软删除时间")
 
 
 class AssetVariant(Base):
@@ -263,5 +290,8 @@ class AssetVariant(Base):
     name: Mapped[str] = mapped_column(String(50), nullable=False, comment="变体名（如战斗装、夜景）")
     inherit_mask: Mapped[dict] = mapped_column(JSONB, nullable=False, comment="显式继承/独立声明（RD-14）")
     asset_url: Mapped[Optional[str]] = mapped_column(String(255), nullable=True, comment="变体图 URL")
+    # P0-3 版本透传：变体图首次生成置 1，替换/重生成回写时 +1
+    asset_version: Mapped[int] = mapped_column(
+        server_default="1", nullable=False, comment="资产图版本号（P0-3：图回写/替换时递增）")
     visual_prompt: Mapped[Optional[str]] = mapped_column(Text, nullable=True, comment="变体提示词")
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default="true", comment="是否启用")

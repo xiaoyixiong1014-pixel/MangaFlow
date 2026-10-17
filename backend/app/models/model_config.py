@@ -18,6 +18,7 @@ class ModelChannel(Base):
     """模型渠道表（§5.3.23 model_channels，PL-07）。
 
     Attributes:
+        name: 渠道备注名（用户自有渠道展示用，可空；平台渠道由系统管理无备注）。
         protocol: 协议类型（如 openai 兼容协议）。
         base_url: 接口地址。
         api_key_encrypted: AES 加密后的 API Key（本阶段种子数据暂存明文，
@@ -38,6 +39,8 @@ class ModelChannel(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    name: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True, comment="渠道备注名（用户自有渠道展示用）")
     protocol: Mapped[str] = mapped_column(String(30), nullable=False, comment="协议类型")
     base_url: Mapped[str] = mapped_column(String(255), nullable=False, comment="接口地址")
     api_key_encrypted: Mapped[Optional[str]] = mapped_column(

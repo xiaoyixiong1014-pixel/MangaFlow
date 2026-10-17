@@ -10,6 +10,7 @@
 
 from datetime import datetime, timezone
 from uuid import uuid4
+import json
 from typing import Any, Dict, List, Optional, Tuple
 
 import logging
@@ -26,6 +27,7 @@ from app.models import (
     Project,
     Prop,
     Scene,
+    Script,
     Style,
     Task,
     VersionSnapshot,
@@ -36,15 +38,36 @@ from app.schemas.asset import (
     PROP_VARIANT_TYPES,
     SCENE_VARIANT_TYPES,
 )
+from app.agents.llm_adapter import llm
 from app.services import vector_store
 from app.services.generation_service import freeze_and_create_task
-from app.services.script_service import DEFAULT_VISUAL_TEMPLATE, get_owned_project
+from app.services.script_service import (
+    DEFAULT_VISUAL_TEMPLATE,
+    get_owned_project,
+    strip_json_fences,
+    unwrap_scenes,
+)
 
 # 角色定妆照生成单价（积分/张，与 generation_service.IMAGE_COST_PER_FRAME 保持一致）
 CHARACTER_IMAGE_COST = 10
 
-# 各资产类型 -> (ORM 类, 允许的变体类型集合)
-_ASSET_CLS = {"character": Character, "scene": Scene, "prop": Prop}
+# 定妆照四格横向排版固定构图模板（角色形象定调参考图）：无论 visual_prompt 还是
+# 用户覆盖 prompt，最终提示词均追加该段构图指令，保证所有定妆照输出形态统一——
+# 1 张面部特写 + 3 张全身多视角（正面/四分之三侧/背面），纯白无影背景，
+# 便于统一不同镜头的人物形象与穿搭
+CHARACTER_PORTRAIT_SHEET_PROMPT = (
+    "采用1张面部特写+3张全身多视角的四格横向排版，纯白无影背景，无多余元素干扰："
+    "左侧为正面头部以上特写，聚焦面部五官、发型细节与上半身服装配饰；"
+    "右侧横向依次排列正面全身、四分之三侧全身、背面全身，"
+    "完整展示人物体型、服装前后侧全貌与身形线条；"
+    "整体构图规整统一，信息维度完整，作为漫剧/真人短视频的角色定调参考图，"
+    "便于统一不同镜头的人物形象与穿搭。"
+)
+
+# 各资产类型 -> (ORM 类, 允许的变体类型集合)。
+# P2 styles 软删统一后 style 同样具备 deleted_at，纳入映射使
+# ensure_unique_name / get_asset_or_404 对四类资产行为一致（软删行排除）。
+_ASSET_CLS = {"character": Character, "scene": Scene, "prop": Prop, "style": Style}
 _VARIANT_TYPES = {
     "character": CHARACTER_VARIANT_TYPES,
     "scene": SCENE_VARIANT_TYPES,
@@ -140,38 +163,82 @@ async def set_default_style(db: AsyncSession, project_id: int, style: Style) -> 
     style.is_default = True
 
 
-async def create_character_image_task(
-    db: AsyncSession, project: Project, character: Character, prompt: Optional[str]
+async def create_asset_image_task(
+    db: AsyncSession, project: Project, asset_type: str, asset: Any, prompt: Optional[str]
 ) -> Dict[str, Any]:
-    """角色定妆照生成：冻结积分 + 建任务入队 + 置 generating 状态。
+    """资产图生成任务（角色定妆照 / 场景概念图 / 道具标准图）：冻结积分 + 入队 + 置生成态。
 
     计费与任务约定：
-    - cost = 10 积分/张；
-    - 幂等键 img_{character_id}_{uuid8}，同时作为任务幂等键与冻结流水幂等键；
+    - cost = 10 积分/张（三类一致，CHARACTER_IMAGE_COST）；
+    - 幂等键 img_{asset_type}_{id}_{uuid8}，同时作为任务幂等键与冻结流水幂等键；
     - 任务 meta 携带 target_type/target_id/prompt（tasks.meta JSONB 字段，
-      任务执行器 runner 据此回写资产状态）；角色配置了参考图（A-04）时
-      meta 追加 reference_image_url，执行器把该参考图透传给图像渠道。
+      任务执行器 runner._run_image 据此回写资产 asset_url，三类分支齐备）；
+    - 角色提示词固定拼接四格横向排版构图模板（CHARACTER_PORTRAIT_SHEET_PROMPT）；
+      场景/道具提示词为六要素合成文本（用户在编辑提示词抽屉确认），不追加模板；
+    - 配置了参考图（A-04，角色/场景）时 meta 追加 reference_image_url，
+      执行器把该参考图透传给图像渠道；
+    - 角色置 generation_status='generating'（列表轮询依赖该字段）；场景/道具
+      无该字段，前端以任务 ID 轮询终态后刷新。
 
     Args:
         db: 异步数据库会话。
         project: 已校验归属的项目。
-        character: 角色 ORM 对象。
-        prompt: 覆盖用提示词（空则用角色 visual_prompt）。
+        asset_type: 资产类型 character/scene/prop。
+        asset: 对应资产 ORM 对象。
+        prompt: 覆盖用提示词（空则用资产 visual_prompt；角色额外拼构图模板）。
 
     Returns:
         Dict[str, Any]: 落库后的任务字典（id/type/phase/status/cost_points 等）。
 
     Raises:
-        HTTPException: 409 —— 积分余额不足；400 —— 参数非法（透传自 billing_service）。
+        HTTPException: 400 —— asset_type 非法；409 —— 积分不足或已有进行中任务。
     """
-    final_prompt = (prompt or character.visual_prompt or "").strip()
-    idem = f"img_{character.id}_{uuid4().hex[:8]}"
-    # A-04 参考图锚点：角色配置了参考图时写入任务 meta（执行器透传给 provider）
+    if asset_type not in ("character", "scene", "prop"):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
+                            detail="asset_type 仅支持 character/scene/prop")
+    base_prompt = (prompt or asset.visual_prompt or "").strip()
+    if asset_type == "character":
+        # 定妆照构图统一：角色提示词（角色圣经前缀/覆盖 prompt）+ 四格横向排版模板
+        final_prompt = (
+            f"{base_prompt}。{CHARACTER_PORTRAIT_SHEET_PROMPT}" if base_prompt
+            else CHARACTER_PORTRAIT_SHEET_PROMPT
+        )
+    else:
+        # 场景/道具：六要素合成提示词已含构图语义；生成时统一追加项目画风锚点
+        # （六要素的 style_base 可能在人工编辑时漂移，以项目画风收口保证跨资产
+        # 风格一致）+ 全局负面约束（禁文字/水印/UI 元素，防游戏化图标混入）
+        style_anchor = (project.style or "").strip()
+        prefix = (
+            f"统一{style_anchor}画风插画，与项目内其他场景/道具保持同一视觉基调。"
+            if style_anchor else ""
+        )
+        suffix = "画面中不得出现任何文字、水印、UI 元素、游戏图标。"
+        final_prompt = f"{prefix}{base_prompt}。{suffix}" if base_prompt else f"{prefix}{suffix}"
+    # P2 防重复扣分：同资产存在未终态（queued/running）生成任务时拒绝重复入队。
+    # 以「未终态任务存在性」作为幂等闸门（任务自然终结后可再次发起）。
+    running = (
+        await db.execute(
+            select(Task).where(
+                Task.type == "image",
+                Task.status.in_(["queued", "running"]),
+                Task.meta["target_type"].astext == asset_type,
+                Task.meta["target_id"].astext == str(asset.id),
+            ).limit(1)
+        )
+    ).scalar_one_or_none()
+    if running is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"该资产已有进行中的生成任务（任务 #{running.id}），请等待完成后再试",
+        )
+    idem = f"img_{asset_type}_{asset.id}_{uuid4().hex[:8]}"
     task_meta: Dict[str, Any] = {
-        "target_type": "character", "target_id": character.id, "prompt": final_prompt,
+        "target_type": asset_type, "target_id": asset.id, "prompt": final_prompt,
     }
-    if character.reference_image_url:
-        task_meta["reference_image_url"] = character.reference_image_url
+    # A-04 参考图锚点：角色/场景配置了参考图时写入任务 meta（执行器透传给 provider）
+    reference_image_url = getattr(asset, "reference_image_url", None)
+    if reference_image_url:
+        task_meta["reference_image_url"] = reference_image_url
     task = await freeze_and_create_task(
         db,
         project=project,
@@ -181,8 +248,10 @@ async def create_character_image_task(
         meta=task_meta,
         idempotency_key=idem,
     )
-    # 冻结成功后再置生成状态（freeze_and_create_task 内部已提交事务）
-    character.generation_status = "generating"
+    # 冻结成功后再置生成状态（freeze_and_create_task 内部已提交事务）；
+    # 场景/道具无 generation_status 字段，前端以任务轮询感知
+    if asset_type == "character":
+        asset.generation_status = "generating"
     await db.commit()
     return {
         "id": task.id,
@@ -335,14 +404,16 @@ def _embedding_model_tag(text: str, vector: List[float]) -> str:
 
 
 async def upsert_asset_embedding(
-    db: AsyncSession, asset_type: str, asset_id: int, text: str
+    db: AsyncSession, asset_type: str, asset_id: int, text: str, kind: str = "text"
 ) -> None:
     """将资产文本向量化并 upsert 到 asset_embeddings 表（RD-15）。
 
     - 远程 /embeddings 失败时 embed_text 自动降级 hash-bag，任何环境可用；
-    - asset_embeddings 表无 (asset_type, asset_id) 唯一约束，采用「先查后写」；
+    - asset_embeddings 表无 (asset_type, asset_id, kind) 唯一约束，采用「先查后写」；
     - embedding JSONB 存 {"vector", "text_preview", "updated_at"} 结构，
       model 列存 "remote" | "hash-bag"；
+    - kind 区分向量类别（P0-4）：text 文本特征 / face 面部档案特征，
+      同一资产两类向量各存一行互不覆盖；
     - pgvector 可用时同步双写影子列 embedding_vec（SAVEPOINT 隔离，失败仅
       告警，不影响 JSONB 主存储）；
     - 自带独立 commit 且全程吞异常：失败仅告警，绝不影响调用方主流程。
@@ -352,6 +423,7 @@ async def upsert_asset_embedding(
         asset_type: 资产类型 character / scene / prop / style。
         asset_id: 资产 ID。
         text: 用于向量化的资产文本（名称/描述/视觉提示词拼合）。
+        kind: 向量类别 text / face（P0-4，默认 text 不影响既有调用方）。
 
     Returns:
         None。
@@ -374,6 +446,7 @@ async def upsert_asset_embedding(
                 select(AssetEmbedding).where(
                     AssetEmbedding.asset_type == asset_type,
                     AssetEmbedding.asset_id == asset_id,
+                    AssetEmbedding.kind == kind,
                 )
             )
         ).scalar_one_or_none()
@@ -383,6 +456,7 @@ async def upsert_asset_embedding(
                 asset_id=asset_id,
                 embedding=payload,
                 model=_embedding_model_tag(text, vector),
+                kind=kind,
             )
             db.add(obj)
             # flush 取得自增 id 并先发出 INSERT，影子列 UPDATE 才能在同一事务内命中该行
@@ -390,12 +464,15 @@ async def upsert_asset_embedding(
         else:
             row.embedding = payload  # 赋新 dict 触发 JSONB 更新
             row.model = _embedding_model_tag(text, vector)
-        # pgvector 双写：影子列与 JSONB 同事务提交（内部 SAVEPOINT 隔离失败）
-        await vector_store.sync_asset_embedding_vec(db, asset_type, asset_id, vector)
+        # pgvector 双写：影子列与 JSONB 同事务提交（内部 SAVEPOINT 隔离失败）。
+        # 影子列仅服务语义搜索（text 向量），face 向量走 Python 侧比对，跳过双写
+        # 避免覆盖同资产的 text 影子向量。
+        if kind == "text":
+            await vector_store.sync_asset_embedding_vec(db, asset_type, asset_id, vector)
         await db.commit()
     except Exception as exc:  # noqa: BLE001 —— 向量化写入失败不影响资产主流程
         logger.warning(
-            "资产向量 upsert 失败（%s/%s）：%s", asset_type, asset_id, exc
+            "资产向量 upsert 失败（%s/%s kind=%s）：%s", asset_type, asset_id, kind, exc
         )
         await db.rollback()
 
@@ -432,9 +509,9 @@ async def _semantic_search_assets_pgvector(
     qv = vector_store.vector_literal(qvec)
     results: List[Dict[str, Any]] = []
     for t in types:
-        cls = Style if t == "style" else _ASSET_CLS[t]
-        # style 无软删字段，其余类型排除软删行（与 Python 路径条件一致）
-        del_cond = "" if t == "style" else " AND c.deleted_at IS NULL"
+        cls = _ASSET_CLS[t]
+        # 四类统一软删过滤（P2 起 style 亦具备 deleted_at）
+        del_cond = " AND c.deleted_at IS NULL"
         sql = sa_text(
             "SELECT ae.asset_id AS asset_id, c.name AS name, ae.embedding AS embedding, "
             "c.visual_prompt AS visual_prompt, "
@@ -492,7 +569,7 @@ async def semantic_search_assets(
     """
     types = [asset_type] if asset_type else ["character", "scene", "prop", "style"]
     for t in types:
-        if t not in _ASSET_CLS and t != "style":
+        if t not in _ASSET_CLS:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                                 detail="type 仅支持 character/scene/prop/style")
 
@@ -508,11 +585,10 @@ async def semantic_search_assets(
     # ---------- Python 降级路径：全量遍历 + 余弦（行为与既有实现一致） ----------
     results: List[Dict[str, Any]] = []
     for t in types:
-        cls = Style if t == "style" else _ASSET_CLS[t]
-        # 归属过滤：项目属于当前用户且项目未删；资产软删行排除（style 无软删字段）
-        conds = [Project.user_id == user_id, Project.deleted_at.is_(None)]
-        if t != "style":
-            conds.append(cls.deleted_at.is_(None))
+        cls = _ASSET_CLS[t]
+        # 归属过滤：项目属于当前用户且项目未删；资产软删行排除（P2 起 style 亦软删）
+        conds = [Project.user_id == user_id, Project.deleted_at.is_(None),
+                 cls.deleted_at.is_(None)]
         rows = (
             await db.execute(
                 select(AssetEmbedding, cls)
@@ -764,3 +840,197 @@ async def unlock_character(db: AsyncSession, character: Character) -> Character:
     await db.commit()
     await db.refresh(character)
     return character
+
+
+# ---------------------------------------------------------------------------
+# AI 提示词要素识别（场景/道具六要素：agent 从剧本正文提取）
+# ---------------------------------------------------------------------------
+
+# 场景六要素识别 system 提示词（键名固定描述，不写死示例值防 LLM 照抄）
+_SCENE_PROMPT_SYSTEM = (
+    "你是动漫剧项目的场景视觉提示词设计师。请通读给出的剧本内容，仅围绕目标场景，"
+    "从剧本中识别以下六大要素并输出严格 JSON（禁止输出任何其他文字）：\n"
+    "style_base：画风基底（与剧本整体气质匹配的画风描述，一句话）；\n"
+    "space_type：空间类型（该场景属于什么功能性空间）；\n"
+    "anchors：字符串数组，3~5 个核心视觉锚点（须是剧本可推断的具体物体/结构，"
+    "不足时补合理细节，不超过 5 个）；\n"
+    "lighting：光照氛围；\n"
+    "composition：构图/视角偏好（适配竖屏漫剧背景图）；\n"
+    "negative：负面约束（画面中不应出现的元素，用顿号分隔，必须包含人物、文字水印）。\n"
+    "仅输出 JSON 对象，键名必须与上述完全一致。"
+)
+
+# 道具六要素识别 system 提示词
+_PROP_PROMPT_SYSTEM = (
+    "你是动漫剧项目的道具视觉提示词设计师。请通读给出的剧本内容，仅围绕目标道具，"
+    "从剧本中识别以下六大要素并输出严格 JSON（禁止输出任何其他文字）：\n"
+    "scale_ref：尺度参照（道具与常见物体的相对大小）；\n"
+    "anchors：字符串数组，3~5 个核心视觉锚点（剧本可推断的形状/部件特征）；\n"
+    "material：材质与表面工艺；\n"
+    "marker：唯一标记（让该道具可辨识的独有特征）；\n"
+    "usage：功能与操作方式；\n"
+    "text_policy：可读文字政策（道具表面是否出现文字及处理方式，如仅允许品牌字样）。\n"
+    "仅输出 JSON 对象，键名必须与上述完全一致。"
+)
+
+# 场景/道具要素的非数组键名清单（数组键 anchors 单独规整）
+_SCENE_ELEMENT_KEYS = ("style_base", "space_type", "lighting", "composition", "negative")
+_PROP_ELEMENT_KEYS = ("scale_ref", "material", "marker", "usage", "text_policy")
+
+
+def _normalize_prompt_elements(data: Dict[str, Any], asset_type: str) -> Dict[str, Any]:
+    """规整 LLM 输出的六要素 dict（键名固定、anchors 数组去空限 5、全部转字符串）。
+
+    Args:
+        data: LLM 输出解析后的 dict。
+        asset_type: 资产类型 scene/prop。
+
+    Returns:
+        Dict[str, Any]: {"<要素键>": str..., "anchors": [str, ...]}。
+
+    Raises:
+        无：缺省键置空串（前端合成时由调用方校验）。
+    """
+    elements: Dict[str, Any] = {}
+    for key in (_SCENE_ELEMENT_KEYS if asset_type == "scene" else _PROP_ELEMENT_KEYS):
+        elements[key] = str(data.get(key) or "").strip()
+    anchors = data.get("anchors")
+    elements["anchors"] = (
+        [str(a).strip() for a in anchors if str(a or "").strip()][:5]
+        if isinstance(anchors, list) else []
+    )
+    return elements
+
+
+async def _build_asset_script_context(
+    db: AsyncSession, project: Project, asset_type: str, name: str
+) -> str:
+    """收集项目全部剧本行中与目标场景/道具相关的正文段落（AI 识别取源）。
+
+    场景：收集 location 与场景名精确/包含匹配的场次块（镜头头 + 剧情 + 对白）；
+    道具：收集正文（标题/剧情/对白）中出现道具名的行块。块间空行拼接，
+    整体截断 6000 字符防超长。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project: 已校验归属的项目。
+        asset_type: 资产类型 scene/prop。
+        name: 资产名（匹配依据）。
+
+    Returns:
+        str: 相关正文段落聚合文本（可能为空串=剧本无相关内容）。
+
+    Raises:
+        无：无剧本行/结构不符时返回空串。
+    """
+    rows = (
+        await db.execute(
+            select(Script).where(Script.project_id == project.id).order_by(Script.id.asc())
+        )
+    ).scalars().all()
+    blocks: List[str] = []
+    for row in rows:
+        for sc in unwrap_scenes(row.content if isinstance(row.content, dict) else None):
+            title = str(sc.get("title") or "").strip()
+            location = str(sc.get("location") or "").strip()
+            plot = str(sc.get("plot") or "").strip()
+            dlg_lines: List[str] = []
+            for dlg in (sc.get("dialogue") or []):
+                if not isinstance(dlg, dict):
+                    continue
+                char = str(dlg.get("character") or "").strip()
+                line = str(dlg.get("line") or "").strip()
+                dlg_lines.append(f"{char}：{line}" if char and line else line)
+            dlg_text = "\n".join(x for x in dlg_lines if x)
+            if asset_type == "scene":
+                # 场景块：location 匹配（精确优先，包含兜底）
+                if not name or not (location == name or name in location):
+                    continue
+                head = (
+                    f"镜头{sc.get('scene_no', '')}《{title}》"
+                    f"（地点：{location or '未标注'}，{sc.get('time_of_day') or ''}，"
+                    f"{sc.get('int_ext') or ''}）"
+                )
+                blocks.append("\n".join(x for x in (head.strip(), plot, dlg_text) if x.strip()))
+            else:
+                # 道具块：正文（标题/剧情/对白）中出现道具名即收集
+                body = "\n".join(x for x in (title, plot, dlg_text) if x.strip())
+                if name and name in body:
+                    blocks.append(body)
+    # 去重保序（同块多场次重复出现）+ 截断
+    seen: set = set()
+    uniq: List[str] = []
+    for block in blocks:
+        key = block[:80]
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(block)
+    return "\n\n".join(uniq)[:6000]
+
+
+async def suggest_asset_prompt(
+    db: AsyncSession, project: Project, asset_type: str, asset: Any
+) -> Dict[str, Any]:
+    """AI 识别场景/道具视觉提示词六要素（agent 从剧本正文提取）。
+
+    取源：项目全部剧本行中与该资产相关的正文段落（_build_asset_script_context）；
+    识别：LLM json_mode 输出六要素（场景=画风基底/空间类型/核心锚点/光照氛围/
+    构图视角/负面约束；道具=尺度参照/核心锚点/材质工艺/唯一标记/功能操作/
+    可读文字政策）。仅返回要素（不合成提示词）——合成与用户确认编辑在前端完成。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project: 已校验归属的项目。
+        asset_type: 资产类型 scene/prop（路由层已校验）。
+        asset: 场景/道具 ORM 对象。
+
+    Returns:
+        Dict[str, Any]: {"type": asset_type, "elements": {六要素键: 值}}。
+
+    Raises:
+        HTTPException: 400 —— 剧本正文无相关内容；502 —— LLM 识别失败。
+    """
+    name = str(asset.name or "").strip()
+    context = await _build_asset_script_context(db, project, asset_type, name)
+    if not context.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="剧本正文中未找到与该资产相关的内容，请先生成或保存剧本正文",
+        )
+    system = _SCENE_PROMPT_SYSTEM if asset_type == "scene" else _PROP_PROMPT_SYSTEM
+    kind_label = "场景" if asset_type == "scene" else "道具"
+    # 画风硬约束：style_base 锚定项目创建时选定的画风——所有场景/道具的识别
+    # 结果共享同一画风基底，保证跨资产风格一致（LLM 逐场景自拟画风会漂移）
+    style_anchor = (project.style or "").strip()
+    style_line = (
+        f"\n【画风硬约束】style_base 必须为「{style_anchor}」，全项目场景/道具"
+        "画风统一，禁止自拟其他画风。" if style_anchor else ""
+    )
+    try:
+        text = await llm.chat(
+            None,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": (
+                    f"目标{kind_label}：{name}{style_line}\n\n剧本内容：\n{context}"
+                )},
+            ],
+            agent_name="asset_prompt_suggest",
+            json_mode=True,
+            temperature=0.3,
+        )
+        data = json.loads(strip_json_fences(text))
+        if not isinstance(data, dict):
+            raise ValueError(f"LLM 输出非 dict（type={type(data).__name__}）")
+        elements = _normalize_prompt_elements(data, asset_type)
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 —— LLM 失败统一 502，前端提示手写兜底
+        logger.warning("AI 识别提示词要素失败（asset_type=%s name=%s）", asset_type, name,
+                       exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail="AI 识别失败，请稍后重试或手写提示词",
+        )
+    return {"type": asset_type, "elements": elements}

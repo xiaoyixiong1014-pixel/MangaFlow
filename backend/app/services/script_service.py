@@ -26,8 +26,10 @@ import copy
 import difflib
 import hashlib
 import json
+import logging
 import re
 from collections import Counter
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
@@ -35,7 +37,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.llm_adapter import llm
-from app.models import Character, Project, Prop, Scene, Script, VersionSnapshot
+from app.models import Character, Project, Prop, Scene, Script, Style, VersionSnapshot
 from app.schemas.script import validate_script_content
 
 # visual_prompt 缺省中文模板（抽取确认 / 手工建角色共用）
@@ -71,28 +73,35 @@ def build_character_bible_prompt(
 
 
 def extract_appearance_from_description(description: Optional[str]) -> Optional[str]:
-    """从 characters.description 人设摘要中提取「外观：」段（外貌锁定用）。
+    """从 characters.description 人设摘要中提取视觉三段（外貌锁定用）。
 
     characters.description 由 build_profile_description 以「性格：…；外观：…；
-    动机：…；弧光：…」格式拼接，本函数按全角分号分段取「外观：」后的内容，
-    供分镜锁定层/角色圣经在不新增列的前提下拿到纯视觉描述。
+    服装配饰：…；风格画质：…；动机：…；弧光：…」格式拼接，本函数按全角分号
+    分段，拼回「外观 + 服装配饰 + 风格画质」三个视觉段（旧数据无后两段时
+    自动降级为仅外观），供分镜锁定层/角色圣经拿到完整视觉锁定描述。
 
     Args:
         description: 角色人设摘要（可空；抽取/手工建角色的旧数据可能无该段）。
 
     Returns:
-        Optional[str]: 外观描述文本（无「外观：」段或为空时返回 None）。
+        Optional[str]: 视觉三段拼接文本（以「；」连接；无任何视觉段返回 None）。
 
     Raises:
         无：纯字符串处理。
     """
     if not description:
         return None
+    visual_keys = ("外观：", "服装配饰：", "风格画质：")
+    parts: List[str] = []
     for seg in str(description).split("；"):
         seg = seg.strip()
-        if seg.startswith("外观："):
-            return seg[len("外观："):].strip() or None
-    return None
+        for key in visual_keys:
+            if seg.startswith(key):
+                text = seg[len(key):].strip()
+                if text:
+                    parts.append(text)
+                break
+    return "；".join(parts) or None
 
 # 低置信度阈值：抽取条目 confidence 低于该值时标记 low_confidence（前端标黄）
 LOW_CONFIDENCE_THRESHOLD = 0.7
@@ -104,6 +113,34 @@ DEFAULT_TARGET_DURATION = 180
 
 # 规则路：对白行"角色名：台词"的角色名提取（行首 1~10 位中文/字母/数字，后接冒号）
 _DIALOGUE_NAME_RE = re.compile(r"^\s*([\u4e00-\u9fa5A-Za-z0-9·]{1,10})\s*[：:]\s*\S+", re.M)
+
+# 规则路：场景抽取标记行（P0-2：「内景/外景XXX」「场景：XXX」「第X场 XXX」三种格式）
+_SCENE_MARK_RE = re.compile(
+    r"(?:^|\n)\s*(?:(?:内景|外景)[\s\-—·]*([\u4e00-\u9fa5A-Za-z0-9]{2,12}?)"
+    r"(?=\s|$|[，。：:,，])"
+    r"|(?:场景|地点|第[一二三四五六七八九十\d]+场)\s*[：:]?\s*"
+    r"([\u4e00-\u9fa5A-Za-z0-9]{2,12})(?=\s|$|[，。：:,，]))"
+)
+
+# 规则路：场景后缀词表兜底（全文统计命中，弥补无标记行格式的剧本）
+_SCENE_SUFFIXES = (
+    "咖啡馆", "咖啡店", "教室", "办公室", "会议室", "医院", "诊所", "学校", "操场",
+    "公园", "酒吧", "餐厅", "食堂", "厨房", "卧室", "客厅", "书房", "浴室", "房间",
+    "走廊", "楼道", "天台", "阳台", "地下室", "车库", "电梯", "地铁站", "车站",
+    "码头", "机场", "街上", "街头", "小巷", "广场", "商场", "超市", "便利店",
+    "图书馆", "体育馆", "实验室", "宿舍", "旅馆", "酒店", "森林", "山顶", "海边",
+    "河边", "湖边", "桥上", "陵园", "寺庙", "祠堂", "家门口", "院子里", "屋顶",
+)
+
+# LLM 实体抽取键名别名归并表（P0-2：LLM 键名漂移容错，如 locations→scenes）
+_ENTITY_GROUP_ALIASES: Dict[str, Tuple[str, ...]] = {
+    "characters": ("characters", "roles", "persons", "人物", "角色"),
+    "scenes": ("scenes", "locations", "places", "settings", "场景", "地点"),
+    "props": ("props", "items", "objects", "道具", "物品"),
+}
+
+# 本模块日志器（P0-2：抽取降级/全空不再静默）
+logger = logging.getLogger("mangaflow.script_service")
 
 # 规则路 2-3 字中文高频词候选的停用词（虚词/常见代词等，避免噪声实体）
 _STOPWORDS = frozenset({
@@ -1123,12 +1160,23 @@ def build_extract_source_text(script: Script) -> str:
             text_line = f"{act.get('act', '')}：{act.get('summary', '')}".strip("：")
             if text_line:
                 lines.append(text_line)
-    # 场景：每场标题 + 剧情描述 + 对白行（"角色名：台词" 逐行格式）
+    # 场景：每场标题 + 地点信息 + 剧情描述 + 对白行（"角色名：台词" 逐行格式）。
+    # 地点行显式输出（P0-2 对应关系补强）：镜头绑定的 location/time_of_day/
+    # int_ext 即资产管理「场景」资产应对应的地点，显式注入抽取源使 LLM/规则
+    # 路都能稳定抽出这些地点为场景实体，保证"镜头 → 场景资产"可对应。
     for sc in (plain.get("scenes") or []):
         if not isinstance(sc, dict):
             continue
         scene_no = sc.get("scene_no", "")
-        lines.append(f"场景{scene_no}《{sc.get('title', '')}》")
+        heading = f"镜头{scene_no}《{sc.get('title', '')}》"
+        loc_parts = [
+            str(sc.get(key) or "").strip()
+            for key in ("location", "time_of_day", "int_ext")
+        ]
+        loc_parts = [p for p in loc_parts if p]
+        if loc_parts:
+            heading += f"（地点：{'，'.join(loc_parts)}）"
+        lines.append(heading)
         if str(sc.get("plot") or "").strip():
             lines.append(str(sc["plot"]))
         for dlg in (sc.get("dialogue") or []):
@@ -1210,17 +1258,20 @@ def _normalize_dialogue(raw: Any) -> List[Dict[str, Any]]:
 def _scene_label(scene: Dict[str, Any], index: int) -> str:
     """构造场次定位标签（内部函数，供 location/message 使用）。
 
+    术语约定：剧本正文中的场次段落粒度为「镜头」（为分镜准备），标签以
+    「镜头N」呈现，与资产管理中指地点的「场景」区分。
+
     Args:
         scene: 场次 dict。
         index: 场次在 scenes 数组中的下标（0 起，scene_no 缺失时兜底）。
 
     Returns:
-        str: 形如「场景3」的定位标签。
+        str: 形如「镜头3」的定位标签。
 
     Raises:
         无：字段缺失按下标兜底。
     """
-    return f"场景{scene.get('scene_no', index + 1)}"
+    return f"镜头{scene.get('scene_no', index + 1)}"
 
 
 def _appearance_indices(scenes: List[Dict[str, Any]], name: str) -> List[int]:
@@ -1502,16 +1553,34 @@ async def run_project_health_check(
 def _normalize_entities(data: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
     """把 LLM 抽取结果规整为统一实体结构（字段容错，内部函数）。
 
+    P0-2 键名漂移容错：LLM 可能输出 locations/items/场景 等别名键，或把三组
+    包裹在 entities 嵌套层内；此处先探测嵌套层，再按别名表归并取列表，
+    避免漂移键被静默清空导致场景/道具恒为 0。
+
     Args:
         data: LLM 输出解析后的 dict。
 
     Returns:
         Dict[str, List[Dict[str, Any]]]: {"characters": [...], "scenes": [...], "props": [...]}。
     """
+    # 嵌套层探测：LLM 偶发输出 {"entities": {...三组...}} 包裹结构
+    for wrapper in ("entities", "result", "data"):
+        inner = data.get(wrapper)
+        if isinstance(inner, dict) and any(
+                k in inner for aliases in _ENTITY_GROUP_ALIASES.values() for k in aliases):
+            data = inner
+            break
+
     normalized: Dict[str, List[Dict[str, Any]]] = {}
     for group in ("characters", "scenes", "props"):
         items: List[Dict[str, Any]] = []
-        raw_items = data.get(group)
+        # 别名归并：按别名表顺序取第一个命中的列表键（精确键优先）
+        raw_items: Any = None
+        for key in _ENTITY_GROUP_ALIASES[group]:
+            candidate = data.get(key)
+            if isinstance(candidate, list):
+                raw_items = candidate
+                break
         if isinstance(raw_items, list):
             for it in raw_items:
                 if not isinstance(it, dict) or not str(it.get("name") or "").strip():
@@ -1535,7 +1604,11 @@ def rule_extract(raw_text: str) -> Dict[str, Any]:
 
     规则（中文注释）：
     1. 对白冒号前角色名收集：匹配行首 "角色名：台词" 模式，收集角色名；
-    2. 出现频次 >= 2 的 2-3 字中文词作为道具候选（过滤停用词与角色名重叠项）。
+    2. 出现频次 >= 2 的 2-3 字中文词作为道具候选（过滤停用词与角色名重叠项）；
+    3. 场景抽取（P0-2，原规则路硬编码 scenes=[] 导致降级后场景恒为 0）：
+       3a. 标记行正则匹配「内景/外景XXX」「场景：XXX」「第X场 XXX」；
+       3b. 场景后缀词表兜底（命中 >= 2 次取 Top8，confidence=0.4 自动带
+           low_confidence 标记），与角色名/已抽道具重叠的丢弃。
 
     Args:
         raw_text: 剧本原始文本。
@@ -1556,22 +1629,64 @@ def rule_extract(raw_text: str) -> Dict[str, Any]:
     ]
     char_names = {c["name"] for c in characters}
 
+    # 规则 3：场景抽取（先标记行，后缀词表兜底）
+    scenes: List[Dict[str, Any]] = []
+    seen_scenes: set = set()
+    text = raw_text or ""
+
+    # 3a. 标记行匹配（confidence=0.6，格式显式可信度较高）
+    for match in _SCENE_MARK_RE.finditer(text):
+        name = (match.group(1) or match.group(2) or "").strip()
+        if not name or name in seen_scenes or name in char_names or len(scenes) >= 12:
+            continue
+        seen_scenes.add(name)
+        scenes.append({
+            "name": name[:50],
+            "aliases": [],
+            "description": "（规则抽取：场次标记行命中）",
+            "confidence": 0.6,
+        })
+
+    # 3b. 后缀词表兜底（无标记行格式时生效；标记行已抽足 12 个则跳过）
+    if len(scenes) < 12:
+        suffix_counter: Counter = Counter()
+        for suffix in _SCENE_SUFFIXES:
+            hits = text.count(suffix)
+            if hits >= 2:
+                suffix_counter[suffix] = hits
+        for suffix, cnt in suffix_counter.most_common(8):
+            if len(scenes) >= 12:
+                break
+            # 后缀命中名即场景名（如「咖啡馆」），与角色名互斥防误报
+            if suffix in seen_scenes or any(suffix in nm or nm in suffix for nm in char_names):
+                continue
+            seen_scenes.add(suffix)
+            scenes.append({
+                "name": suffix,
+                "aliases": [],
+                "description": f"（规则抽取：场景后缀词命中 {cnt} 次）",
+                "confidence": 0.4,
+            })
+
     # 规则 2：2-3 字中文片段频次统计
     seg_counter: Counter = Counter()
-    for i in range(max(0, len(raw_text) - 1)):
+    for i in range(max(0, len(text) - 1)):
         for n in (2, 3):
-            seg = raw_text[i:i + n]
+            seg = text[i:i + n]
             if len(seg) == n and all("\u4e00" <= ch <= "\u9fff" for ch in seg):
                 seg_counter[seg] += 1
 
     props: List[Dict[str, Any]] = []
+    scene_names = {s["name"] for s in scenes}
     for seg, cnt in seg_counter.most_common(80):
         if cnt < 2 or len(props) >= 10:
             break
-        # 过滤：停用词、与角色名互相包含（避免把角色名拆词当道具）
+        # 过滤：停用词、与角色名/场景名互相包含（避免把角色名/场景名拆词当道具）
         if seg in _STOPWORDS:
             continue
         if any(seg in nm or nm in seg for nm in char_names):
+            continue
+        if any(seg in nm or nm in seg for nm in scene_names):
             continue
         props.append({
             "name": seg,
@@ -1579,14 +1694,23 @@ def rule_extract(raw_text: str) -> Dict[str, Any]:
             "description": f"（规则候选：文本中出现 {cnt} 次）",
             "confidence": 0.4,
         })
-    return {"characters": characters, "scenes": [], "props": props}
+    return {"characters": characters, "scenes": scenes, "props": props}
 
 
-async def llm_extract(raw_text: str) -> Optional[Dict[str, Any]]:
+async def llm_extract(
+    raw_text: str, cast_names: Optional[List[str]] = None
+) -> Optional[Dict[str, Any]]:
     """LLM 路实体抽取（失败返回 None，由调用方降级到规则结果）。
+
+    按集抽取工作流：cast_names 传值（该集分集大纲出场角色清单）时，在用户
+    消息头部注入硬性白名单约束——characters 组仅允许输出清单内角色，清单外
+    角色即使正文出现也禁止输出（程序级过滤见 _filter_characters_by_cast，
+    双保险防 LLM 不遵从约束）。约束注入走 user 消息文本，不改动 llm.chat
+    签名，测试替身与既有调用侧不受影响。
 
     Args:
         raw_text: 剧本原始文本。
+        cast_names: 出场角色白名单（None/空=不启用白名单约束，全项目抽取路径）。
 
     Returns:
         Optional[Dict[str, Any]]: 成功返回规整后的实体 dict；LLM 异常或解析失败返回 None。
@@ -1595,11 +1719,22 @@ async def llm_extract(raw_text: str) -> Optional[Dict[str, Any]]:
         无：内部捕获一切异常（含网络/鉴权/限流），保证降级路径可达。
     """
     try:
+        user_content = raw_text or ""
+        if cast_names:
+            constraint = (
+                "【硬性约束】characters 只允许输出以下出场角色清单中的角色，"
+                "清单之外的角色（即使正文出现）一律不得输出；"
+                "正文中的称呼若为清单角色的简称/别名，请归一化为清单中的名字：\n"
+                f"出场角色清单：{'、'.join(cast_names)}\n\n"
+            )
+            user_content = constraint + user_content[:12000]
+        else:
+            user_content = user_content[:12000]
         text = await llm.chat(
             None,
             [
                 {"role": "system", "content": _EXTRACT_SYSTEM_PROMPT},
-                {"role": "user", "content": (raw_text or "")[:12000]},
+                {"role": "user", "content": user_content},
             ],
             agent_name="script_extract",
             json_mode=True,
@@ -1607,10 +1742,96 @@ async def llm_extract(raw_text: str) -> Optional[Dict[str, Any]]:
         )
         data = json.loads(strip_json_fences(text))
         if not isinstance(data, dict):
+            logger.warning("LLM 实体抽取输出非 dict（type=%s），降级规则路", type(data).__name__)
             return None
-        return _normalize_entities(data)
+        result = _normalize_entities(data)
+        # P0-2：LLM 成功但三组全空时告警（区分"剧本确实无实体"与"键名漂移被清空"）
+        if not any(result.values()):
+            logger.warning("LLM 实体抽取三组全空（keys=%s），请检查输出键名是否漂移",
+                           list(data.keys()))
+        return result
     except Exception:  # noqa: BLE001 —— LLM 抽取失败必须走规则降级
+        logger.warning("LLM 实体抽取异常降级规则路", exc_info=True)
         return None
+
+
+def _match_cast_name(name: str, cast_names: List[str]) -> Optional[str]:
+    """将抽取出的角色名匹配到出场角色白名单（别名/简称归一化）。
+
+    匹配顺序：精确相等优先，其次双向子串包含（抽取名「小满」↔ 清单名
+    「王小满」视为同一角色）。仅用于按集抽取的白名单过滤，不做拼音/模糊匹配，
+    避免误归并。
+
+    Args:
+        name: 抽取出的角色名（已 strip）。
+        cast_names: 分集大纲出场角色清单（已 strip 非空）。
+
+    Returns:
+        Optional[str]: 匹配到的清单规范名；无匹配返回 None。
+
+    Raises:
+        无：纯字符串处理。
+    """
+    if name in cast_names:
+        return name
+    for cn in cast_names:
+        if name in cn or cn in name:
+            return cn
+    return None
+
+
+def _filter_characters_by_cast(
+    result: Dict[str, Any], cast_names: List[str]
+) -> Dict[str, Any]:
+    """按集抽取的角色白名单过滤（原位修改 result["characters"]）。
+
+    按集工作流硬约束：角色抽取结果必须与该集分集大纲出场角色清单一致——
+    1. 白名单过滤：清单外角色一律丢弃（LLM 提示词约束失效时的程序级兜底）；
+    2. 别名归一化：抽取名匹配清单名（双向子串）后改写为清单规范名，同名
+       条目合并（description 取更长、aliases 并集）；
+    3. 清单兜底：清单中未被正文抽取命中的角色仍须出现（大纲声明了本集
+       出场即视为有效候选），追加低置信度条目供用户在抽取页确认或剔除。
+
+    Args:
+        result: 抽取结果 dict（含 characters 键）。
+        cast_names: 出场角色白名单（非空，调用方保证）。
+
+    Returns:
+        Dict[str, Any]: 原 result 对象（characters 已被过滤/归一化/补齐）。
+
+    Raises:
+        无：纯列表处理。
+    """
+    merged: Dict[str, Dict[str, Any]] = {}
+    for item in result.get("characters", []):
+        cast_name = _match_cast_name(str(item.get("name") or ""), cast_names)
+        if cast_name is None:
+            continue  # 白名单外角色丢弃
+        if cast_name in merged:
+            old = merged[cast_name]
+            if len(str(item.get("description") or "")) > len(str(old.get("description") or "")):
+                old["description"] = item.get("description")
+            old["aliases"] = list(dict.fromkeys(
+                [*(old.get("aliases") or []), *(item.get("aliases") or [])]))
+        else:
+            merged[cast_name] = {
+                "name": cast_name,
+                "aliases": list(item.get("aliases") or []),
+                "description": str(item.get("description") or ""),
+                "confidence": item.get("confidence", 0.8),
+            }
+    # 清单兜底：大纲声明出场但正文未命中的角色，低置信度条目补齐
+    for cn in cast_names:
+        if cn not in merged:
+            merged[cn] = {
+                "name": cn,
+                "aliases": [],
+                "description": "分集大纲出场角色（正文抽取未命中，请核对设定）",
+                "confidence": 0.6,
+            }
+    # 按大纲清单顺序输出
+    result["characters"] = [merged[cn] for cn in cast_names if cn in merged]
+    return result
 
 
 def detect_alias_conflicts(names: List[str]) -> List[Dict[str, Any]]:
@@ -1637,12 +1858,99 @@ def detect_alias_conflicts(names: List[str]) -> List[Dict[str, Any]]:
     return conflicts
 
 
-async def extract_entities(db: AsyncSession, project: Project, script: Script) -> Dict[str, Any]:
+async def build_project_extract_source(
+    db: AsyncSession,
+    project: Project,
+    default_script: Script,
+    scope_episode_id: Optional[int] = None,
+) -> str:
+    """聚合项目剧本行作为实体抽取源文本（P0-2 补强 + 按集抽取范围）。
+
+    背景：/script/extract 原只读「默认剧本行」（episode_id NULL），而多集
+    流水线项目真正的场次结构在集级剧本行（每集一行的 content.scenes）里，
+    导致此类项目实体抽取永远抽不出场景/道具。聚合规则：
+    - scope_episode_id 传值（按集抽取）：只取该集剧本行的源文本（逐集生成
+      逐集入池的按集工作流）；
+    - 默认行 novel 模式且已解析章节：章节上下文（章节摘要 + 正文节选）即
+      全文，直接返回不再聚合；
+    - 其余情况：逐行取 build_extract_source_text（结构化剧本优先、raw_text
+      兜底，完全空白的行跳过），行间以空行拼接。场景标记行与「角色名：台词」
+      对白格式原样保留，规则路抽取依赖该格式。
+
+    Args:
+        db: 请求级异步数据库会话。
+        project: 已校验归属的项目。
+        default_script: 默认剧本行（get_script_or_404 的定位结果，novel
+            分支判定依据）。
+        scope_episode_id: 抽取范围限定剧集 ID（None=全项目聚合，按集工作流传值）。
+
+    Returns:
+        str: 聚合后的抽取源文本（非空）。
+
+    Raises:
+        HTTPException: 400 —— 范围内剧本行均无任何内容。
+    """
+    from app.models import Episode  # 局部导入避免与既有模块级导入顺序耦合
+
+    chapters = (project.config or {}).get("novel_chapters")
+    input_mode = str(content_plain(default_script.content).get("input_mode") or "")
+    if scope_episode_id is None and input_mode == "novel" and isinstance(chapters, list) and chapters:
+        # novel 章节上下文即全文（含各章摘要与正文节选），无需再聚合其他行
+        return build_novel_context(project, fallback_text=default_script.raw_text)
+
+    parts: List[str] = []
+    conds = [Script.project_id == project.id]
+    if scope_episode_id is not None:
+        conds.append(Script.episode_id == scope_episode_id)
+        # 按集抽取源头部：该集分集大纲（出场角色 + 核心事件）——角色候选优先
+        # 来自大纲出场角色清单，正文段落提供场景/道具/对白线索
+        ep = await db.get(Episode, scope_episode_id)
+        if ep is not None:
+            outline = ep.outline if isinstance(ep.outline, dict) else {}
+            head_lines: List[str] = []
+            if str(ep.title or "").strip():
+                head_lines.append(f"第{ep.sequence}集《{str(ep.title).strip()}》")
+            core_event = str(outline.get("core_event") or "").strip()
+            if core_event:
+                head_lines.append(f"核心事件：{core_event}")
+            raw_cast = outline.get("characters")
+            cast_names = (
+                [str(c).strip() for c in raw_cast if str(c or "").strip()]
+                if isinstance(raw_cast, list) else []
+            )
+            if cast_names:
+                head_lines.append("出场角色：" + "、".join(cast_names))
+            if head_lines:
+                parts.append("\n".join(head_lines))
+    rows = (
+        await db.execute(select(Script).where(*conds).order_by(Script.id.asc()))
+    ).scalars().all()
+    for row in rows:
+        try:
+            text = build_extract_source_text(row)
+        except HTTPException:
+            # 该行完全无内容（既无结构化剧本也无 raw_text），跳过
+            continue
+        if text.strip():
+            parts.append(text.strip())
+    merged = "\n\n".join(parts).strip()
+    if not merged:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="剧本尚无内容，请先生成或保存剧本")
+    return merged
+
+
+async def extract_entities(
+    db: AsyncSession, project: Project, script: Script,
+    scope_episode_id: Optional[int] = None,
+) -> Dict[str, Any]:
     """实体抽取主流程：规则 + LLM 双路，结果落 scripts.fences 并返回。
 
     P0 断链修复：抽取源由 script.raw_text（用户原始输入，一句话模式下仅一句
-    创意）改判为 build_extract_source_text(script)——优先使用生成的完整剧本
-    content（scenes 对白），仅在无结构化 payload 时兜底 raw_text。
+    创意）改判为聚合项目全部剧本行（build_project_extract_source）——单行项目
+    等价于 build_extract_source_text(script)，多集流水线项目集级剧本行
+    （含场次结构）一并参与抽取。
 
     Args:
         db: 异步数据库会话。
@@ -1654,22 +1962,49 @@ async def extract_entities(db: AsyncSession, project: Project, script: Script) -
             每条实体含 confidence 与 low_confidence 标记。
 
     Raises:
-        HTTPException: 400 —— 剧本尚无内容（既无结构化剧本也无原始输入）。
+        HTTPException: 400 —— 项目全部剧本行均无内容。
     """
-    # 抽取源文本：novel 模式且已解析章节时用「章节摘要 + 正文节选」拼接
-    # 上下文（P-7 长文截断消除）；否则沿用 build_extract_source_text 现有取源
-    #（优先生成后的完整剧本 content，无结构化 payload 时兜底 raw_text）。
-    chapters = (project.config or {}).get("novel_chapters")
-    input_mode = str(content_plain(script.content).get("input_mode") or "")
-    if input_mode == "novel" and isinstance(chapters, list) and chapters:
-        source_text = build_novel_context(project, fallback_text=script.raw_text)
-    else:
-        source_text = build_extract_source_text(script)
+    # 抽取源文本：聚合项目剧本行（P0-2 补强：/script/extract 原只读默认
+    # 剧本行，多集流水线项目的集级剧本行（含场次结构）不参与抽取，导致场景/
+    # 道具抽不出）。scope_episode_id 传值时限定为该集（按集工作流）。
+    # novel 模式且已解析章节时章节上下文即全文，直接使用。
+    source_text = await build_project_extract_source(
+        db, project, script, scope_episode_id=scope_episode_id)
 
-    # 双路抽取：LLM 优先，失败降级规则结果
-    result = await llm_extract(source_text)
+    # 按集工作流：读取该集分集大纲出场角色清单作为角色白名单（None=全项目
+    # 抽取不过滤）。大纲声明了本集出场角色，正文里出现的清单外角色（如其他
+    # 集的主角客串提及）不属于本集资产，程序级强制过滤保证按集语义。
+    cast_names: List[str] = []
+    if scope_episode_id is not None:
+        from app.models import Episode  # 局部导入，与 build_project_extract_source 一致
+        ep = await db.get(Episode, scope_episode_id)
+        raw_cast = ep.outline.get("characters") if ep is not None and isinstance(ep.outline, dict) else None
+        if isinstance(raw_cast, list):
+            cast_names = [str(c).strip() for c in raw_cast if str(c or "").strip()]
+
+    # 双路抽取：LLM 优先，失败降级规则结果（P0-2：记录实际使用路径供前端统计展示）。
+    # cast_names 非空时 LLM 提示词注入白名单硬约束 + 结果程序级过滤双保险。
+    # 注意：cast_names 仅在按集路径条件传参，默认路径保持旧签名（测试替身兼容）
+    if cast_names:
+        result = await llm_extract(source_text, cast_names=cast_names)
+    else:
+        result = await llm_extract(source_text)
+    source = "llm"
     if result is None:
         result = rule_extract(source_text)
+        source = "rule"
+    if cast_names:
+        result = _filter_characters_by_cast(result, cast_names)
+
+    # P0-2 统计反馈：抽取结果计数与来源（前端展示"解析出角色X/场景Y/道具Z"，
+    # 消除场景/道具为 0 时的静默失败）
+    result["stats"] = {
+        "characters": len(result.get("characters", [])),
+        "scenes": len(result.get("scenes", [])),
+        "props": len(result.get("props", [])),
+        "source": source,
+        "source_text_chars": len(source_text),
+    }
 
     # 低置信度标记（RD-05）：confidence < 0.7 → low_confidence=True
     for group in ("characters", "scenes", "props"):
@@ -1749,13 +2084,17 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
     """抽取确认入池：按确认清单建/更 characters / scenes / props 资产行。
 
     - visual_prompt 缺省使用中文模板「统一风格插画，{name}，{description}，全身立绘，纯色背景，高细节」；
-    - 同名资产已存在时更新描述/别名/提示词（幂等确认，不重复建行）；
+    - 同名资产已存在时更新描述/别名（幂等确认，不重复建行）；visual_prompt
+      已存在非空时保留（跨集一致性：同一资产全项目仅一份视觉设定）；
+    - 命中已软删的同名资产时复活（deleted_at 置空）；
+    - req.episode_id 传值时把确认的资产名 union 追加到该集 enabled_assets
+      启用名单（资产管理页按集视图仅显示名单内资产）；
     - project.status 置 'asset'，写 version_snapshots(stage='extract_confirmed')。
 
     Args:
         db: 异步数据库会话。
         project: 已校验归属的项目。
-        req: ExtractConfirmRequest 请求对象。
+        req: ExtractConfirmRequest 请求对象（episode_id 可空=不记按集名单）。
 
     Returns:
         Dict[str, int]: 项目内各类未删资产现有总数 {"characters","scenes","props"}。
@@ -1768,20 +2107,30 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
         seen.add(item.name)
         visual_prompt = item.visual_prompt or DEFAULT_VISUAL_TEMPLATE.format(
             name=item.name, description=item.description or item.name)
+        # exist 查询不过滤 deleted_at：uk_characters_name 为全量唯一索引，
+        # 已删同名角色必须走"复活"路径（恢复 deleted_at + 更新字段），否则
+        # 新建会撞唯一约束；确认入池语义 = 该实体应在池中
         exist = (
             await db.execute(
                 select(Character).where(
                     Character.project_id == project.id,
                     Character.name == item.name,
-                    Character.deleted_at.is_(None),
                 )
             )
         ).scalar_one_or_none()
         if exist is not None:
-            # 幂等确认：已存在则更新可变字段，保留既有 visual_prompt（若未显式提供）
+            # 幂等确认：已存在则更新可变字段，保留既有 visual_prompt（若未显式提供）；
+            # 启用资产语义：无论来源（角色设定 script_planner / 抽取），确认入池即启用
             exist.description = item.description or exist.description
             exist.aliases = item.aliases or exist.aliases
-            exist.visual_prompt = item.visual_prompt or exist.visual_prompt
+            # 跨集一致性：同名资产全项目仅一行一视觉，visual_prompt 已存在非空时
+            # 不被新集抽取模板覆盖（防止每集重复确认导致定妆照视觉漂移；
+            # 改视觉应走资产页编辑/重新生成），仅缺省时才填充
+            if not (exist.visual_prompt or "").strip():
+                exist.visual_prompt = item.visual_prompt
+            exist.enabled_at = datetime.now(timezone.utc)
+            if exist.deleted_at is not None:
+                exist.deleted_at = None  # 已删同名角色复活
         else:
             db.add(Character(
                 project_id=project.id,
@@ -1789,6 +2138,7 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
                 aliases=list(item.aliases or []),
                 description=item.description or None,
                 visual_prompt=visual_prompt,
+                enabled_at=datetime.now(timezone.utc),
             ))
 
     # ---------- 场景 ----------
@@ -1799,6 +2149,8 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
         scene_seen.add(item.name)
         visual_prompt = item.visual_prompt or DEFAULT_VISUAL_TEMPLATE.format(
             name=item.name, description=item.description or item.name)
+        # exist 查询不过滤 deleted_at（uk_scenes_name 全量唯一索引）：命中已删行
+        # 必须恢复 deleted_at，否则用户删除场景后再确认入池永远"回不来"
         exist = (
             await db.execute(
                 select(Scene).where(Scene.project_id == project.id, Scene.name == item.name)
@@ -1806,7 +2158,11 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
         ).scalar_one_or_none()
         if exist is not None:
             exist.description = item.description or exist.description
-            exist.visual_prompt = item.visual_prompt or exist.visual_prompt
+            # 跨集一致性：visual_prompt 已存在非空时不被新集模板覆盖（同角色）
+            if not (exist.visual_prompt or "").strip():
+                exist.visual_prompt = item.visual_prompt
+            if exist.deleted_at is not None:
+                exist.deleted_at = None  # 已删同名场景复活
         else:
             db.add(Scene(
                 project_id=project.id,
@@ -1823,18 +2179,23 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
         prop_seen.add(item.name)
         visual_prompt = item.visual_prompt or DEFAULT_VISUAL_TEMPLATE.format(
             name=item.name, description=item.description or item.name)
+        # exist 查询不过滤 deleted_at（与角色/场景一致）：命中已删行恢复 deleted_at，
+        # 保证"删除后重新确认入池"行为三类资产一致
         exist = (
             await db.execute(
                 select(Prop).where(
                     Prop.project_id == project.id,
                     Prop.name == item.name,
-                    Prop.deleted_at.is_(None),
                 )
             )
         ).scalar_one_or_none()
         if exist is not None:
             exist.description = item.description or exist.description
-            exist.visual_prompt = item.visual_prompt or exist.visual_prompt
+            # 跨集一致性：visual_prompt 已存在非空时不被新集模板覆盖（同角色）
+            if not (exist.visual_prompt or "").strip():
+                exist.visual_prompt = item.visual_prompt
+            if exist.deleted_at is not None:
+                exist.deleted_at = None  # 已删同名道具复活
         else:
             db.add(Prop(
                 project_id=project.id,
@@ -1842,6 +2203,47 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
                 description=item.description or None,
                 visual_prompt=visual_prompt,
             ))
+
+    # ---------- 默认风格自动落池（风格不从剧本抽取，取项目创建时选定的画风） ----------
+    has_style = (
+        await db.execute(
+            select(func.count()).select_from(Style).where(
+                Style.project_id == project.id, Style.deleted_at.is_(None))
+        )
+    ).scalar_one_or_none() or 0
+    if not has_style:
+        style_name = (project.style or "").strip() or "默认画风"
+        db.add(Style(
+            project_id=project.id,
+            name=style_name,
+            # 风格资产提示词模板：全局画风锚点（生成时作为风格层注入）
+            visual_prompt=f"统一{style_name}画风，高质量插画，色彩协调，细节丰富，画面干净",
+            is_default=True,  # 项目内无其他风格行，直接置默认（部分唯一索引不冲突）
+        ))
+
+    # ---------- 按集启用名单（按集工作流）：确认入池的资产名 union 进该集 enabled_assets ----------
+    # 资产管理页按集视图语义：仅显示该集名单内的资产，未启用过的集四类显示为空。
+    # 同名资产跨集重复确认时名单 union 去重（资产行本身幂等复用，保证一致性）。
+    if req.episode_id is not None:
+        from app.models import Episode  # 局部导入，与抽取源构造一致
+        ep = await db.get(Episode, req.episode_id)
+        if ep is not None and ep.project_id == project.id:
+            style_rows = (
+                await db.execute(
+                    select(Style).where(
+                        Style.project_id == project.id, Style.deleted_at.is_(None))
+                )
+            ).scalars().all()
+            # 风格不抽取：确认后项目必有默认风格（上方自动创建兜底），全部计入名单
+            enabled = dict(ep.enabled_assets or {})
+            for key, values in {
+                "characters": [i.name for i in req.characters],
+                "scenes": [i.name for i in req.scenes],
+                "props": [i.name for i in req.props],
+                "styles": [s.name for s in style_rows],
+            }.items():
+                enabled[key] = list(dict.fromkeys([*(enabled.get(key) or []), *values]))
+            ep.enabled_assets = enabled
 
     # 先 flush 使本轮新增/更新的资产行在当前事务内可见，再序列化实体状态
     await db.flush()

@@ -78,23 +78,91 @@ watch(currentEpisodeId, () => {
 /** 拆解进行中（防重复点击） */
 const decomposing = ref(false)
 
+// ============================================================
+// P0-1 锁定门禁拦截弹窗（主要角色定妆照未就绪）
+// ============================================================
+
+/** 未就绪角色条目（decompose 409 响应的 unready 结构） */
+interface UnreadyCharacter {
+  /** 角色 ID */
+  character_id: number
+  /** 角色名 */
+  name: string
+  /** 角色定位（lead/support/villain/extra，可能为 null） */
+  role_type: string | null
+  /** 是否已锁定面部 */
+  face_locked: boolean
+  /** 生成状态 pending/generating/done/failed */
+  generation_status: string
+  /** 是否已有定妆照 */
+  has_image: boolean
+  /** 未就绪原因文案（后端给出） */
+  reason: string
+}
+
+/** 门禁拦截弹窗可见性 */
+const gateVisible = ref(false)
+/** 未就绪角色清单（弹窗表格数据） */
+const gateUnready = ref<UnreadyCharacter[]>([])
+/** 快速模式勾选（跳过锁定检查继续生成） */
+const gateSkipCheck = ref(false)
+
+/** 角色定位中文文案（弹窗表格展示用） */
+const ROLE_LABELS: Record<string, string> = {
+  lead: '主角',
+  support: '配角',
+  villain: '反派',
+  extra: '群像',
+}
+
 /**
- * AI 拆解分镜（LLM 依据剧本拆出镜头序列，全量重建）。
+ * AI 拆解分镜（LLM 依据剧本拆出镜头序列）。
+ * P0-1：默认走后端锁定门禁，409（asset_lock_not_ready）时打开未就绪弹窗；
+ * 快速模式勾选后携带 skip_lock_check=true 重发。
+ * S-06 按集工作流：跟随全局剧集切换器——选中具体集时只拆解并重建该集分镜。
+ * @param skipLockCheck 是否跳过锁定门禁（快速模式）
  * @returns 无
  */
-async function runDecompose(): Promise<void> {
+async function runDecompose(skipLockCheck = false): Promise<void> {
   if (decomposing.value) return
   decomposing.value = true
   try {
-    const res = await studioApi.decompose(projectId.value)
-    const total = Number(res.total ?? 0)
-    ElMessage.success(
-      `拆解完成，共生成 ${total} 个分镜${res.degraded ? '（部分场景走了规则降级）' : ''}`,
+    const res = await studioApi.decompose(
+      projectId.value,
+      skipLockCheck ? { skip_lock_check: true } : undefined,
+      currentEpisodeId.value ?? undefined,
     )
+    const total = Number(res.total ?? 0)
+    const scope = currentEpisodeId.value != null ? '当前集' : '全部剧集'
+    ElMessage.success(
+      `拆解完成（${scope}），共生成 ${total} 个分镜${res.degraded ? '（部分场景走了规则降级）' : ''}`,
+    )
+    gateVisible.value = false
     await loadBoards(true)
+  } catch (e) {
+    // P0-1 锁定门禁拦截：打开未就绪清单弹窗（其余错误由拦截器统一提示）
+    const err = e as { response?: { status?: number; data?: { detail?: { code?: string; unready?: UnreadyCharacter[] } } } }
+    if (
+      err.response?.status === 409
+      && err.response.data?.detail?.code === 'asset_lock_not_ready'
+      && Array.isArray(err.response.data.detail.unready)
+    ) {
+      gateUnready.value = err.response.data.detail.unready
+      gateSkipCheck.value = false
+      gateVisible.value = true
+    }
   } finally {
     decomposing.value = false
   }
+}
+
+/**
+ * 「去资产页处理」：关闭弹窗并跳转资产管理页。
+ * @returns 无
+ */
+function gotoAssets(): void {
+  gateVisible.value = false
+  void router.push(`/projects/${projectId.value}/assets`)
 }
 
 // ============================================================
@@ -105,6 +173,35 @@ async function runDecompose(): Promise<void> {
 const totalDuration = computed(() => boards.value.reduce((sum, b) => sum + (b.duration || 0), 0))
 /** 预估成本（每镜 10 积分文案，RD-20） */
 const estimatedCost = computed(() => boards.value.length * 10)
+
+// ============================================================
+// P0-3 过期镜头（资产更新后引用过期：标黄 + 批量重渲染）
+// ============================================================
+
+/** 过期镜头计数 */
+const staleCount = computed(() => boards.value.filter((b) => b.stale).length)
+/** 批量重渲染进行中 */
+const renderStaleBusy = ref(false)
+
+/**
+ * 批量重渲染全部过期镜头（render-stale 端点，10 积分/帧统一冻结）。
+ * @returns 无
+ */
+async function renderStaleBoards(): Promise<void> {
+  if (renderStaleBusy.value || !staleCount.value) return
+  renderStaleBusy.value = true
+  try {
+    const res = await studioApi.renderStale(projectId.value, currentEpisodeId.value ?? undefined)
+    if (res.queued > 0) {
+      ElMessage.success(`已加入 ${res.queued} 个重渲染任务（${res.total_cost} 积分）`)
+    } else {
+      ElMessage.info('没有可重渲染的镜头（受影响镜头可能已在生成队列中）')
+    }
+    await loadBoards(true)
+  } finally {
+    renderStaleBusy.value = false
+  }
+}
 
 // ============================================================
 // 节奏预警抽屉（RD-22 文字化时长预警）
@@ -574,7 +671,7 @@ onMounted(loadBoards)
     <!-- 空态：AI 拆解引导 -->
     <el-card v-else-if="!boards.length" shadow="never">
       <el-empty description="还没有分镜。AI 将依据剧本逐场景拆解为镜头序列（每镜 1~3 个）">
-        <el-button type="primary" size="large" :loading="decomposing" @click="runDecompose">
+        <el-button type="primary" size="large" :loading="decomposing" @click="runDecompose()">
           AI 拆解分镜
         </el-button>
       </el-empty>
@@ -616,7 +713,16 @@ onMounted(loadBoards)
         >
           导出 PDF
         </el-button>
-        <el-button type="primary" plain @click="runDecompose" :loading="decomposing">
+        <!-- P0-3 过期镜头批量重渲染（资产更新后引用过期） -->
+        <el-button
+          v-if="staleCount > 0"
+          type="warning"
+          :loading="renderStaleBusy"
+          @click="renderStaleBoards"
+        >
+          {{ staleCount }} 个镜头需重渲染
+        </el-button>
+        <el-button type="primary" plain @click="runDecompose()" :loading="decomposing">
           重新拆解
         </el-button>
       </div>
@@ -628,7 +734,10 @@ onMounted(loadBoards)
           :id="`sb-card-${b.id}`"
           :key="b.id"
           shadow="hover"
-          :class="['board-card', { 'board-card-flash': flashBoardId === b.id }]"
+          :class="['board-card', {
+            'board-card-flash': flashBoardId === b.id,
+            'board-card-stale': b.stale,
+          }]"
         >
           <template #header>
             <div class="board-head">
@@ -636,6 +745,14 @@ onMounted(loadBoards)
               <el-tag size="small" effect="plain">{{ b.shot_type || '未定景别' }}</el-tag>
               <el-tag size="small" effect="plain" type="info">{{ b.camera_movement || '固定' }}</el-tag>
               <el-tag size="small" effect="plain" type="info">{{ b.duration }}s</el-tag>
+              <!-- P0-3：引用资产已过期（角色定妆照/场景图更新后） -->
+              <el-tooltip
+                v-if="b.stale"
+                :content="(b.stale_reasons ?? []).join('；') || '引用资产已更新'"
+                placement="top"
+              >
+                <el-tag size="small" type="warning" effect="dark">需重渲染</el-tag>
+              </el-tooltip>
               <!-- RD-25：重生成 ≥3 次建议投递画布 -->
               <el-tag v-if="b.regen_count >= 3" size="small" type="warning" effect="dark">
                 建议投递画布精修
@@ -871,6 +988,49 @@ onMounted(loadBoards)
         <el-button type="primary" :loading="fitLoading" @click="confirmAutoFit">开始调整</el-button>
       </template>
     </el-dialog>
+
+    <!-- P0-1 锁定门禁拦截弹窗：主要角色定妆照未就绪清单 + 快速模式兜底 -->
+    <el-dialog v-model="gateVisible" title="主要角色定妆照未就绪" width="560px" append-to-body>
+      <el-alert
+        type="warning"
+        show-icon
+        :closable="false"
+        title="「不定妆，不进分镜」：以下主要角色的定妆照尚未生成/锁定，为保证角色形象一致性，已拦截分镜生成"
+        class="gate-alert"
+      />
+      <el-table :data="gateUnready" size="small" class="gate-table">
+        <el-table-column label="角色" prop="name" min-width="100" />
+        <el-table-column label="定位" width="90">
+          <template #default="{ row }">
+            {{ ROLE_LABELS[row.role_type] ?? '未标注' }}
+          </template>
+        </el-table-column>
+        <el-table-column label="状态" width="120">
+          <template #default="{ row }">
+            <el-tag
+              size="small"
+              :type="row.reason === '生成失败' ? 'danger' : row.reason === '生成中' ? 'info' : 'warning'"
+            >
+              {{ row.reason }}
+            </el-tag>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-checkbox v-model="gateSkipCheck" class="gate-skip">
+        快速模式：本次生成跳过锁定检查（可能造成角色形象不一致）
+      </el-checkbox>
+      <template #footer>
+        <el-button @click="gotoAssets">去资产页处理</el-button>
+        <el-button
+          type="primary"
+          :disabled="!gateSkipCheck"
+          :loading="decomposing"
+          @click="runDecompose(true)"
+        >
+          跳过并继续生成
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -1011,6 +1171,11 @@ onMounted(loadBoards)
   box-shadow: 0 0 0 2px var(--mf-brand);
   transition: box-shadow 0.3s;
 }
+/* P0-3 过期镜头标黄：引用的角色定妆照/场景图已更新 */
+.board-card-stale {
+  border-color: var(--el-color-warning, #e6a23c);
+  box-shadow: 0 0 0 1px var(--el-color-warning, #e6a23c);
+}
 .cont-summary {
   color: var(--mf-text-2);
   font-size: var(--mf-fs-sm);
@@ -1073,5 +1238,15 @@ onMounted(loadBoards)
 .fit-line {
   font-size: var(--mf-fs-sm);
   color: var(--mf-text-2);
+}
+/* P0-1 锁定门禁拦截弹窗 */
+.gate-alert {
+  margin-bottom: var(--mf-sp-3);
+}
+.gate-table {
+  margin-bottom: var(--mf-sp-3);
+}
+.gate-skip {
+  margin-top: var(--mf-sp-2);
 }
 </style>

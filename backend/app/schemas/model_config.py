@@ -10,6 +10,11 @@ from typing import Any, Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+# 用户自有渠道支持的 API 协议白名单（OpenAI 兼容 chat / OpenAI Responses /
+# Anthropic Messages / DashScope 原生（百炼文生图，仅图像用途））
+SUPPORTED_CHANNEL_PROTOCOLS = ("openai", "openai_responses", "anthropic", "dashscope")
+
+
 class CatalogModelOut(BaseModel):
     """逻辑模型条目输出模型。
 
@@ -80,16 +85,44 @@ class ChannelCreateRequest(BaseModel):
     """用户自有渠道创建请求。
 
     Attributes:
-        protocol: 协议类型，当前仅支持 "openai"（OpenAI 兼容协议）。
+        name: 渠道备注名（可空，仅用于展示）。
+        protocol: 协议类型（openai = OpenAI Chat Completions 兼容 /
+            openai_responses = OpenAI Responses API / anthropic = Anthropic Messages /
+            dashscope = DashScope 原生，百炼文生图，仅图像用途）。
         base_url: 接口地址（须以 http:// 或 https:// 开头）。
         api_key: API Key 明文（服务端经 AES 加密后落库，不再返回明文）。
         models: 模型目录（JSONB，如 {"chat": ["model-a"]}，可空）。
     """
 
-    protocol: str = Field(default="openai", max_length=30)
+    name: Optional[str] = Field(default=None, max_length=64)
+    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope"] = "openai"
     base_url: str = Field(min_length=1, max_length=255)
     api_key: str = Field(min_length=1, max_length=200)
     models: Optional[Dict[str, Any]] = None
+
+
+class ChannelUpdateRequest(BaseModel):
+    """用户自有渠道更新请求（PUT /api/models/channels/{id}，全字段可选）。
+
+    语义：None 表示不修改该字段；api_key 仅在提供非空值时更新（配合前端
+    「留空表示保持原 Key」的交互）。任意配置变更后渠道健康状态重置为
+    unknown（旧探测结果不再可信，需重新测试）。
+
+    Attributes:
+        name: 渠道备注名（None=不修改；空串=清空备注）。
+        protocol: 协议类型（None=不修改，白名单同创建请求）。
+        base_url: 接口地址（None=不修改）。
+        api_key: 新 API Key 明文（None=不修改；非空则加密覆盖旧 Key）。
+        models: 模型目录（None=不修改）。
+        enabled: 是否启用（None=不修改）。
+    """
+
+    name: Optional[str] = Field(default=None, max_length=64)
+    protocol: Optional[Literal["openai", "openai_responses", "anthropic", "dashscope"]] = None
+    base_url: Optional[str] = Field(default=None, max_length=255)
+    api_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
+    models: Optional[Dict[str, Any]] = None
+    enabled: Optional[bool] = None
 
 
 class ChannelOut(BaseModel):
@@ -97,6 +130,7 @@ class ChannelOut(BaseModel):
 
     Attributes:
         id: 渠道 ID。
+        name: 渠道备注名（可空）。
         protocol: 协议类型。
         base_url: 接口地址。
         api_key: 脱敏后的 API Key。
@@ -107,6 +141,7 @@ class ChannelOut(BaseModel):
     """
 
     id: int
+    name: Optional[str] = None
     protocol: str
     base_url: str
     api_key: Optional[str] = None
@@ -128,6 +163,37 @@ class ChannelTestResponse(BaseModel):
     ok: bool
     error: Optional[str] = None
     health_status: str
+
+
+class ChannelProbeModelsRequest(BaseModel):
+    """拉取渠道真实模型列表请求（POST /api/models/probe-models）。
+
+    以用户提供的地址与 Key 直连渠道 GET {base}/models（OpenAI 兼容与
+    Anthropic 均提供该端点），用于「添加渠道」对话框的模型下拉候选。
+
+    Attributes:
+        protocol: 协议类型（openai / openai_responses / anthropic / dashscope）。
+        base_url: 接口地址（http/https 开头；内网/本机地址被拒绝）。
+        api_key: API Key 明文（仅本次请求使用，不落库）。
+    """
+
+    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope"] = "openai"
+    base_url: str = Field(min_length=1, max_length=255)
+    api_key: str = Field(min_length=1, max_length=200)
+
+
+class ChannelProbeModelsOut(BaseModel):
+    """渠道真实模型列表响应。
+
+    Attributes:
+        ok: 是否拉取成功。
+        models: 模型 ID 列表（成功时非空；失败为空列表）。
+        error: 失败原因（成功时为 None）。
+    """
+
+    ok: bool
+    models: List[str] = []
+    error: Optional[str] = None
 
 
 class HealthChannelItem(BaseModel):

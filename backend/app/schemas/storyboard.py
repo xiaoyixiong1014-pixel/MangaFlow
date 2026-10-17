@@ -9,6 +9,16 @@ from typing import List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class DecomposeRequest(BaseModel):
+    """AI 拆解请求（P0-1：可空 body 向后兼容，前端快速模式勾选后传 skip_lock_check）。
+
+    Attributes:
+        skip_lock_check: 快速模式——跳过主要角色定妆照锁定门禁（默认 False 严格校验）。
+    """
+
+    skip_lock_check: bool = False
+
+
 class StoryboardCharacterLinkOut(BaseModel):
     """分镜-角色关联输出。
 
@@ -47,6 +57,8 @@ class StoryboardOut(BaseModel):
         status: 状态 pending/generating/done/failed。
         regen_count: 重生成次数。
         characters: 关联角色列表。
+        stale: 引用资产是否已过期（P0-3：版本快照 vs 当前版本，true 前端标黄）。
+        stale_reasons: 过期原因文案列表（tooltip 展示）。
     """
 
     id: int
@@ -69,6 +81,8 @@ class StoryboardOut(BaseModel):
     status: str = "pending"
     regen_count: int = 0
     characters: List[StoryboardCharacterLinkOut] = Field(default_factory=list)
+    stale: bool = False
+    stale_reasons: List[str] = Field(default_factory=list)
 
 
 class StoryboardCharacterLinkIn(BaseModel):

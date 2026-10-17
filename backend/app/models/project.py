@@ -108,6 +108,12 @@ class Episode(Base):
     outline: Mapped[Optional[dict]] = mapped_column(
         JSONB, nullable=True,
         comment="单集大纲（P-1）：core_event/characters/emotion_curve/duration_sec")
+    # 按集启用名单（2026-10-17）：该集经「启用资产」确认入池的资产名名单
+    # （{"characters":[...],"scenes":[...],"props":[...],"styles":[...]}，union
+    # 追加）；资产管理页按集视图仅显示名单内资产，NULL=该集未启用过任何资产
+    enabled_assets: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True,
+        comment="该集已启用资产名名单（启用资产确认入池时 union 追加）")
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="单集大纲确认时间（P-1）")
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default="draft", comment="状态")

@@ -186,6 +186,7 @@ from app.services.script_service import (
     PATH_MISSING,
     acquire_generate_lock,
     apply_optimize_changes,
+    build_character_bible_prompt,
     build_extract_source_text,
     build_novel_context,
     build_field_diffs,
@@ -279,6 +280,8 @@ def _candidate_to_out(candidate: dict) -> CharacterProfileOut:
         age=candidate.get("age"),
         personality=candidate.get("personality"),
         appearance=candidate.get("appearance"),
+        outfit=candidate.get("outfit"),
+        style_note=candidate.get("style_note"),
         motivation=candidate.get("motivation"),
         arc=candidate.get("arc"),
         relations=list(candidate.get("relations") or []),
@@ -308,6 +311,8 @@ def _character_to_out(character: Character) -> CharacterProfileOut:
         age=character.age,
         personality=character.personality,
         appearance=character.description,
+        outfit=character.outfit,
+        style_note=character.style_note,
         motivation=character.motivation,
         arc=character.arc,
         relations=list(character.relations or []),
@@ -334,8 +339,10 @@ def _candidates_out(project: Project) -> List[CharacterProfileOut]:
 async def _get_source_text(db: AsyncSession, project: Project) -> Optional[str]:
     """读取剧本输入源文本供 LLM 提示词使用（内部函数）。
 
-    取源优先级：script.raw_text 非空 → 取 raw_text；否则取结构化剧本
-    content 解包后的纯文本（build_extract_source_text）；均无 → None。
+    分阶段流水线按剧集落库（每集一行），单行 scalar_one_or_none 在多行时
+    抛 MultipleResultsFound（与 decompose_storyboards 同源问题）——统一读取
+    全部行按剧集序合并：逐行取 raw_text 非空，否则取结构化 content 解包的
+    纯文本（build_extract_source_text），各段以空行拼接；均无 → None。
 
     Args:
         db: 异步数据库会话。
@@ -345,21 +352,36 @@ async def _get_source_text(db: AsyncSession, project: Project) -> Optional[str]:
         Optional[str]: 源文本；项目尚无剧本行或剧本完全为空时返回 None。
 
     Raises:
-        无：build_extract_source_text 的 400 分支仅在本函数已确认有
-            payload 后才会走到，实际不会触发。
+        无：build_extract_source_text 的 400 分支仅在已确认有 payload 后
+            才会走到，实际不会触发。
     """
-    script = (
+    # 剧集序映射（默认行 episode_id NULL 视为第 0 集排最前）
+    episode_order: Dict[int, int] = {
+        ep.id: (ep.sequence if ep.sequence is not None else 0)
+        for ep in (
+            await db.execute(select(Episode).where(Episode.project_id == project.id))
+        ).scalars().all()
+    }
+    script_rows = (
         await db.execute(select(Script).where(Script.project_id == project.id))
-    ).scalar_one_or_none()
-    if script is None:
-        return None
-    raw_text = (script.raw_text or "").strip()
-    if raw_text:
-        return raw_text
-    plain = content_plain(script.content)
-    if content_has_payload(plain):
-        return build_extract_source_text(script)
-    return None
+    ).scalars().all()
+    script_rows = sorted(
+        script_rows,
+        key=lambda s: (
+            0 if s.episode_id is None else episode_order.get(s.episode_id, 10**9),
+            s.id,
+        ),
+    )
+    segments: List[str] = []
+    for row in script_rows:
+        raw_text = (row.raw_text or "").strip()
+        if raw_text:
+            segments.append(raw_text)
+            continue
+        plain = content_plain(row.content)
+        if content_has_payload(plain):
+            segments.append(build_extract_source_text(row))
+    return "\n\n".join(segments).strip() or None
 
 
 def _require_script_input(script: Optional[Script]) -> None:
@@ -523,7 +545,7 @@ async def edit_characters(
     for item in req.upsert:
         updates = {"name": item.name}
         for field in ("role_type", "age", "personality", "appearance",
-                      "motivation", "arc"):
+                      "outfit", "style_note", "motivation", "arc"):
             value = getattr(item, field)
             if value is not None:
                 updates[field] = value
@@ -607,6 +629,8 @@ async def regenerate_character(
             "age": new_char["age"],
             "personality": new_char["personality"],
             "appearance": new_char["appearance"],
+            "outfit": new_char.get("outfit"),
+            "style_note": new_char.get("style_note"),
             "motivation": new_char["motivation"],
             "arc": new_char["arc"],
             "relations": new_char["relations"],
@@ -633,12 +657,27 @@ async def regenerate_character(
     row.role_type = new_char["role_type"]
     row.age = new_char["age"]
     row.personality = new_char["personality"]
+    row.outfit = new_char.get("outfit")
+    row.style_note = new_char.get("style_note")
     row.motivation = new_char["motivation"]
     row.arc = new_char["arc"]
     row.relations = new_char["relations"]
     row.description = _build_profile_description(
         new_char["personality"], new_char["appearance"],
-        new_char["motivation"], new_char["arc"]) or row.description
+        new_char["motivation"], new_char["arc"],
+        outfit=new_char.get("outfit"), style_note=new_char.get("style_note"),
+    ) or row.description
+    # 圣经 visual_prompt 同步重建（重生成覆盖人设，视觉三段随之刷新）
+    visual_bible = build_character_bible_prompt(
+        row.name, row.age,
+        "；".join(v for v in (
+            new_char.get("appearance"), new_char.get("outfit"),
+            new_char.get("style_note")) if v))
+    if visual_bible:
+        row.visual_prompt = (
+            f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+            f"{visual_bible}。"
+            "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。")
     await db.commit()
     return CharacterRegenerateOut(character=_character_to_out(row),
                                   phase=project.script_phase)

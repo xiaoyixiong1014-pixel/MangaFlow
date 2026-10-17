@@ -46,6 +46,25 @@ _VISION_SYSTEM_PROMPT = (
     "其余正常创作内容 → pass。"
 )
 
+# P0-4 面部档案提取系统提示词：固定键结构化描述（同特征产出同文案，保证向量可比）
+_FACE_PROFILE_SYSTEM_PROMPT = (
+    "你是动漫角色面部特征分析师。请观察图片中的角色面部（多人时聚焦最显眼的主体角色），"
+    "输出该角色的面部特征档案，只输出严格 JSON（禁止任何其他文字），键固定为：\n"
+    '{"gender": "性别气质（如女性/男性/中性）",'
+    ' "age_look": "年龄感（如少女/青年/中年）",'
+    ' "face_shape": "脸型（如圆脸/鹅蛋脸/方脸）",'
+    ' "hair_style": "发型（如长直发/双马尾/短发）",'
+    ' "hair_color": "发色（如银白/黑色/樱粉）",'
+    ' "eye_color": "瞳色（如红瞳/蓝瞳）",'
+    ' "eyebrow": "眉形（如柳叶眉/粗眉）",'
+    ' "nose": "鼻型（简述）",'
+    ' "lips": "唇形与唇色（简述）",'
+    ' "skin_tone": "肤色（如白皙/小麦色）",'
+    ' "distinctive_marks": ["显著面部标记（痣/疤/泪痣/纹身等，无则空数组）"],'
+    ' "accessories": ["永久性佩戴物（眼镜/耳饰/面罩等，无则空数组）"]}\n'
+    "要求：各键用简短中文短语描述；不确定的键填空串；特征必须来自画面实际观察。"
+)
+
 # 本地存储 URL 前缀：main.py 已将 storage 目录 mount 到 /storage
 _STORAGE_URL_PREFIX = "/storage"
 
@@ -271,3 +290,61 @@ async def review_image(
         verdict = "suspect"
     reason = str(data.get("reason") or "")[:200]
     return {"verdict": verdict, "reason": reason, "model": settings.agnes_vision_model}
+
+
+async def review_face_profile(
+    image_url: Optional[str] = None,
+    image_b64: Optional[str] = None,
+) -> Dict:
+    """从单张图像提取角色面部特征档案（P0-4 视觉一致性）。
+
+    调用 Agnes 视觉模型按固定键结构化描述角色面部（性别/年龄感/脸型/发色/
+    瞳色/眉/鼻/唇/肤色/显著标记/永久佩戴物）；档案文本经规整后向量化入库
+    （kind='face'），供跨图余弦比对。异常向上抛出由调用方吞掉（档案提取失败
+    不阻塞出图主链路）。
+
+    Args:
+        image_url: 图像 URL（本地存储 URL / 公网 URL / data URI，可空）。
+        image_b64: 裸 base64 图像数据（可空；优先于 image_url）。
+
+    Returns:
+        Dict: {"profile": 面部档案 JSON（固定键）, "model": 视觉模型名}。
+
+    Raises:
+        ValueError: 无任何可用图像输入。
+        Exception: HTTP 调用失败、超时或 JSON 解析失败时向上抛出。
+    """
+    image_ref = _resolve_image_ref(image_url, image_b64)
+    if not image_ref:
+        raise ValueError("面部档案提取缺少可用图像输入（image_url/image_b64 均无效）")
+    payload = {
+        "model": settings.agnes_vision_model,
+        "messages": [
+            {"role": "system", "content": _FACE_PROFILE_SYSTEM_PROMPT},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "请输出该画面角色的面部特征档案 JSON。"},
+                    {"type": "image_url", "image_url": {"url": image_ref}},
+                ],
+            },
+        ],
+        "temperature": 0.1,
+        "max_tokens": 500,
+    }
+    async with _new_http_client() as client:
+        resp = await client.post(
+            f"{settings.agnes_llm_base_url.rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {settings.agnes_llm_api_key}"},
+            json=payload,
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(
+            f"视觉模型返回 HTTP {resp.status_code}：{resp.text[:200]}"
+        )
+    data = resp.json()
+    content = (((data.get("choices") or [{}])[0].get("message") or {}).get("content")) or ""
+    if not content.strip():
+        raise RuntimeError("视觉模型返回内容为空")
+    profile = _extract_json(content)
+    return {"profile": profile, "model": settings.agnes_vision_model}

@@ -6,17 +6,23 @@
 - POST   /api/models/compare                模型效果对比（PL-11，逐渠道生成并返回结果）
 - GET    /api/models/channels               当前用户自有渠道（api_key 脱敏前4后4）
 - POST   /api/models/channels               新建自有渠道（Key 经 Fernet 加密落库）
+- PUT    /api/models/channels/{id}          更新自有渠道（换 Key / 改地址 / 模型目录 / 启停）
 - DELETE /api/models/channels/{id}          删除自有渠道（仅自己的）
-- POST   /api/models/channels/{id}/test     连通性测试（openai 协议），更新健康状态
+- POST   /api/models/channels/{id}/test     连通性测试（按渠道能力协议探测），更新健康状态
+- POST   /api/models/probe-models           拉取渠道真实模型列表（模型下拉候选，防 SSRF）
 
 注：项目级模型配置存于 projects.config，由 /api/projects 维护，此处不做。
 """
 
 import asyncio
+import ipaddress
+import socket
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from openai import AsyncOpenAI
 from sqlalchemy import select, text
@@ -28,14 +34,18 @@ from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models import LogicalModel, ModelChannel, User
 from app.providers.image_agnes import generate_image_real
-from app.providers.llm import chat_with_meta
+from app.providers.image_dashscope import generate_image_dashscope
+from app.providers.llm import chat_with_meta, probe_llm_channel
 from app.schemas.model_config import (
     CatalogGroupOut,
     CatalogModelOut,
     CatalogOut,
     ChannelCreateRequest,
     ChannelOut,
+    ChannelProbeModelsOut,
+    ChannelProbeModelsRequest,
     ChannelTestResponse,
+    ChannelUpdateRequest,
     CompareItemOut,
     CompareRequest,
     CompareResponse,
@@ -258,6 +268,7 @@ async def compare_models(
                             _decrypt_api_key(channel.api_key_encrypted) or "missing-key",
                             model_name,
                             f"channel-{channel.id}",
+                            channel.protocol,
                         )],
                     ),
                     timeout=_COMPARE_TIMEOUT_SECONDS,
@@ -266,7 +277,8 @@ async def compare_models(
                 return CompareItemOut(
                     channel_id=channel_id, ok=True, text=text_out, elapsed_ms=elapsed,
                 )
-            # image：构造 ResolvedChannel 走 Agnes 真实出图（内部已吞异常返回 None）
+            # image：构造 ResolvedChannel 真实出图（按渠道协议分派：dashscope 走
+            # 百炼原生多模态生成，其余走 OpenAI images 兼容；provider 内部已吞异常）
             resolved = ResolvedChannel(
                 channel_id=channel.id,
                 name=f"channel-{channel.id}",
@@ -276,13 +288,15 @@ async def compare_models(
                 model=_extract_default_model(channel.models) or "image-gen",
                 capability="image",
             )
+            image_seed = int(time.time() * 1000) % 1_000_000_000 + channel.id
+            if channel.protocol == "dashscope":
+                image_call = generate_image_dashscope(
+                    req.prompt, settings.storage_path() / "generated", image_seed, resolved)
+            else:
+                image_call = generate_image_real(
+                    req.prompt, settings.storage_path() / "generated", image_seed, resolved)
             result = await asyncio.wait_for(
-                generate_image_real(
-                    req.prompt,
-                    settings.storage_path() / "generated",
-                    seed=int(time.time() * 1000) % 1_000_000_000 + channel.id,
-                    channel=resolved,
-                ),
+                image_call,
                 timeout=_COMPARE_TIMEOUT_SECONDS,
             )
             elapsed = int((time.perf_counter() - started) * 1000)
@@ -335,6 +349,7 @@ async def list_channels(
     return [
         ChannelOut(
             id=c.id,
+            name=c.name,
             protocol=c.protocol,
             base_url=c.base_url,
             api_key=_mask_api_key(c.api_key_encrypted) if c.api_key_encrypted else None,
@@ -356,7 +371,8 @@ async def create_channel(
     """新建用户自有渠道：API Key 经 Fernet 加密后落库（RD-49）。
 
     Args:
-        req: 渠道创建请求（protocol/base_url/api_key/models）。
+        req: 渠道创建请求（name/protocol/base_url/api_key/models；protocol
+            白名单 openai / openai_responses / anthropic 由 Schema 层校验）。
         user: 当前用户。
         db: 请求级异步数据库会话。
 
@@ -364,10 +380,8 @@ async def create_channel(
         ChannelOut: 新建渠道信息（api_key 已脱敏）。
 
     Raises:
-        HTTPException: 400 —— 协议暂不支持或 base_url 格式非法；401 —— 未认证。
+        HTTPException: 400 —— base_url 格式非法；401 —— 未认证；422 —— 协议不在白名单。
     """
-    if req.protocol != "openai":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前仅支持 openai 兼容协议")
     if not req.base_url.startswith(("http://", "https://")):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="base_url 须以 http(s):// 开头")
 
@@ -379,6 +393,7 @@ async def create_channel(
     ))
 
     channel = ModelChannel(
+        name=(req.name or "").strip() or None,
         protocol=req.protocol,
         base_url=req.base_url,
         api_key_encrypted=encrypt_text(req.api_key),  # 密文落库，接口层永不回传
@@ -391,6 +406,7 @@ async def create_channel(
     await db.commit()
     return ChannelOut(
         id=channel.id,
+        name=channel.name,
         protocol=channel.protocol,
         base_url=channel.base_url,
         api_key=_mask_api_key(channel.api_key_encrypted),
@@ -427,6 +443,65 @@ async def _get_owned_channel(db: AsyncSession, channel_id: int, user: User) -> M
     return channel
 
 
+@router.put("/channels/{channel_id}", response_model=ChannelOut)
+async def update_channel(
+    channel_id: int,
+    req: ChannelUpdateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ChannelOut:
+    """更新当前用户自有的模型渠道（换 Key / 改地址 / 改模型目录 / 启停）。
+
+    全字段可选语义：None 表示不修改该字段；api_key 仅在提供非空值时以
+    Fernet 加密覆盖旧 Key（前端「留空表示保持原 Key」）。任意字段变更后
+    渠道健康状态重置为 unknown（旧探测结果不再可信，需重新测试连通）。
+
+    Args:
+        channel_id: 渠道 ID（须为本人自有渠道）。
+        req: 更新请求（name/base_url/api_key/models/enabled，均可选）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        ChannelOut: 更新后的渠道信息（api_key 已脱敏）。
+
+    Raises:
+        HTTPException: 400 —— base_url 格式非法；404 —— 渠道不存在或非本人渠道。
+    """
+    channel = await _get_owned_channel(db, channel_id, user)
+
+    if req.base_url is not None:
+        if not req.base_url.startswith(("http://", "https://")):
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="base_url 须以 http(s):// 开头")
+        channel.base_url = req.base_url
+    if req.name is not None:
+        channel.name = req.name.strip() or None
+    if req.protocol is not None:
+        channel.protocol = req.protocol
+    if req.api_key is not None:
+        channel.api_key_encrypted = encrypt_text(req.api_key)
+    if req.models is not None:
+        channel.models = req.models
+    if req.enabled is not None:
+        channel.enabled = req.enabled
+
+    # 配置变更后旧健康状态失效：重置为 unknown 并清空探测时间（等待重新测试）
+    channel.health_status = "unknown"
+    channel.last_check_at = None
+    await db.commit()
+    return ChannelOut(
+        id=channel.id,
+        name=channel.name,
+        protocol=channel.protocol,
+        base_url=channel.base_url,
+        api_key=_mask_api_key(channel.api_key_encrypted) if channel.api_key_encrypted else None,
+        models=channel.models,
+        health_status=channel.health_status,
+        last_check_at=channel.last_check_at,
+        enabled=channel.enabled,
+    )
+
+
 @router.delete("/channels/{channel_id}")
 async def delete_channel(
     channel_id: int,
@@ -458,13 +533,17 @@ async def test_channel(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> ChannelTestResponse:
-    """测试自有渠道连通性（openai 协议）：发送一条最短消息验证，并更新健康状态。
+    """测试自有渠道连通性（按渠道登记的模型用途分派探测），并更新健康状态。
 
-    探测逻辑与 providers/llm.py 的 health_check 一致（异常不向上抛出，
-    全部收敛进结果），但以渠道自身 base_url / api_key 构造客户端。
+    探测分派（models 目录能力键优先级 chat > image）：
+    - 含 "chat" 键：按渠道协议（openai chat / openai responses / anthropic
+      messages）发送最短文本消息（probe_llm_channel）；
+    - 仅含 "image" 键：向 {base}/images/generations 发极小主体请求，非
+      401/403 的 4xx 视为连通（参数合法性不代表渠道不可用，避免真实出图
+      计费），401/403/网络异常为 down（与平台渠道健康探测口径一致）。
 
     Args:
-        channel_id: 渠道 ID。
+        channel_id: 渠道 ID（须为本人自有渠道）。
         user: 当前用户。
         db: 请求级异步数据库会话。
 
@@ -472,40 +551,200 @@ async def test_channel(
         ChannelTestResponse: ok / error / 更新后的 health_status（healthy 或 down）。
 
     Raises:
-        HTTPException: 400 —— 协议不支持；404 —— 渠道不存在或非本人渠道。
+        HTTPException: 404 —— 渠道不存在或非本人渠道；422 —— 协议不在白名单。
     """
     channel = await _get_owned_channel(db, channel_id, user)
-    if channel.protocol != "openai":
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="当前仅支持 openai 兼容协议测试")
 
-    # 从 models 目录中取第一个模型名作为探测模型，缺省回退平台默认
-    probe_model: Optional[str] = None
+    # 从 models 目录提取能力键与首个模型名
     models_cfg: Any = channel.models or {}
-    if isinstance(models_cfg, dict):
-        for names in models_cfg.values():
-            if isinstance(names, list) and names:
-                probe_model = str(names[0])
-                break
+    chat_names: list = models_cfg.get("chat") if isinstance(models_cfg, dict) else None
+    image_names: list = models_cfg.get("image") if isinstance(models_cfg, dict) else None
+    probe_model: Optional[str] = None
+    for names in (chat_names, image_names):
+        if isinstance(names, list) and names:
+            probe_model = str(names[0])
+            break
 
     api_key = _decrypt_api_key(channel.api_key_encrypted) or "missing-key"
-    client = AsyncOpenAI(
-        base_url=channel.base_url,
-        api_key=api_key,
-        timeout=_TEST_TIMEOUT_SECONDS,
-        max_retries=0,
-    )
-    ok, error = True, None
-    try:
-        await client.chat.completions.create(
-            model=probe_model or "gpt-4o-mini",
-            messages=[{"role": "user", "content": "ping"}],
-            temperature=0,
-            max_tokens=8,
+    if channel.protocol == "dashscope":
+        # DashScope 原生渠道（百炼文生图）：以无效模型名提交探测任务——
+        # 鉴权失败返回 401/403，鉴权通过但模型非法返回 4xx 其他值（不计费）
+        ok, error = await _probe_dashscope_image(channel.base_url, api_key)
+    elif not chat_names and isinstance(image_names, list) and image_names:
+        # 图像渠道：images 端点极小请求探测（非 401/403 的 4xx 视为连通，避免计费）
+        ok, error = await _probe_image_endpoint(
+            channel.base_url, api_key, probe_model or "qwen-image-3.0")
+    else:
+        ok, error = await probe_llm_channel(
+            channel.protocol, channel.base_url, api_key, probe_model or "gpt-4o-mini",
         )
-    except Exception as exc:  # noqa: BLE001 —— 健康检查需要捕获一切异常
-        ok, error = False, str(exc)
 
     channel.health_status = "healthy" if ok else "down"
     channel.last_check_at = datetime.now(timezone.utc)
     await db.commit()
     return ChannelTestResponse(ok=ok, error=error, health_status=channel.health_status)
+
+
+async def _probe_dashscope_image(base_url: str, api_key: str) -> tuple:
+    """向 DashScope 原生多模态生成端点发起无效模型探测（内部函数，不计费）。
+
+    以非法模型名同步提交生成请求（qwen-image 走 multimodal-generation 端点，
+    不支持异步头，2026-10-16 实测）：401/403 视为鉴权失败（down）；其余 4xx
+    （model not found 等参数错误）证明鉴权通过、端点可达（不会产生真实
+    生图计费）。
+
+    Args:
+        base_url: 渠道接口地址（根域名，含协议）。
+        api_key: 明文 API Key。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    root = base_url.rstrip("/")
+    if "://" in root:
+        root = root.split("://", 1)[0] + "://" + root.split("://", 1)[1].split("/", 1)[0]
+    url = f"{root}/api/v1/services/aigc/multimodal-generation/generation"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": "__probe_invalid_model__",
+        "input": {"messages": [{"role": "user", "content": [{"text": "ping"}]}]},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_image_endpoint(
+    base_url: str,
+    api_key: str,
+    model: str,
+) -> tuple:
+    """向 OpenAI images 兼容端点发起极小请求探测连通性（内部函数）。
+
+    2xx 或非 401/403 的 4xx 视为连通（请求体参数问题不代表渠道不可用，
+    避免真实出图产生计费）；401/403 为鉴权失败，网络异常为不可用。
+
+    Args:
+        base_url: 渠道接口地址（含 /v1）。
+        api_key: 明文 API Key。
+        model: 探测模型名。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    base = base_url.rstrip("/")
+    url = f"{base}/images/generations"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {"model": model, "prompt": "ping", "n": 1}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if 200 <= resp.status_code < 300 or 400 <= resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+# probe-models 的地址黑名单前缀（防 SSRF：禁止本机/内网/链路本地地址）
+_SSRF_HOST_PREFIXES = (
+    "localhost", "127.", "10.", "192.168.", "169.254.",
+    "0.0.0.0", "[::1]", "[fc", "[fd", "[fe80",
+)
+
+
+def _assert_public_http_url(base_url: str) -> None:
+    """校验渠道地址为公网 http(s) 地址（内部函数，防 SSRF）。
+
+    校验规则：必须以 http(s):// 开头；host 为 IP 字面量时必须是公网地址，
+    为域名时解析出的首个地址必须是公网地址（拒绝本机回环/内网/链路本地）。
+
+    Args:
+        base_url: 待校验的渠道地址。
+
+    Returns:
+        None
+
+    Raises:
+        HTTPException: 400 —— 地址非法或指向内网/本机。
+    """
+    if not base_url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="base_url 须以 http(s):// 开头")
+    host = urlparse(base_url).hostname or ""
+    if not host:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="base_url 缺少主机名")
+    if any(host.lower().startswith(p) for p in _SSRF_HOST_PREFIXES):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不允许指向本机或内网地址")
+    try:
+        infos = socket.getaddrinfo(host, None)
+        addr = infos[0][4][0] if infos else ""
+        ip = ipaddress.ip_address(addr)
+        if not ip.is_global:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="不允许指向内网地址")
+    except socket.gaierror:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"主机名无法解析：{host}")
+
+
+@router.post("/probe-models", response_model=ChannelProbeModelsOut)
+async def probe_models(
+    req: ChannelProbeModelsRequest,
+    user: User = Depends(get_current_user),
+) -> ChannelProbeModelsOut:
+    """拉取渠道真实模型列表（添加渠道对话框的模型下拉候选）。
+
+    以用户提供的地址与 Key 直连渠道 GET {base}/models（OpenAI 兼容与
+    Anthropic 均提供该端点；Key 仅本次请求使用不落库）。地址须经公网校验
+    （防 SSRF）。全部异常收敛进响应，不向上抛出。
+
+    Args:
+        req: 探测请求（protocol/base_url/api_key）。
+        user: 当前用户。
+
+    Returns:
+        ChannelProbeModelsOut: ok + 模型 ID 列表（排序去重）或失败原因。
+
+    Raises:
+        HTTPException: 400 —— 地址非法或指向内网/本机。
+    """
+    _assert_public_http_url(req.base_url)
+    base = req.base_url.rstrip("/")
+    if req.protocol == "anthropic":
+        url = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"
+        headers = {"x-api-key": req.api_key, "anthropic-version": "2023-06-01"}
+    elif req.protocol == "dashscope":
+        # DashScope 原生渠道：借同账号 compatible-mode 的 /models 拉取模型列表
+        root = base.split("://", 1)[0] + "://" + base.split("://", 1)[1].split("/", 1)[0] if "://" in base else base
+        url = f"{root}/compatible-mode/v1/models"
+        headers = {"Authorization": f"Bearer {req.api_key}"}
+    else:
+        # openai / openai_responses 均为 {base}/models（Bearer 认证）
+        url = f"{base}/models"
+        headers = {"Authorization": f"Bearer {req.api_key}"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+        if resp.status_code >= 400:
+            return ChannelProbeModelsOut(ok=False, error=f"HTTP {resp.status_code}: {resp.text[:200]}")
+        data = (resp.json() or {}).get("data") or []
+        models = sorted({
+            str(item.get("id")) for item in data
+            if isinstance(item, dict) and item.get("id")
+        })
+        return ChannelProbeModelsOut(ok=True, models=models)
+    except Exception as exc:  # noqa: BLE001 —— 拉取失败收敛进响应
+        return ChannelProbeModelsOut(ok=False, error=str(exc))

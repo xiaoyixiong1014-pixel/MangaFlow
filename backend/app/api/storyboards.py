@@ -40,6 +40,7 @@ from app.schemas.storyboard import (
     AutoFitDurationRequest,
     ContinuityCheckOut,
     ContinuityCheckRequest,
+    DecomposeRequest,
     DeliverCanvasOut,
     DeliverCanvasRequest,
     MergeRequest,
@@ -51,6 +52,7 @@ from app.schemas.storyboard import (
     StoryboardWarningsOut,
 )
 from app.services.script_service import get_owned_project
+from app.services.generation_service import render_stale_storyboards
 from app.services.storyboard_service import (
     auto_fit_duration,
     continuity_check,
@@ -71,14 +73,25 @@ router = APIRouter(tags=["storyboards"])
 @router.post("/api/projects/{project_id}/storyboards/decompose")
 async def decompose(
     project_id: int,
+    episode_id: Optional[int] = Query(default=None),
+    req: Optional[DecomposeRequest] = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     """AI 拆解：读剧本 content.scenes 逐场景生成 1~3 镜（LLM 失败规则降级 2 镜），
-    全量重建语义（先删后建），project.status='storyboard'。
+    project.status='storyboard'。
+
+    P0-1 锁定门禁：默认校验主要角色定妆照就绪，未就绪返回 409（body 含
+    code=asset_lock_not_ready 与未就绪清单）；前端快速模式勾选后传
+    skip_lock_check=true 跳过。空 body 兼容旧调用（等同严格校验）。
+
+    按集拆解（S-06 全局剧集上下文）：episode_id 传值时只读取并重建该剧集的
+    分镜（其他集分镜保留，sequence 跨集全局重排）；缺省全量重建（既有行为）。
 
     Args:
         project_id: 项目 ID。
+        episode_id: 可选剧集 ID（按集拆解范围；None=全量重建）。
+        req: 拆解请求（可空；skip_lock_check=快速模式跳过门禁）。
         user: 当前用户。
         db: 请求级异步数据库会话。
 
@@ -86,10 +99,15 @@ async def decompose(
         dict: {"total": 新建分镜数, "degraded": 是否发生过规则降级}。
 
     Raises:
-        HTTPException: 400 —— 无剧本或剧本无场景数据；404 —— 项目不存在/非本人。
+        HTTPException: 400 —— 范围内无剧本或剧本无场景数据；
+            409 —— 主要角色定妆照未就绪（body 含未就绪清单）；404 —— 项目不存在/非本人。
     """
     project = await _owned(db, project_id, user)
-    return await decompose_storyboards(db, project)
+    return await decompose_storyboards(
+        db, project,
+        skip_lock_check=bool(req and req.skip_lock_check),
+        scope_episode_id=episode_id,
+    )
 
 
 @router.post("/api/projects/{project_id}/storyboards/reorder")
@@ -334,6 +352,35 @@ async def merge_storyboard_endpoint(
     project = await _owned(db, project_id, user)
     result = await merge_storyboards(db, project, storyboard_id, req.other_id)
     return StoryboardOut.model_validate(result)
+
+
+@router.post("/api/projects/{project_id}/storyboards/render-stale")
+async def render_stale(
+    project_id: int,
+    episode_id: Optional[int] = Query(default=None),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """批量重渲染过期镜头（P0-3 版本透传）。
+
+    找出引用资产（角色定妆照/场景概念图）版本已过期的分镜，逐镜入队关键帧
+    重生成任务（10 积分/帧，统一冻结）；已在队列中的镜头自动跳过。
+
+    Args:
+        project_id: 项目 ID。
+        episode_id: 可选剧集过滤（缺省全部）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"queued": 入队数, "skipped": 跳过数, "storyboard_ids": [...],
+              "total_cost": 冻结积分总额}。
+
+    Raises:
+        HTTPException: 409 —— 积分余额不足；404 —— 项目不存在/非本人。
+    """
+    project = await _owned(db, project_id, user)
+    return await render_stale_storyboards(db, project=project, episode_id=episode_id)
 
 
 @router.post("/api/projects/{project_id}/storyboards/{storyboard_id}/regen", response_model=StoryboardRegenOut)

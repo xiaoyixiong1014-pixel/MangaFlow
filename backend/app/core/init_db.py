@@ -523,6 +523,17 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     # 三张资产表补 source 列（存量行填充默认值 manual，标识手工创建）
     ("characters",
      "ALTER TABLE characters ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual'"),
+    # ---------- 角色圣经（形象特征之外的服装配饰拆解与风格画质两段） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS outfit TEXT"),
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS style_note TEXT"),
+    ("characters",
+     "COMMENT ON COLUMN characters.outfit IS "
+     "'服装配饰完整拆解（角色圣经：上装/下装/鞋履/配饰/标志性物品）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.style_note IS "
+     "'风格与画质特点（角色圣经：画风/光线/画质关键词）'"),
     ("scenes",
      "ALTER TABLE scenes ADD COLUMN IF NOT EXISTS source VARCHAR(30) NOT NULL DEFAULT 'manual'"),
     ("props",
@@ -656,6 +667,78 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("projects",
      "COMMENT ON COLUMN projects.story_setting IS "
      "'故事设定（P2）：logline/core_conflict/worldview/source(ai|user)/updated_at'"),
+    # ---------- P0 资产一致性闭环（P0-3 版本透传 / P0-4 视觉一致性 / P2 styles 软删） ----------
+    # 四类资产图版本号（P0-3：首次生成置 1，替换/重生成回写 +1；分镜引用记快照判过期）
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS asset_version INTEGER NOT NULL DEFAULT 1"),
+    ("scenes", "ALTER TABLE scenes ADD COLUMN IF NOT EXISTS asset_version INTEGER NOT NULL DEFAULT 1"),
+    ("props", "ALTER TABLE props ADD COLUMN IF NOT EXISTS asset_version INTEGER NOT NULL DEFAULT 1"),
+    ("asset_variants", "ALTER TABLE asset_variants ADD COLUMN IF NOT EXISTS asset_version INTEGER NOT NULL DEFAULT 1"),
+    ("characters",
+     "COMMENT ON COLUMN characters.asset_version IS '资产图版本号（P0-3：图回写/替换时递增）'"),
+    ("scenes",
+     "COMMENT ON COLUMN scenes.asset_version IS '资产图版本号（P0-3：图回写/替换时递增）'"),
+    ("props",
+     "COMMENT ON COLUMN props.asset_version IS '资产图版本号（P0-3：图回写/替换时递增）'"),
+    ("asset_variants",
+     "COMMENT ON COLUMN asset_variants.asset_version IS '资产图版本号（P0-3：图回写/替换时递增）'"),
+    # 分镜引用版本快照（P0-3：NULL=旧数据视为一致，防存量全量误报）
+    ("storyboards", "ALTER TABLE storyboards ADD COLUMN IF NOT EXISTS scene_version INTEGER"),
+    ("storyboard_characters", "ALTER TABLE storyboard_characters ADD COLUMN IF NOT EXISTS character_version INTEGER"),
+    ("storyboard_characters", "ALTER TABLE storyboard_characters ADD COLUMN IF NOT EXISTS variant_version INTEGER"),
+    ("storyboards",
+     "COMMENT ON COLUMN storyboards.scene_version IS '绑定场景时 scenes.asset_version 快照（P0-3）'"),
+    ("storyboard_characters",
+     "COMMENT ON COLUMN storyboard_characters.character_version IS '引用时 characters.asset_version 快照（P0-3）'"),
+    ("storyboard_characters",
+     "COMMENT ON COLUMN storyboard_characters.variant_version IS '引用时 asset_variants.asset_version 快照（P0-3）'"),
+    # 角色面部档案（P0-4：Agnes 视觉提取的结构化特征 JSON）
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS face_profile JSONB"),
+    ("characters",
+     "COMMENT ON COLUMN characters.face_profile IS "
+     "'面部档案（Agnes 视觉提取的结构化特征 JSON，P0-4）'"),
+    # asset_embeddings.kind 向量类别（P0-4：text/face，存量行默认 text）+ 查询索引
+    ("asset_embeddings", "ALTER TABLE asset_embeddings ADD COLUMN IF NOT EXISTS kind VARCHAR(20) NOT NULL DEFAULT 'text'"),
+    ("asset_embeddings", "CREATE INDEX IF NOT EXISTS idx_ae_asset_kind ON asset_embeddings (asset_type, asset_id, kind)"),
+    ("asset_embeddings",
+     "COMMENT ON COLUMN asset_embeddings.kind IS '向量类别：text 文本特征 / face 面部档案特征（P0-4）'"),
+    ("asset_embeddings", """
+        DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conrelid = 'asset_embeddings'::regclass
+                  AND conname = 'ck_ae_kind'
+            ) THEN
+                ALTER TABLE asset_embeddings ADD CONSTRAINT ck_ae_kind
+                CHECK (kind IN ('text', 'face'));
+            END IF;
+        END $$;
+    """),
+    # styles 软删统一（P2：与 characters/scenes/props 对齐，原为物理删除特判）
+    ("styles", "ALTER TABLE styles ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ"),
+    ("styles",
+     "COMMENT ON COLUMN styles.deleted_at IS '软删除时间'"),
+    # ---------- 模型配置优化（2026-10-16）：自有渠道备注名 ----------
+    # model_channels.name：用户自有渠道的展示备注名（可空；编辑渠道/模型列表展示）
+    ("model_channels", "ALTER TABLE model_channels ADD COLUMN IF NOT EXISTS name VARCHAR(64)"),
+    ("model_channels",
+     "COMMENT ON COLUMN model_channels.name IS "
+     "'渠道备注名（用户自有渠道展示用）'"),
+    # ---------- 按集工作流（2026-10-17）：角色资产启用状态 ----------
+    # 角色设定确认后 enabled_at=NULL（流水线内部数据，不进资产管理）；
+    # 用户经「启用资产」抽取确认入池时置 now（出现在资产管理并可参与分镜/生成）
+    ("characters", "ALTER TABLE characters ADD COLUMN IF NOT EXISTS enabled_at TIMESTAMPTZ"),
+    ("characters",
+     "COMMENT ON COLUMN characters.enabled_at IS "
+     "'资产启用时间（角色设定确认=NULL 不进资产管理；启用资产确认=now）'"),
+    # ---------- 按集启用名单（2026-10-17）：episodes.enabled_assets ----------
+    # 该集经「启用资产」确认入池的资产名名单（JSONB：characters/scenes/props/
+    # styles 四键各为名字数组，union 追加）；资产管理页按集视图仅显示名单内资产，
+    # 未启用过的集四类显示为空
+    ("episodes",
+     "ALTER TABLE episodes ADD COLUMN IF NOT EXISTS enabled_assets JSONB"),
+    ("episodes",
+     "COMMENT ON COLUMN episodes.enabled_assets IS "
+     "'该集已启用资产名名单（启用资产确认入池时 union 追加；NULL=未启用过）'"),
 ]
 
 

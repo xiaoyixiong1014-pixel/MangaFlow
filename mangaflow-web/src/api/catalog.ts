@@ -9,7 +9,10 @@ import type {
   Catalog,
   Channel,
   ChannelCreatePayload,
+  ChannelProbeModelsPayload,
+  ChannelProbeModelsResult,
   ChannelTestResult,
+  ChannelUpdatePayload,
   ComparePayload,
   CompareResult,
   HealthSummary,
@@ -34,12 +37,24 @@ export function myChannels(): Promise<Channel[]> {
 
 /**
  * 新增用户自有渠道（api_key 服务端 AES 加密落库）。
- * @param payload 协议/接口地址/密钥/模型目录
+ * @param payload 备注名/协议/接口地址/密钥/模型目录
  * @returns 新建渠道
  * @throws 400 base_url 非法；500 渠道连通性探测失败仍会创建（返回健康状态）
  */
 export function addChannel(payload: ChannelCreatePayload): Promise<Channel> {
   return client.post('/models/channels', payload).then((r) => r.data)
+}
+
+/**
+ * 更新用户自有渠道（换 Key / 改地址 / 改模型目录 / 启停）。
+ * api_key 缺省表示保持原 Key；任意变更后服务端将健康状态重置为 unknown。
+ * @param channelId 渠道 ID
+ * @param payload 更新字段（全可选）
+ * @returns 更新后的渠道
+ * @throws 400 base_url 非法；404 渠道不存在/非本人
+ */
+export function updateChannel(channelId: number, payload: ChannelUpdatePayload): Promise<Channel> {
+  return client.put(`/models/channels/${channelId}`, payload).then((r) => r.data)
 }
 
 /**
@@ -59,6 +74,16 @@ export function deleteChannel(channelId: number): Promise<MessageResponse> {
  */
 export function testChannel(channelId: number): Promise<ChannelTestResult> {
   return client.post(`/models/channels/${channelId}/test`).then((r) => r.data)
+}
+
+/**
+ * 拉取渠道真实模型列表（GET {base}/models 后端代理，模型下拉候选）。
+ * Key 仅本次请求使用；服务端拒绝本机/内网地址（防 SSRF）。
+ * @param payload 协议/接口地址/密钥
+ * @returns ok + 模型 ID 列表或失败原因
+ */
+export function probeModels(payload: ChannelProbeModelsPayload): Promise<ChannelProbeModelsResult> {
+  return client.post('/models/probe-models', payload, { timeout: 30000 }).then((r) => r.data)
 }
 
 /**

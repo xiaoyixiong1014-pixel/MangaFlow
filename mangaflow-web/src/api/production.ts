@@ -32,13 +32,14 @@ import type {
  * 生成分镜关键帧（trial 打样 / full 全量）。
  * @param projectId 项目 ID
  * @param storyboardId 分镜 ID
- * @param payload 阶段与可选用户补充提示词
+ * @param payload 阶段与可选用户补充提示词；episode_id 按集工作流（S-06）：
+ *        full 全量时限定该剧集的分镜（缺省=项目全部）
  * @returns 新建任务列表与冻结积分总额
  */
 export function keyframes(
   projectId: number,
   storyboardId: number,
-  payload: { phase: 'trial' | 'full'; prompt_editable?: string },
+  payload: { phase: 'trial' | 'full'; prompt_editable?: string; episode_id?: number },
 ): Promise<KeyframeCreateResult> {
   return client
     .post(`/projects/${projectId}/storyboards/${storyboardId}/keyframes`, payload)
