@@ -383,3 +383,44 @@ async def test_shengcheng_changjing_daotu_tu(client, auth, db):
         f"/api/projects/{pid}/assets/scenes/{scene.id}/generate", headers=auth["headers"]
     )
     assert resp3.status_code == 200, resp3.text
+
+
+async def test_zonglan_sanlei_zichan_guolv(client, auth, db):
+    """/api/characters 总览：角色+场景+道具三类联合；未启用角色（enabled_at=NULL）不出现。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    from datetime import datetime, timezone as tz
+
+    from app.models import Prop, Scene
+
+    project = await create_project(client, auth["headers"], title=f"总览项目_{unique_suffix()}")
+    pid = project["id"]
+    now = datetime.now(tz.utc)
+    db.add(Character(project_id=pid, name="已启用角色", visual_prompt="p",
+                     enabled_at=now))
+    db.add(Character(project_id=pid, name="未启用角色", visual_prompt="p",
+                     enabled_at=None))
+    db.add(Scene(project_id=pid, name="咖啡馆", visual_prompt="p"))
+    db.add(Prop(project_id=pid, name="怀表", visual_prompt="p"))
+    await db.commit()
+
+    resp = await client.get("/api/characters", headers=auth["headers"])
+    assert resp.status_code == 200, resp.text
+    rows = resp.json()["items"]
+    types = {(r["asset_type"], r["name"]) for r in rows}
+    # 三类齐全
+    assert ("character", "已启用角色") in types
+    assert ("scene", "咖啡馆") in types
+    assert ("prop", "怀表") in types
+    # 未启用角色（角色设定确认态）不进总览
+    assert ("character", "未启用角色") not in types

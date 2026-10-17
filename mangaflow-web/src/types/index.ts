@@ -800,11 +800,11 @@ export interface ConsistencyCheckResult {
   report: string
 }
 
-/** 跨项目资产总览行（GET /api/characters，角色 + 场景联合） */
+/** 跨项目资产总览行（GET /api/characters，角色 + 场景 + 道具联合） */
 export interface CrossProjectAsset {
   /** 资产 ID */
   id: number
-  /** 资产类型：character / scene */
+  /** 资产类型：character / scene / prop */
   asset_type: string
   /** 所属项目 ID */
   project_id: number

@@ -725,7 +725,10 @@ async def cross_project_assets(
     page: int,
     page_size: int,
 ) -> Tuple[List[Dict[str, Any]], int]:
-    """跨项目资产总览：当前用户全部项目的 characters + scenes 联合查询（含项目标题）。
+    """跨项目资产总览：当前用户全部项目的 characters + scenes + props 联合查询（含项目标题）。
+
+    "角色与场景"总览页数据源：三类资产统一排序分页；角色仅含经「启用资产」
+    确认入池的行（enabled_at 非空），场景/道具排除软删行。
 
     Args:
         db: 异步数据库会话。
@@ -746,11 +749,13 @@ async def cross_project_assets(
     like = f"%{search}%" if search else None
     char_conds = [Character.deleted_at.is_(None)]
     scene_conds: list = []
+    prop_conds: list = []
     if like:
         char_conds.append(Character.name.ilike(like) | Character.description.ilike(like))
         scene_conds.append(Scene.name.ilike(like) | Scene.description.ilike(like))
+        prop_conds.append(Prop.name.ilike(like) | Prop.description.ilike(like))
 
-    # characters 分支
+    # characters 分支（按集工作流：角色设定确认的角色 enabled_at=NULL 不进总览）
     char_part = (
         select(
             Character.id.label("id"),
@@ -764,7 +769,7 @@ async def cross_project_assets(
             Character.created_at.label("created_at"),
         )
         .join(Project, Project.id == Character.project_id)
-        .where(*conds, *char_conds)
+        .where(*conds, Character.enabled_at.is_not(None), *char_conds)
     )
     # scenes 分支（列对齐 union）
     scene_part = (
@@ -782,18 +787,37 @@ async def cross_project_assets(
         .join(Project, Project.id == Scene.project_id)
         .where(*conds, *scene_conds)
     )
+    # props 分支（列对齐 union；"角色与场景"总览页同时收纳道具资产）
+    prop_part = (
+        select(
+            Prop.id.label("id"),
+            literal("prop").label("asset_type"),
+            Prop.project_id.label("project_id"),
+            Project.title.label("project_title"),
+            Prop.name.label("name"),
+            Prop.description.label("description"),
+            Prop.visual_prompt.label("visual_prompt"),
+            Prop.asset_url.label("asset_url"),
+            Prop.created_at.label("created_at"),
+        )
+        .join(Project, Project.id == Prop.project_id)
+        .where(*conds, Prop.deleted_at.is_(None), *prop_conds)
+    )
 
-    # 总数 = 两类 count 相加
+    # 总数 = 三类 count 相加
     n_char = await db.scalar(
         select(func.count()).select_from(char_part.subquery())
     )
     n_scene = await db.scalar(
         select(func.count()).select_from(scene_part.subquery())
     )
-    total = (n_char or 0) + (n_scene or 0)
+    n_prop = await db.scalar(
+        select(func.count()).select_from(prop_part.subquery())
+    )
+    total = (n_char or 0) + (n_scene or 0) + (n_prop or 0)
 
     # union 后统一排序分页（子查询化再查询）
-    sub = char_part.union_all(scene_part).subquery()
+    sub = char_part.union_all(scene_part, prop_part).subquery()
     rows = await db.execute(
         select(sub)
         .order_by(sub.c.created_at.desc(), sub.c.id.desc())

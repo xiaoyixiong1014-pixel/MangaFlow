@@ -305,11 +305,14 @@ export function consistencyCheck(
 }
 
 /**
- * 跨项目资产总览（角色 + 场景联合，"角色与场景"页数据源）。
+ * 跨项目资产总览（角色 + 场景 + 道具联合，"角色与场景"页数据源）。
+ * 后端为分页响应 {items, total, ...}，此处解包 items 数组（页面上拉全量）。
  * @returns 总览行列表
  */
 export function overviewCharacters(): Promise<CrossProjectAsset[]> {
-  return client.get('/characters').then((r) => r.data)
+  return client
+    .get('/characters', { params: { page: 1, page_size: 200 } })
+    .then((r) => r.data.items)
 }
 
 /** 跨项目资产总览查询参数 */
