@@ -144,6 +144,33 @@ def build_prompt(*parts: Optional[str]) -> str:
     return " ".join(p.strip() for p in parts if p and p.strip())
 
 
+def split_prompt_negative(prompt_locked: Optional[str]) -> Tuple[str, Optional[str]]:
+    """从锁定层提示词中剥离「负面排除：」段（方案 B 负面提示词分层）。
+
+    负面提示词不能拼进正向生图提示词（模型会画出被排除的元素），
+    生成任务创建时须单独剥离至 meta.negative_prompt，由执行器按渠道
+    能力决定透传或忽略。锁定层中「负面排除：」段总在末尾
+    （_build_prompt_locked 把扩展要素追加在最后），按前缀截断即可。
+
+    Args:
+        prompt_locked: 锁定层提示词（可能含「负面排除：」段，旧数据无）。
+
+    Returns:
+        Tuple[str, Optional[str]]: (剥离后的正向锁定层, 负面提示词或 None)。
+
+    Raises:
+        无：纯字符串处理，不产生异常路径。
+    """
+    text = (prompt_locked or "").strip()
+    marker = "负面排除："
+    idx = text.find(marker)
+    if idx < 0:
+        return text, None
+    positive = text[:idx].strip().rstrip("；;")
+    negative = text[idx + len(marker):].strip()
+    return positive, (negative or None)
+
+
 async def get_video_price(db: AsyncSession) -> int:
     """读取视频逻辑模型的每秒单价（元数据来自 logical_models.price_per_unit）。
 
@@ -303,8 +330,15 @@ async def create_keyframe_tasks(
         Tuple[List[Task], int]: （新建任务列表，冻结积分总额）。
 
     Raises:
-        HTTPException: 409 —— 防重复提交 / 积分余额不足。
+        HTTPException: 400 —— 项目未确认分镜（状态非 producing，生成阶段门禁）/
+            范围无分镜；409 —— 防重复提交 / 积分余额不足。
     """
+    # 生成阶段门禁（与前端「确认分镜，进入生成」对应）：未确认不允许发起关键帧生成
+    if project.status != "producing":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="请先在分镜设计页点击「确认分镜，进入生成」后再发起关键帧生成",
+        )
     if phase == "trial":
         targets: List[Storyboard] = [storyboard]
     else:
@@ -327,9 +361,11 @@ async def create_keyframe_tasks(
 
     tasks: List[Task] = []
     for sb in targets:
-        # 提示词分层拼接：锁定层 + 可编辑层（trial 用请求值，full 用分镜自身字段）+ 风格锚点
+        # 提示词分层拼接：锁定层 + 可编辑层（trial 用请求值，full 用分镜自身字段）+ 风格锚点；
+        # 方案 B：负面排除段从锁定层剥离，单独入 meta 供执行器透传
         editable = prompt_editable if phase == "trial" else sb.prompt_editable
-        prompt = build_prompt(sb.prompt_locked, editable, project.style)
+        locked_positive, locked_negative = split_prompt_negative(sb.prompt_locked)
+        prompt = build_prompt(locked_positive, editable, project.style)
         idem = f"keyframe_{sb.id}_{phase}_{uuid4().hex[:8]}"
         task = await freeze_and_create_task(
             db,
@@ -340,6 +376,7 @@ async def create_keyframe_tasks(
             storyboard_id=sb.id,
             meta={
                 "prompt": prompt,
+                "negative_prompt": locked_negative,
                 "target_type": "storyboard_keyframe",
                 "target_id": sb.id,
             },
@@ -387,7 +424,9 @@ async def create_video_task(
         )
     per_second = await get_video_price(db)
     cost = max(1, int(per_second * (storyboard.duration or 5)))
-    prompt = build_prompt(storyboard.prompt_locked, storyboard.prompt_editable, project.style)
+    # 方案 B：负面排除段从锁定层剥离（视频正向提示词同样不混入负面）
+    locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
+    prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style)
     await _precheck_balance(db, project.user_id, cost)
     return await freeze_and_create_task(
         db,
@@ -398,6 +437,7 @@ async def create_video_task(
         storyboard_id=storyboard.id,
         meta={
             "prompt": prompt,
+            "negative_prompt": locked_negative,
             "duration": storyboard.duration or 5,
             "storyboard_id": storyboard.id,
             "use_end_frame": use_end_frame,
@@ -454,7 +494,9 @@ async def create_end_frame_task(
         )
     total_cost = IMAGE_COST_PER_FRAME
     await _precheck_balance(db, project.user_id, total_cost)
-    prompt = build_prompt(storyboard.prompt_locked, storyboard.prompt_editable, project.style)
+    # 方案 B：负面排除段从锁定层剥离，单独入 meta
+    locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
+    prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style)
     return await freeze_and_create_task(
         db,
         project=project,
@@ -464,6 +506,7 @@ async def create_end_frame_task(
         storyboard_id=storyboard.id,
         meta={
             "prompt": prompt,
+            "negative_prompt": locked_negative,
             "target_type": "storyboard_end_frame",
             "target_id": storyboard.id,
             "storyboard_id": storyboard.id,
@@ -684,7 +727,9 @@ async def render_stale_storyboards(
         sb = await db.get(Storyboard, o["id"])
         if sb is None:
             continue
-        prompt = build_prompt(sb.prompt_locked, sb.prompt_editable, project.style)
+        # 方案 B：负面排除段从锁定层剥离，单独入 meta
+        locked_positive, locked_negative = split_prompt_negative(sb.prompt_locked)
+        prompt = build_prompt(locked_positive, sb.prompt_editable, project.style)
         await freeze_and_create_task(
             db,
             project=project,
@@ -694,6 +739,7 @@ async def render_stale_storyboards(
             storyboard_id=sb.id,
             meta={
                 "prompt": prompt,
+                "negative_prompt": locked_negative,
                 "target_type": "storyboard_keyframe",
                 "target_id": sb.id,
                 # P0-3 溯源：标记本次入队为过期重渲染

@@ -642,6 +642,8 @@ export interface CharacterAsset {
   reference_image_url?: string | null
   /** 资产标签数组（A-05） */
   tags?: string[]
+  /** 角色性别（男性/女性/中性；角色设定 agent 生成，生图提示词性别锚定） */
+  gender?: string | null
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */
@@ -838,6 +840,16 @@ export interface SbCharacterLink {
   link_confidence?: number | null
 }
 
+/** 分镜-道具关联输出（方案 B） */
+export interface SbPropLink {
+  /** 道具资产 ID */
+  prop_id: number
+  /** 道具名（联查回显） */
+  name: string
+  /** 实体链接置信度（0~1） */
+  link_confidence?: number | null
+}
+
 /** 分镜（对应 StoryboardOut） */
 export interface Storyboard {
   /** 分镜 ID */
@@ -864,6 +876,14 @@ export interface Storyboard {
   prompt_locked?: string | null
   /** 提示词用户可编辑层 */
   prompt_editable?: string | null
+  /** 机位与角度（方案 B：平视/俯拍/仰拍/斜角/过肩/顶摄） */
+  camera_angle?: string | null
+  /** 环境与光影描述（方案 B，分层提示词「环境与光影层」） */
+  lighting?: string | null
+  /** 负面提示词（方案 B，分层提示词「负面排除层」） */
+  negative_prompt?: string | null
+  /** 声音结构化信息（方案 B：{sfx: 音效列表, emotion: 情绪标签}） */
+  audio?: { sfx?: string[]; emotion?: string | null } | null
   /** 关键帧 URL */
   keyframe_url?: string | null
   /** 尾帧 URL（尾帧任务完成后由后端回写，视频尾帧控制依赖） */
@@ -878,6 +898,8 @@ export interface Storyboard {
   regen_count: number
   /** 关联角色列表 */
   characters: SbCharacterLink[]
+  /** 关联道具列表（方案 B） */
+  props?: SbPropLink[]
   /** 引用资产是否已过期（P0-3：角色定妆照/场景图更新后 true，前端标黄） */
   stale?: boolean
   /** 过期原因文案列表（tooltip 展示） */
@@ -900,6 +922,14 @@ export interface StoryboardUpdatePayload {
   prompt_editable?: string
   /** 强绑场景资产 ID */
   scene_id?: number
+  /** 机位与角度（方案 B） */
+  camera_angle?: string
+  /** 环境与光影（方案 B） */
+  lighting?: string
+  /** 负面提示词（方案 B） */
+  negative_prompt?: string
+  /** 声音结构化信息（方案 B：{sfx, emotion}） */
+  audio?: { sfx?: string[]; emotion?: string | null }
   /** 角色关联列表（整体替换） */
   character_links?: { character_id: number; variant_id?: number; link_confidence?: number }[]
 }
@@ -924,14 +954,6 @@ export interface StoryboardWarnings {
   over_ratio?: number | null
   /** 告警列表 */
   warnings: StoryboardWarning[]
-}
-
-/** 分镜重生成响应 */
-export interface StoryboardRegenResult {
-  /** 累计重生成次数 */
-  regen_count: number
-  /** >= 3 次时建议进入画布精修（RD-25） */
-  suggest_canvas: boolean
 }
 
 // ============================================================

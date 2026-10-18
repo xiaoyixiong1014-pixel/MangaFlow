@@ -504,33 +504,8 @@ async function saveBody(): Promise<void> {
     currentVersion.value = out.version
     scenes.value = normalizeBodyContent(out.content).scenes
     ElMessage.success(`本集正文已保存（v${out.version}）`)
-    // 后台同步下游（不阻塞保存主流程）：分镜/资产页即可拿到最新拆解结果
-    void syncDownstream()
   } finally {
     saving.value = false
-  }
-}
-
-/** 下游同步进行中（保存后自动分镜拆解的防重入标记） */
-const syncingDownstream = ref(false)
-
-/**
- * 保存后同步下游（资产/分镜）：触发整剧分镜拆解（SB-01 decompose，与分镜页
- * 既有调用一致），依据全部已生成正文全量重建分镜序列并联动场景资产；失败时
- * 不打断保存主流程（业务 detail 已由 client 拦截器提示），可稍后在分镜页重拆。
- * 原出口的投递画布询问（SB-09）不再自动弹出，需要时到分镜页投递。
- * @returns 无
- */
-async function syncDownstream(): Promise<void> {
-  if (syncingDownstream.value) return
-  syncingDownstream.value = true
-  try {
-    await studioApi.decompose(props.projectId)
-    ElMessage.success('已同步分镜拆解，可前往「资产 / 分镜」查看')
-  } catch {
-    // 拆解失败不阻断保存：拦截器已提示，用户可稍后到分镜页重试
-  } finally {
-    syncingDownstream.value = false
   }
 }
 

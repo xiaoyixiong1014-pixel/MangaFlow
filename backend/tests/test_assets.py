@@ -385,6 +385,61 @@ async def test_shengcheng_changjing_daotu_tu(client, auth, db):
     assert resp3.status_code == 200, resp3.text
 
 
+async def test_style_qianzhui_yu_xingbie_zhuru(client, auth, db):
+    """视觉风格系统级前缀与角色性别注入：定妆照 prompt 结构校验。
+
+    - 项目风格「日系动漫」→ prompt 以日系动漫 Style Prefix（英文）开头；
+    - 专属负面词拼在尾部（画面禁止呈现以下特征：…）；
+    - 角色 gender 落库后生成时注入「角色性别：…」。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    from app.agents.script_pipeline import _normalize_character_candidates
+    from app.core.style_prompts import get_style_prompts
+    from app.services.asset_service import create_asset_image_task
+
+    # 映射表：六风格齐全 + 未知风格回退 None
+    for s in ("国风水墨", "日系动漫", "美式漫画", "赛博朋克", "写实厚涂", "简约扁平"):
+        assert get_style_prompts(s) is not None
+    assert get_style_prompts("不存在风格") is None
+    assert get_style_prompts(None) is None
+
+    # agent 规整：gender 字段保留
+    cand = _normalize_character_candidates(
+        {"characters": [{"name": "王小满", "gender": "男性", "age": "约25岁"}]})
+    assert cand[0]["gender"] == "男性"
+
+    project = await create_project(client, auth["headers"],
+                                   title=f"风格前缀_{unique_suffix()}", style="日系动漫")
+    pid = project["id"]
+    db.add(Character(project_id=pid, name="王小满", visual_prompt="角色圣经",
+                     gender="男性"))
+    await db.commit()
+    ch = (await db.execute(
+        select(Character).where(Character.project_id == pid, Character.name == "王小满")
+    )).scalar_one()
+
+    from app.models import Project
+    project_orm = await db.get(Project, pid)
+    task = await create_asset_image_task(db, project_orm, "character", ch, None)
+    prompt = task["meta"]["prompt"]
+    # 系统级前缀在最前（日系动漫英文 Style Prompt）
+    assert prompt.startswith("Japanese anime style")
+    # 专属负面词拼尾部
+    assert prompt.endswith("western comic.")
+    # 性别锚定注入
+    assert "角色性别：男性" in prompt
+
+
 async def test_zonglan_sanlei_zichan_guolv(client, auth, db):
     """/api/characters 总览：角色+场景+道具三类联合；未启用角色（enabled_at=NULL）不出现。
 

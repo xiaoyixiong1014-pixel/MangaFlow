@@ -32,7 +32,6 @@ import type {
   ScriptSavePayload,
   StyleAsset,
   Storyboard,
-  StoryboardRegenResult,
   StoryboardUpdatePayload,
   StoryboardWarnings,
   VariantCreatePayload,
@@ -497,14 +496,13 @@ export function warnings(projectId: number): Promise<StoryboardWarnings> {
 export { warnings as storyboardWarnings }
 
 /**
- * 重生成分镜（LLM 依据最新剧本/资产重写本镜内容）。
+ * 确认分镜（生成阶段门禁）：项目状态 storyboard → production，幂等可重复点击。
  * @param projectId 项目 ID
- * @param storyboardId 分镜 ID
- * @returns 累计次数与是否建议转画布精修
+ * @returns 确认后的项目状态
  */
-export function regen(projectId: number, storyboardId: number): Promise<StoryboardRegenResult> {
+export function confirmStoryboards(projectId: number): Promise<{ status: string }> {
   return client
-    .post(`/projects/${projectId}/storyboards/${storyboardId}/regen`)
+    .post(`/projects/${projectId}/storyboards/confirm`)
     .then((r) => r.data)
 }
 

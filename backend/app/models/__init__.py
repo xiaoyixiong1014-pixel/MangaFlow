@@ -8,7 +8,7 @@ from app.models.user import OperationLog, Order, User, Wallet, WalletTransaction
 from app.models.project import Episode, Project, VersionSnapshot
 from app.models.script import Script
 from app.models.asset import AssetVariant, Character, Prop, Scene, Style
-from app.models.storyboard import Storyboard, StoryboardCharacter
+from app.models.storyboard import Storyboard, StoryboardCharacter, StoryboardProp
 from app.models.canvas import Canvas, CanvasEdge, CanvasNode, CanvasPlugin
 from app.models.task import Task
 from app.models.media import FilmOutput, MediaAsset
@@ -40,6 +40,7 @@ __all__ = [
     # 分镜域
     "Storyboard",
     "StoryboardCharacter",
+    "StoryboardProp",
     # 画布域
     "Canvas",
     "CanvasNode",

@@ -12,11 +12,12 @@
     「投递画布」按钮（deliverToCanvas → 成功后确认打开画布）；
   - 分镜卡片列表：vuedraggable 未安装（且禁止新增依赖），改用「上移 / 下移」按钮 +
     reorder(ordered_ids) 实现重排，注释说明为拖拽的替代实现；
-  - 每卡展示：镜号 / 景别 / 运镜 / 时长 / 画面描述 / 对白 / 绑定资产 Tag
-    （角色 + 场景；link_confidence < 0.7 标黄提示确认，RD-24）；
-    regen_count ≥ 3 显示「建议投递画布精修」Tag（RD-25）；
-  - 每卡操作：编辑（el-dialog 表单：景别/运镜/时长/画面/对白/prompt_editable/
-    强绑场景 + 角色多选）、拆分（按对白行号）、合并（相邻两镜）、重生成（计数 +1）；
+  - 每卡展示：镜号 / 景别 / 机位角度 / 运镜 / 时长 / 情绪音效 Tag / 画面描述 /
+    光影 / 对白 / 绑定资产 Tag（角色 + 场景 + 道具；link_confidence < 0.7 标黄
+    提示确认，RD-24）；stale 引用资产过期标黄 + 「需重渲染」（P0-3）；
+  - 每卡操作：编辑（el-dialog 表单：景别/机位角度/运镜/时长/画面/光影/负面提示词/
+    对白/音效/情绪/prompt_editable/强绑场景 + 角色多选）、拆分（按对白行号）、
+    合并（相邻两镜）、投递画布；
   - 底部「确认分镜，进入生成」→ 跳 /projects/:id/production。
 -->
 <script setup lang="ts">
@@ -423,7 +424,7 @@ async function moveBoard(index: number, dir: -1 | 1): Promise<void> {
 
 /** 编辑弹窗可见性 */
 const editVisible = ref(false)
-/** 编辑表单（对应 StoryboardUpdatePayload） */
+/** 编辑表单（对应 StoryboardUpdatePayload，含方案 B 新字段） */
 const editForm = ref({
   shot_type: '',
   camera_movement: '',
@@ -433,6 +434,11 @@ const editForm = ref({
   prompt_editable: '',
   scene_id: undefined as number | undefined,
   character_ids: [] as number[],
+  camera_angle: '',
+  lighting: '',
+  negative_prompt: '',
+  sfx_text: '',
+  emotion: '',
 })
 /** 正在编辑的分镜 ID */
 let editId = 0
@@ -446,6 +452,8 @@ const editSaving = ref(false)
 const shotTypeOptions = ['全景', '远景', '中景', '近景', '特写']
 /** 运镜选项 */
 const cameraOptions = ['固定', '推镜', '拉镜', '摇镜', '移镜', '跟随']
+/** 机位角度选项（方案 B 镜头语言扩展） */
+const cameraAngleOptions = ['平视', '俯拍', '仰拍', '斜角', '过肩', '顶摄']
 
 /**
  * 打开编辑弹窗（预填当前分镜；同时拉取资产选项）。
@@ -463,6 +471,11 @@ async function openEdit(b: Storyboard): Promise<void> {
     prompt_editable: b.prompt_editable ?? '',
     scene_id: b.scene_id ?? undefined,
     character_ids: b.characters.map((c) => c.character_id),
+    camera_angle: b.camera_angle ?? '',
+    lighting: b.lighting ?? '',
+    negative_prompt: b.negative_prompt ?? '',
+    sfx_text: (b.audio?.sfx ?? []).join('、'),
+    emotion: b.audio?.emotion ?? '',
   }
   editVisible.value = true
   // 拉取场景/角色资产作为下拉与多选选项
@@ -474,13 +487,19 @@ async function openEdit(b: Storyboard): Promise<void> {
 }
 
 /**
- * 保存分镜编辑（character_links 整体替换）。
+ * 保存分镜编辑（character_links 整体替换；方案 B 新字段随表单提交）。
  * @returns 无
  */
 async function saveEdit(): Promise<void> {
   if (editSaving.value) return
   editSaving.value = true
   try {
+    // 音效按「、」或逗号/空格切分为数组（空串落空数组）
+    const sfxList = editForm.value.sfx_text
+      .split(/[、,，\s]+/)
+      .map((s) => s.trim())
+      .filter(Boolean)
+    const hasAudio = sfxList.length > 0 || editForm.value.emotion.trim()
     await studioApi.updateStoryboard(projectId.value, editId, {
       shot_type: editForm.value.shot_type || undefined,
       camera_movement: editForm.value.camera_movement || undefined,
@@ -490,6 +509,10 @@ async function saveEdit(): Promise<void> {
       prompt_editable: editForm.value.prompt_editable,
       scene_id: editForm.value.scene_id,
       character_links: editForm.value.character_ids.map((cid) => ({ character_id: cid })),
+      camera_angle: editForm.value.camera_angle || undefined,
+      lighting: editForm.value.lighting,
+      negative_prompt: editForm.value.negative_prompt,
+      audio: hasAudio ? { sfx: sfxList, emotion: editForm.value.emotion.trim() || null } : { sfx: [], emotion: null },
     })
     editVisible.value = false
     ElMessage.success('分镜已更新')
@@ -580,34 +603,6 @@ async function mergeWithNext(b: Storyboard): Promise<void> {
 }
 
 // ============================================================
-// 重生成（RD-25：≥3 次建议投递画布）
-// ============================================================
-
-/** 重生成中的分镜 ID 集合（防重复点击） */
-const regenBusyIds = ref<number[]>([])
-
-/**
- * 重生成本镜内容（LLM 依据最新剧本/资产重写）。
- * @param b 目标分镜
- * @returns 无
- */
-async function regenBoard(b: Storyboard): Promise<void> {
-  if (regenBusyIds.value.includes(b.id)) return
-  regenBusyIds.value = [...regenBusyIds.value, b.id]
-  try {
-    const res = await studioApi.regen(projectId.value, b.id)
-    b.regen_count = res.regen_count
-    ElMessage.success(
-      res.suggest_canvas
-        ? `已重生成（累计 ${res.regen_count} 次），建议投递画布精修`
-        : `已重生成（累计 ${res.regen_count} 次）`,
-    )
-  } finally {
-    regenBusyIds.value = regenBusyIds.value.filter((i) => i !== b.id)
-  }
-}
-
-// ============================================================
 // 投递画布
 // ============================================================
 
@@ -639,12 +634,26 @@ async function deliver(b: Storyboard): Promise<void> {
   }
 }
 
+/** 确认分镜进行中（防重复点击） */
+const confirmBusy = ref(false)
+
 /**
- * 确认分镜，进入生成页。
+ * 确认分镜并进入生成（生成阶段门禁）：调 confirm 推进项目状态
+ * storyboard → production 后跳转；确认失败（如未拆解）不跳转，提示已由
+ * 拦截器展示。幂等：已确认状态直接跳转。
  * @returns 无
  */
 async function gotoProduction(): Promise<void> {
-  await router.push(`/projects/${projectId.value}/production`)
+  if (confirmBusy.value) return
+  confirmBusy.value = true
+  try {
+    await studioApi.confirmStoryboards(projectId.value)
+    await router.push(`/projects/${projectId.value}/production`)
+  } catch {
+    // 确认失败（未拆解/状态不允许）：拦截器已提示，停留分镜页
+  } finally {
+    confirmBusy.value = false
+  }
 }
 
 onMounted(loadBoards)
@@ -743,8 +752,21 @@ onMounted(loadBoards)
             <div class="board-head">
               <span class="board-no">#{{ String(b.sequence).padStart(2, '0') }}</span>
               <el-tag size="small" effect="plain">{{ b.shot_type || '未定景别' }}</el-tag>
+              <!-- 方案 B：机位角度（镜头语言三要素之一） -->
+              <el-tag v-if="b.camera_angle" size="small" effect="plain" type="info">{{ b.camera_angle }}</el-tag>
               <el-tag size="small" effect="plain" type="info">{{ b.camera_movement || '固定' }}</el-tag>
               <el-tag size="small" effect="plain" type="info">{{ b.duration }}s</el-tag>
+              <!-- 方案 B：声音结构化（情绪标签 + 音效） -->
+              <el-tooltip
+                v-if="b.audio && ((b.audio.sfx?.length ?? 0) || b.audio.emotion)"
+                :content="(b.audio.sfx ?? []).join('、')"
+                placement="top"
+                :disabled="!(b.audio.sfx?.length ?? 0)"
+              >
+                <el-tag size="small" effect="light" type="warning">
+                  {{ b.audio.emotion || '音效' }}{{ (b.audio.sfx?.length ?? 0) ? ` ·♪${b.audio.sfx!.length}` : '' }}
+                </el-tag>
+              </el-tooltip>
               <!-- P0-3：引用资产已过期（角色定妆照/场景图更新后） -->
               <el-tooltip
                 v-if="b.stale"
@@ -753,10 +775,6 @@ onMounted(loadBoards)
               >
                 <el-tag size="small" type="warning" effect="dark">需重渲染</el-tag>
               </el-tooltip>
-              <!-- RD-25：重生成 ≥3 次建议投递画布 -->
-              <el-tag v-if="b.regen_count >= 3" size="small" type="warning" effect="dark">
-                建议投递画布精修
-              </el-tag>
               <div class="board-head-ops">
                 <el-button
                   size="small"
@@ -778,12 +796,14 @@ onMounted(loadBoards)
             </div>
           </template>
           <p class="board-visual">{{ b.visual_description || '（无画面描述）' }}</p>
+          <!-- 方案 B：环境光影独立展示 -->
+          <p v-if="b.lighting" class="board-lighting">光影：{{ b.lighting }}</p>
           <div v-if="b.dialogue" class="board-dialogue">
             <div v-for="(line, li) in b.dialogue.split('\n').filter((l) => l.trim())" :key="li" class="dlg-line">
               {{ line }}
             </div>
           </div>
-          <!-- 绑定资产 Tag（低置信标黄，RD-24） -->
+          <!-- 绑定资产 Tag（低置信标黄，RD-24；方案 B 扩展道具绑定） -->
           <div class="board-assets">
             <span class="assets-label">绑定资产：</span>
             <el-tag
@@ -803,19 +823,21 @@ onMounted(loadBoards)
             >
               场景·{{ b.scene_name || b.scene_id }}
             </el-tag>
-            <span v-if="!b.characters.length && !b.scene_id" class="assets-none">未绑定</span>
+            <el-tag
+              v-for="p in b.props ?? []"
+              :key="p.prop_id"
+              size="small"
+              :type="(p.link_confidence ?? 1) < 0.7 ? 'warning' : 'success'"
+              :title="p.link_confidence != null ? `链接置信度 ${(p.link_confidence * 100).toFixed(0)}%` : ''"
+            >
+              道具·{{ p.name }}
+            </el-tag>
+            <span v-if="!b.characters.length && !b.scene_id && !(b.props ?? []).length" class="assets-none">未绑定</span>
           </div>
           <div class="board-ops">
             <el-button size="small" type="primary" plain @click="openEdit(b)">编辑</el-button>
             <el-button size="small" @click="openSplit(b)">拆分</el-button>
             <el-button size="small" @click="mergeWithNext(b)">合并下一镜</el-button>
-            <el-button
-              size="small"
-              :loading="regenBusyIds.includes(b.id)"
-              @click="regenBoard(b)"
-            >
-              重生成（{{ b.regen_count }}）
-            </el-button>
             <el-button size="small" type="warning" plain :loading="delivering" @click="deliver(b)">
               投递画布
             </el-button>
@@ -826,7 +848,7 @@ onMounted(loadBoards)
       <!-- 底部操作条 -->
       <div class="footer-bar">
         <span class="footer-tip">提示：顺序调整后镜号自动重排；低置信绑定建议先到资产页确认</span>
-        <el-button size="large" type="primary" class="confirm-btn" @click="gotoProduction">
+        <el-button size="large" type="primary" class="confirm-btn" :loading="confirmBusy" @click="gotoProduction">
           确认分镜，进入生成
         </el-button>
       </div>
@@ -840,6 +862,11 @@ onMounted(loadBoards)
             <el-option v-for="s in shotTypeOptions" :key="s" :label="s" :value="s" />
           </el-select>
         </el-form-item>
+        <el-form-item label="机位角度">
+          <el-select v-model="editForm.camera_angle" placeholder="选择机位角度" clearable style="width: 200px">
+            <el-option v-for="a in cameraAngleOptions" :key="a" :label="a" :value="a" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="运镜">
           <el-select v-model="editForm.camera_movement" placeholder="选择运镜" clearable style="width: 200px">
             <el-option v-for="c in cameraOptions" :key="c" :label="c" :value="c" />
@@ -849,7 +876,23 @@ onMounted(loadBoards)
           <el-input-number v-model="editForm.duration" :min="1" :max="30" />
         </el-form-item>
         <el-form-item label="画面描述">
-          <el-input v-model="editForm.visual_description" type="textarea" :rows="3" />
+          <el-input v-model="editForm.visual_description" type="textarea" :rows="3" placeholder="主体动作描述" />
+        </el-form-item>
+        <el-form-item label="环境光影">
+          <el-input
+            v-model="editForm.lighting"
+            type="textarea"
+            :rows="2"
+            placeholder="时段光线 / 光源方向 / 明暗氛围"
+          />
+        </el-form-item>
+        <el-form-item label="负面提示词">
+          <el-input
+            v-model="editForm.negative_prompt"
+            type="textarea"
+            :rows="2"
+            placeholder="生图需排除的元素，如：多余手指、文字水印、模糊变形"
+          />
         </el-form-item>
         <el-form-item label="对白">
           <el-input
@@ -858,6 +901,15 @@ onMounted(loadBoards)
             :rows="3"
             placeholder="每行一条，格式：角色名：台词"
           />
+        </el-form-item>
+        <el-form-item label="音效">
+          <el-input
+            v-model="editForm.sfx_text"
+            placeholder="多个音效用「、」分隔，如：键盘声、雨声"
+          />
+        </el-form-item>
+        <el-form-item label="情绪标签">
+          <el-input v-model="editForm.emotion" placeholder="本镜整体情绪，如：压抑 / 爽感 / 紧张" />
         </el-form-item>
         <el-form-item label="提示词">
           <el-input
@@ -1090,6 +1142,12 @@ onMounted(loadBoards)
   margin: 0 0 var(--mf-sp-2);
   line-height: 1.8;
   color: var(--mf-text);
+}
+.board-lighting {
+  margin: 0 0 var(--mf-sp-2);
+  font-size: 12px;
+  line-height: 1.7;
+  color: var(--mf-text-secondary, #8b93a7);
 }
 .board-dialogue {
   background: var(--mf-surface-2);

@@ -1,12 +1,14 @@
 """分镜域模型（文件级说明）。
 
-包含表：storyboards（分镜）、storyboard_characters（分镜-角色关联）。
+包含表：storyboards（分镜）、storyboard_characters（分镜-角色关联）、
+storyboard_props（分镜-道具关联）。
 严格对应架构设计文档 §5.3.14、§5.3.15。
 """
 
 from typing import Optional
 
 from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Numeric, String, Text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
@@ -29,6 +31,10 @@ class Storyboard(Base):
         scene_id: 强绑场景资产 ID（RD-24，外键 SET NULL）。
         prompt_locked: 提示词系统锁定层（RD-04 分层）。
         prompt_editable: 提示词用户可编辑层。
+        camera_angle: 机位与角度（平视/俯拍/仰拍/斜角等，方案 B 扩展）。
+        lighting: 环境与光影描述（分层提示词「环境与光影层」素材）。
+        negative_prompt: 负面提示词（分层提示词「负面排除层」，生图排除项）。
+        audio: 声音结构化信息（JSONB：{sfx: 音效列表, emotion: 情绪标签}）。
         keyframe_url: 关键帧 URL。
         end_frame_url: 尾帧 URL。
         video_url: 视频片段 URL。
@@ -77,6 +83,15 @@ class Storyboard(Base):
     # P0-3 版本透传：绑定场景资产时的版本快照（NULL=旧数据视为一致，防存量全量误报）
     scene_version: Mapped[Optional[int]] = mapped_column(
         nullable=True, comment="绑定场景时 scenes.asset_version 快照（P0-3）")
+    # 方案 B 分镜结构化扩展：镜头语言 / 画面分层 / 声音信息
+    camera_angle: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, comment="机位与角度：平视/俯拍/仰拍/斜角/过肩/顶摄")
+    lighting: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="环境与光影描述（分层提示词「环境与光影层」）")
+    negative_prompt: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="负面提示词（分层提示词「负面排除层」）")
+    audio: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, comment="声音结构化信息：{sfx: 音效列表, emotion: 情绪标签}")
 
 
 class StoryboardCharacter(Base):
@@ -116,3 +131,36 @@ class StoryboardCharacter(Base):
         nullable=True, comment="引用时 characters.asset_version 快照（P0-3）")
     variant_version: Mapped[Optional[int]] = mapped_column(
         nullable=True, comment="引用时 asset_variants.asset_version 快照（P0-3）")
+
+
+class StoryboardProp(Base):
+    """分镜-道具关联表（方案 B 扩展，RD-24 强绑口径与 storyboard_characters 一致）。
+
+    拆解时按画面描述/对白文本匹配项目内道具资产建立强绑，用于：
+    - 前端镜头卡展示本镜涉及道具；
+    - stale 判定：道具标准图替换/重生成（asset_version 递增）后标记镜头需重渲染。
+
+    Attributes:
+        storyboard_id: 分镜 ID（外键 CASCADE）。
+        prop_id: 道具资产 ID（外键 RESTRICT）。
+        link_confidence: 实体链接置信度（NUMERIC(4,3)，文本包含匹配置信度 0.6）。
+        prop_version: 引用时 props.asset_version 快照（P0-3，NULL=旧数据视为一致）。
+    """
+
+    __tablename__ = "storyboard_props"
+    __table_args__ = (
+        CheckConstraint("link_confidence >= 0 AND link_confidence <= 1", name="ck_sbp_confidence"),
+        Index("pk_sb_prop", "storyboard_id", "prop_id", unique=True),
+        Index("idx_sbp_prop", "prop_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True, comment="主键")
+    storyboard_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("storyboards.id", ondelete="CASCADE"), nullable=False, comment="分镜 ID（级联删除）")
+    prop_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("props.id", ondelete="RESTRICT"), nullable=False, comment="道具资产 ID")
+    link_confidence: Mapped[Optional[float]] = mapped_column(
+        Numeric(4, 3), nullable=True, comment="实体链接置信度（低置信标黄）")
+    # P0-3 版本透传：引用道具时的版本快照（NULL=旧数据视为一致）
+    prop_version: Mapped[Optional[int]] = mapped_column(
+        nullable=True, comment="引用时 props.asset_version 快照（P0-3）")

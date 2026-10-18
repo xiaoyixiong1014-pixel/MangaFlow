@@ -83,6 +83,7 @@ class CharacterProfileOut(BaseModel):
     name: str = Field(description="角色名")
     role_type: Optional[RoleType] = Field(default=None, description="角色定位：lead/support/villain/extra")
     age: Optional[str] = Field(default=None, description="年龄设定（弹性表述）")
+    gender: Optional[str] = Field(default=None, description="角色性别（男性/女性/中性）")
     personality: Optional[str] = Field(default=None, description="性格设定")
     appearance: Optional[str] = Field(default=None, description="形象特征（角色圣经视觉段一）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（角色圣经视觉段二）")
@@ -132,6 +133,9 @@ class CharacterProfileUpsert(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="角色名（name 匹配键/更新值）")
     role_type: Optional[RoleType] = Field(default=None, description="角色定位（None=不修改）")
     age: Optional[str] = Field(default=None, max_length=20, description="年龄设定（None=不修改）")
+    gender: Optional[str] = Field(
+        default=None, max_length=10,
+        description="角色性别（男性/女性/中性；None=不修改）")
     personality: Optional[str] = Field(default=None, description="性格设定（None=不修改）")
     appearance: Optional[str] = Field(default=None, description="形象特征（None=不修改）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=不修改）")
@@ -192,6 +196,9 @@ class CharacterConfirmItem(BaseModel):
     name: str = Field(min_length=1, max_length=50, description="确认入池的角色名")
     role_type: Optional[RoleType] = Field(default=None, description="角色定位（None=沿用候选）")
     age: Optional[str] = Field(default=None, max_length=20, description="年龄设定（None=沿用候选）")
+    gender: Optional[str] = Field(
+        default=None, max_length=10,
+        description="角色性别（男性/女性/中性；None=沿用候选）")
     personality: Optional[str] = Field(default=None, description="性格设定（None=沿用候选）")
     appearance: Optional[str] = Field(default=None, description="形象特征（None=沿用候选）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=沿用候选）")

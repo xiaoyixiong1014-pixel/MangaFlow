@@ -40,6 +40,7 @@ import { Upload as UploadIcon, VideoPause, VideoPlay } from '@element-plus/icons
 import * as productionApi from '@/api/production'
 import * as billingApi from '@/api/billing'
 import * as bgmApi from '@/api/bgm'
+import * as projectApi from '@/api/projects'
 import * as studioApi from '@/api/studio'
 import { useProjectStore } from '@/stores/project'
 import type { BgmItem, ComposePayload, GenTask, Storyboard, Wallet, CharacterAsset } from '@/types'
@@ -72,6 +73,21 @@ const boards = ref<Storyboard[]>([])
 const characters = ref<CharacterAsset[]>([])
 /** 当前 Tab */
 const activeTab = ref('keyframes')
+/** 项目状态（生成阶段门禁：仅 producing 允许发起新生成任务） */
+const projectStatus = ref('')
+
+/** 分镜是否已确认进入生成阶段（未确认时禁发新任务，仅展示历史产物） */
+const productionConfirmed = computed(() => projectStatus.value === 'producing')
+
+/**
+ * 生成动作守卫：未确认分镜（项目状态非 production）时拦截并提示。
+ * @returns 是否允许继续执行生成动作
+ */
+function ensureProductionReady(): boolean {
+  if (productionConfirmed.value) return true
+  ElMessage.warning('请先在分镜设计页点击「确认分镜，进入生成」')
+  return false
+}
 
 /**
  * 拉取分镜与角色资产。
@@ -81,13 +97,16 @@ const activeTab = ref('keyframes')
 async function loadBase(): Promise<void> {
   loading.value = true
   try {
-    const [sb, assets, walletRes] = await Promise.all([
+    const [sb, assets, walletRes, proj] = await Promise.all([
       studioApi.listStoryboard(projectId.value, currentEpisodeId.value ?? undefined),
       studioApi.listAssets(projectId.value),
       billingApi.wallet().catch(() => null),
+      // 项目详情：取 status 做生成阶段门禁（失败不阻塞首屏，门禁按未确认处理）
+      projectApi.get(projectId.value).catch(() => null),
     ])
     boards.value = sb
     characters.value = assets.characters
+    projectStatus.value = proj?.status ?? ''
     if (walletRes) {
       wallet.balance = walletRes.points_balance
       wallet.frozen = walletRes.frozen_points
@@ -288,6 +307,7 @@ const kfBusy = ref(false)
  * @returns 无
  */
 async function trialKeyframe(): Promise<void> {
+  if (!ensureProductionReady()) return
   const first = boards.value[0]
   if (!first) {
     ElMessage.warning('暂无分镜，请先完成分镜拆解')
@@ -312,6 +332,7 @@ async function trialKeyframe(): Promise<void> {
  * @returns 无
  */
 async function fullKeyframes(): Promise<void> {
+  if (!ensureProductionReady()) return
   if (!boards.value.length) {
     ElMessage.warning('暂无分镜，请先完成分镜拆解')
     return
@@ -428,6 +449,7 @@ const endFrameBusyIds = ref<number[]>([])
  * @returns 无
  */
 async function genVideo(b: Storyboard): Promise<void> {
+  if (!ensureProductionReady()) return
   if (videoBusyIds.value.includes(b.id)) return
   videoBusyIds.value = [...videoBusyIds.value, b.id]
   try {
@@ -453,6 +475,7 @@ async function genVideo(b: Storyboard): Promise<void> {
  * @returns 无
  */
 async function genEndFrame(b: Storyboard): Promise<void> {
+  if (!ensureProductionReady()) return
   if (endFrameBusyIds.value.includes(b.id)) return
   endFrameBusyIds.value = [...endFrameBusyIds.value, b.id]
   try {
@@ -561,6 +584,7 @@ audioEl.addEventListener('error', () => {
  * @returns 无
  */
 async function genTts(b: Storyboard): Promise<void> {
+  if (!ensureProductionReady()) return
   if (ttsBusyIds.value.includes(b.id)) return
   ttsBusyIds.value = [...ttsBusyIds.value, b.id]
   try {
@@ -744,6 +768,7 @@ const composeProgress = ref(0)
  * @returns 无
  */
 async function composeFilm(): Promise<void> {
+  if (!ensureProductionReady()) return
   if (composing.value) return
   composing.value = true
   composeProgress.value = 0
@@ -824,6 +849,16 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page-container prod-view">
+    <!-- 生成阶段门禁：未确认分镜时提示（历史产物仍展示，新生成动作被拦截） -->
+    <el-alert
+      v-if="!productionConfirmed"
+      type="warning"
+      :closable="false"
+      show-icon
+      title="分镜尚未确认"
+      description="请先在「分镜设计」页点击「确认分镜，进入生成」；确认前仅可查看历史生成产物，不能发起新的生成任务。"
+      class="gate-alert"
+    />
     <!-- 顶部：积分消耗条 + 任务面板入口 -->
     <div class="top-bar">
       <el-tabs v-model="activeTab" class="prod-tabs">
@@ -1296,6 +1331,9 @@ onBeforeUnmount(() => {
   display: flex;
   flex-direction: column;
   gap: var(--mf-sp-4);
+}
+.gate-alert {
+  border-radius: var(--mf-r-ctl);
 }
 .top-bar {
   display: flex;

@@ -39,6 +39,7 @@ from app.schemas.asset import (
     SCENE_VARIANT_TYPES,
 )
 from app.agents.llm_adapter import llm
+from app.core.style_prompts import get_style_prompts
 from app.services import vector_store
 from app.services.generation_service import freeze_and_create_task
 from app.services.script_service import (
@@ -197,23 +198,29 @@ async def create_asset_image_task(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="asset_type 仅支持 character/scene/prop")
     base_prompt = (prompt or asset.visual_prompt or "").strip()
+    # 性别锚定（角色）：agent 在角色设定中生成的性别字段随提示词注入，
+    # 让生图模型准确把握人物性别特征（不依赖 appearance 文本隐含）
+    gender_line = ""
     if asset_type == "character":
-        # 定妆照构图统一：角色提示词（角色圣经前缀/覆盖 prompt）+ 四格横向排版模板
-        final_prompt = (
-            f"{base_prompt}。{CHARACTER_PORTRAIT_SHEET_PROMPT}" if base_prompt
-            else CHARACTER_PORTRAIT_SHEET_PROMPT
-        )
+        gender = str(getattr(asset, "gender", None) or "").strip()
+        if gender:
+            gender_line = f"角色性别：{gender}。"
+    # 视觉风格系统级前缀（全局强制注入）：项目选定风格映射为专业 Style Prompt，
+    # 正向前缀加在最前、专属负面词拼尾部——不论画什么内容都强制携带，确保画风不跑偏
+    style = get_style_prompts(project.style)
+    style_prefix = f"{style['prefix']} " if style else ""
+    negative_suffix = (
+        f"画面禁止呈现以下特征：{style['negative']}" if style
+        else "画面中不得出现任何文字、水印、UI 元素、游戏图标。"
+    )
+    if asset_type == "character":
+        # 定妆照构图统一：角色性别 + 角色提示词（角色圣经前缀/覆盖 prompt）+ 四格横向排版模板
+        core = f"{base_prompt}。{CHARACTER_PORTRAIT_SHEET_PROMPT}" if base_prompt else CHARACTER_PORTRAIT_SHEET_PROMPT
+        final_prompt = f"{style_prefix}{gender_line}{core}。{negative_suffix}"
     else:
-        # 场景/道具：六要素合成提示词已含构图语义；生成时统一追加项目画风锚点
-        # （六要素的 style_base 可能在人工编辑时漂移，以项目画风收口保证跨资产
-        # 风格一致）+ 全局负面约束（禁文字/水印/UI 元素，防游戏化图标混入）
-        style_anchor = (project.style or "").strip()
-        prefix = (
-            f"统一{style_anchor}画风插画，与项目内其他场景/道具保持同一视觉基调。"
-            if style_anchor else ""
-        )
-        suffix = "画面中不得出现任何文字、水印、UI 元素、游戏图标。"
-        final_prompt = f"{prefix}{base_prompt}。{suffix}" if base_prompt else f"{prefix}{suffix}"
+        # 场景/道具：六要素合成提示词已含构图语义；同样包系统级风格前缀与负面词
+        core = f"{base_prompt}。" if base_prompt else ""
+        final_prompt = f"{style_prefix}{core}{negative_suffix}"
     # P2 防重复扣分：同资产存在未终态（queued/running）生成任务时拒绝重复入队。
     # 以「未终态任务存在性」作为幂等闸门（任务自然终结后可再次发起）。
     running = (

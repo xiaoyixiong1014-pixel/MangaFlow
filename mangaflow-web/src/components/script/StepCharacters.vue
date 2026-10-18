@@ -158,6 +158,8 @@ interface CharacterForm {
   role_type: RoleType | null
   /** 年龄设定 */
   age: string
+  /** 角色性别（男性/女性/中性，可空=未设定） */
+  gender: string
   /** 性格设定 */
   personality: string
   /** 外观设定 */
@@ -176,7 +178,7 @@ interface CharacterForm {
  */
 function emptyForm(): CharacterForm {
   return {
-    name: '', role_type: null, age: '', personality: '',
+    name: '', role_type: null, age: '', gender: '', personality: '',
     appearance: '', motivation: '', arc: '', relations: [],
   }
 }
@@ -218,6 +220,7 @@ function openEdit(item: DisplayCharacter): void {
     name: item.name,
     role_type: item.role_type,
     age: item.age ?? '',
+    gender: item.gender ?? '',
     personality: item.personality ?? '',
     appearance: item.appearance ?? '',
     motivation: item.motivation ?? '',
@@ -254,6 +257,7 @@ async function handleSave(): Promise<void> {
       name: form.value.name.trim(),
       role_type: form.value.role_type,
       age: form.value.age.trim() || null,
+      gender: form.value.gender.trim() || null,
       personality: form.value.personality.trim() || null,
       appearance: form.value.appearance.trim() || null,
       motivation: form.value.motivation.trim() || null,
@@ -368,6 +372,7 @@ async function handleConfirm(): Promise<void> {
         name: c.name,
         role_type: c.role_type,
         age: c.age,
+        gender: c.gender,
         personality: c.personality,
         appearance: c.appearance,
         motivation: c.motivation,
@@ -434,6 +439,9 @@ onMounted(load)
             </el-tag>
           </div>
           <div class="char-fields">
+            <div v-if="item.gender" class="char-field">
+              <span class="char-label">性别</span><span class="char-value">{{ item.gender }}</span>
+            </div>
             <div v-if="item.age" class="char-field">
               <span class="char-label">年龄</span><span class="char-value">{{ item.age }}</span>
             </div>
@@ -561,6 +569,13 @@ onMounted(load)
         </el-row>
         <el-form-item label="年龄" prop="age">
           <el-input v-model="form.age" maxlength="20" placeholder="弹性表述，如「约30岁」「少年」" />
+        </el-form-item>
+        <el-form-item label="性别">
+          <el-select v-model="form.gender" placeholder="角色性别（生图性别锚定）" clearable style="width: 100%">
+            <el-option label="男性" value="男性" />
+            <el-option label="女性" value="女性" />
+            <el-option label="中性" value="中性" />
+          </el-select>
         </el-form-item>
         <el-form-item label="性格">
           <el-input v-model="form.personality" type="textarea" :rows="2" placeholder="性格设定" />

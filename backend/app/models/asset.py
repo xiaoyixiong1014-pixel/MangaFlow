@@ -107,6 +107,9 @@ class Character(Base):
         comment="角色定位（P-1）：lead 主角/support 配角/villain 反派/extra 群像")
     age: Mapped[Optional[str]] = mapped_column(
         String(20), nullable=True, comment="年龄设定（P-1，字符串容纳约30岁/少年等弹性表述）")
+    # 角色性别（agent 在角色设定中生成：男性/女性/中性）——生图提示词性别锚定
+    gender: Mapped[Optional[str]] = mapped_column(
+        String(10), nullable=True, comment="角色性别（男性/女性/中性；角色设定 agent 生成）")
     personality: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="性格设定（P-1）")
     outfit: Mapped[Optional[str]] = mapped_column(

@@ -531,6 +531,12 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("characters",
      "COMMENT ON COLUMN characters.outfit IS "
      "'服装配饰完整拆解（角色圣经：上装/下装/鞋履/配饰/标志性物品）'"),
+    # ---------- 角色性别（2026-10-18：agent 角色设定生成，生图提示词性别锚定） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS gender VARCHAR(10)"),
+    ("characters",
+     "COMMENT ON COLUMN characters.gender IS "
+     "'角色性别（男性/女性/中性；角色设定 agent 生成）'"),
     ("characters",
      "COMMENT ON COLUMN characters.style_note IS "
      "'风格与画质特点（角色圣经：画风/光线/画质关键词）'"),
@@ -739,6 +745,29 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("episodes",
      "COMMENT ON COLUMN episodes.enabled_assets IS "
      "'该集已启用资产名名单（启用资产确认入池时 union 追加；NULL=未启用过）'"),
+    # ---------- 方案 B 分镜结构化扩展：storyboards 补 4 列 ----------
+    # （镜头语言机位角度 / 环境光影 / 负面提示词 / 声音结构化；新表 storyboard_props
+    #  由 create_all 按 ORM 建表，无需在此补 DDL）
+    ("storyboards",
+     "ALTER TABLE storyboards ADD COLUMN IF NOT EXISTS camera_angle VARCHAR(20)"),
+    ("storyboards",
+     "ALTER TABLE storyboards ADD COLUMN IF NOT EXISTS lighting TEXT"),
+    ("storyboards",
+     "ALTER TABLE storyboards ADD COLUMN IF NOT EXISTS negative_prompt TEXT"),
+    ("storyboards",
+     "ALTER TABLE storyboards ADD COLUMN IF NOT EXISTS audio JSONB"),
+    ("storyboards",
+     "COMMENT ON COLUMN storyboards.camera_angle IS "
+     "'机位与角度：平视/俯拍/仰拍/斜角/过肩/顶摄（方案 B 扩展）'"),
+    ("storyboards",
+     "COMMENT ON COLUMN storyboards.lighting IS "
+     "'环境与光影描述（分层提示词「环境与光影层」）'"),
+    ("storyboards",
+     "COMMENT ON COLUMN storyboards.negative_prompt IS "
+     "'负面提示词（分层提示词「负面排除层」）'"),
+    ("storyboards",
+     "COMMENT ON COLUMN storyboards.audio IS "
+     "'声音结构化信息：{sfx: 音效列表, emotion: 情绪标签}'"),
 ]
 
 

@@ -14,7 +14,7 @@ import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, status
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.agents.llm_adapter import llm
@@ -26,10 +26,12 @@ from app.models import (
     Character,
     Episode,
     Project,
+    Prop,
     Scene,
     Script,
     Storyboard,
     StoryboardCharacter,
+    StoryboardProp,
     User,
 )
 from app.services.script_service import (
@@ -43,6 +45,11 @@ from app.services.script_service import (
 SCENE_MATCH_CONFIDENCE = 0.9
 # 分镜-角色关联的实体链接置信度（storyboard_characters.link_confidence）
 LINK_CONFIDENCE = 0.8
+# 分镜-道具关联的实体链接置信度（storyboard_props.link_confidence，
+# 文本包含匹配弱于角色说话人匹配，取 0.6）
+LINK_CONFIDENCE_PROP = 0.6
+# 机位角度白名单（方案 B 扩展：分镜「镜头语言」三要素补齐）
+CAMERA_ANGLES = ("平视", "俯拍", "仰拍", "斜角", "过肩", "顶摄")
 # 单镜告警时长阈值（秒）
 SHOT_DURATION_WARN = 10
 # 总时长偏差告警阈值（相对项目 target_duration）
@@ -55,24 +62,38 @@ _SCENE_CONTINUITY_WORDS = ("接着", "随后", "同一", "继续", "紧接", "�
 # 目标时长自动调整（SB-07）的合法目标范围上限（秒）
 AUTO_FIT_TARGET_MAX = 3600
 
-# LLM 单场景拆解系统提示词（要求仅输出严格 JSON）；
+# LLM 单场景拆解系统提示词（要求仅输出严格 JSON，方案 B 结构化输出）；
 # visual_description 参照 AI 漫剧行业分镜公式：[景别]+[角色+外貌特征]+[动作]+
-# [场景]+[情绪关键词]，保证下游关键帧生图可直接消费；camera_movement 白名单
-# 覆盖运镜 8 术语（固定/推/拉/摇/移/跟随/升降/旋转）
+# [场景]+[情绪关键词]，环境与光影拆至独立 lighting 字段（分层提示词素材），
+# 另输出机位角度/负面提示词/音效/情绪标签，保证下游分层生图与配音可直接消费；
+# camera_movement 白名单覆盖运镜 8 术语（固定/推/拉/摇/移/跟随/升降/旋转）
 _SHOTS_SYSTEM_PROMPT = (
     "你是专业分镜师。请把给定剧本场景拆解为 1~3 个分镜镜头。\n"
     "仅输出严格 JSON（禁止 markdown 围栏与任何解释文字），格式：\n"
     '{"shots":[{"shot_type":"远景|全景|中景|近景|特写",'
+    '"camera_angle":"平视|俯拍|仰拍|斜角|过肩|顶摄",'
     '"camera_movement":"固定|推|拉|摇|移|跟随|升降|旋转","duration":5,'
-    '"visual_description":"画面描述","dialogue":[{"character":"角色名","line":"台词"}]}]}\n'
+    '"visual_description":"主体动作描述","lighting":"环境与光影",'
+    '"negative_prompt":"负面提示词","sfx":["音效"],"emotion":"情绪标签",'
+    '"dialogue":[{"character":"角色名","line":"台词"}]}]}\n'
     "要求：\n"
     "- visual_description 按分镜公式组织：景别 + 角色（含与设定一致的外貌特征）"
-    "+ 动作 + 场景要素 + 情绪关键词，一句话可直接转生图提示词；\n"
+    "+ 动作 + 场景要素 + 情绪关键词，一句话可直接转生图提示词；"
+    "环境与光影不要混入，统一写到 lighting；\n"
+    "- 若用户消息提供「场景动作/画面描述」，visual_description 必须以该动作描述为"
+    "画面主体切分镜头（动作已含角色动作与环境细节，剧情仅作背景补充）；\n"
+    "- lighting 为本镜环境与光影（时段光线/光源方向/明暗氛围），按画面需要撰写；\n"
+    "- negative_prompt 为本镜生图需排除的元素（如：多余手指、肢体畸变、文字水印、"
+    "模糊变形、画面杂乱元素），按画面内容选取 2~4 项；\n"
+    "- camera_angle 按镜头情绪选择：平视=客观叙事、俯拍=渺小/压迫、仰拍=威严/崇高、"
+    "斜角=不安/冲突、过肩=对话机位、顶摄=宿命感；\n"
     "- 画面中角色的外貌/服装必须与剧本角色设定保持一致，禁止换装换发型；\n"
     "- camera_movement 从白名单中按镜头意图选择（推=强调主体、拉=揭示环境、"
     "摇=跟随扫视、移=建立空间、跟随=角色跟拍、升降=氛围强调、旋转=眩晕/冲突）；\n"
     "- duration 按节奏取值：快卡点镜头 2~3 秒、常规叙事镜头 4~6 秒、"
     "单个镜头不超过 10 秒；\n"
+    "- sfx 为本镜音效关键词列表（环境音/动作音/氛围音），无则空数组；\n"
+    "- emotion 为本镜整体情绪标签（如：压抑/爽感/紧张/释然/温馨）；\n"
     "- duration 为整数秒；无对白的镜头 dialogue 为空数组；全部使用中文。"
 )
 
@@ -130,23 +151,31 @@ def _fallback_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         scene: 剧本场景 dict（title/plot/dialogue/duration_sec）。
 
     Returns:
-        List[Dict[str, Any]]: 2 个镜头 dict。
+        List[Dict[str, Any]]: 2 个镜头 dict（含方案 B 新字段的中性降级值）。
     """
     dialogue = scene.get("dialogue") or []
     if isinstance(dialogue, str):
         dialogue = [{"character": "旁白", "line": ln.strip()} for ln in dialogue.splitlines() if ln.strip()]
     half = (len(dialogue) + 1) // 2
     title = str(scene.get("title") or "场景")
-    plot = str(scene.get("plot") or "")[:60]
+    # 画面素材回退链：动作（画面描述）优先于剧情（剧情偏梗概，动作更贴近可生图画面）
+    plot = str(scene.get("action") or scene.get("plot") or "")[:60]
+    # 声音降级：透传剧情节点自带的音效/情绪（无则空）
+    scene_sfx = [str(s).strip() for s in (scene.get("sfx") or []) if str(s or "").strip()]
+    scene_emotion = str(scene.get("emotion") or "").strip() or None
     return [
         {
-            "shot_type": "中景", "camera_movement": "固定", "duration": 5,
+            "shot_type": "中景", "camera_angle": "平视", "camera_movement": "固定", "duration": 5,
             "visual_description": f"{title}：{plot}（规则降级拆镜·前段）",
+            "lighting": None, "negative_prompt": None,
+            "sfx": scene_sfx, "emotion": scene_emotion,
             "dialogue": dialogue[:half],
         },
         {
-            "shot_type": "近景", "camera_movement": "推", "duration": 5,
+            "shot_type": "近景", "camera_angle": "平视", "camera_movement": "推", "duration": 5,
             "visual_description": f"{title}：情绪特写推进（规则降级拆镜·后段）",
+            "lighting": None, "negative_prompt": None,
+            "sfx": scene_sfx, "emotion": scene_emotion,
             "dialogue": dialogue[half:],
         },
     ]
@@ -165,13 +194,19 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
     Raises:
         无：内部捕获一切异常（含网络/解析错误），保证降级路径可达。
     """
+    # 场景动作（剧情节点「动作」栏，AI 生成为必填）为画面主体素材；
+    # 缺失时（旧数据/手动未填）该行为空串，提示词由剧情兜底
     user_content = (
         f"场景标题：{scene.get('title', '')}\n"
         f"场景剧情：{scene.get('plot', '')}\n"
+        f"场景动作/画面描述：{scene.get('action') or ''}\n"
         f"场景对白：{json.dumps(scene.get('dialogue') or [], ensure_ascii=False)}\n"
         f"场景时长：{scene.get('duration_sec', 30)} 秒"
     )
     try:
+        # 声音兜底（循环外算一次）：LLM 未给音效/情绪时透传剧情节点自带值
+        scene_sfx_fallback = [str(s).strip()[:50] for s in (scene.get("sfx") or []) if str(s or "").strip()][:5]
+        scene_emotion_fallback = str(scene.get("emotion") or "").strip()[:50] or None
         text = await llm.chat(
             None,
             [
@@ -194,11 +229,30 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
                 duration = max(1, int(sh.get("duration") or 5))
             except (TypeError, ValueError):
                 duration = 5
+            # LLM 的 negative_prompt 偶尔返回数组（提示词格式不稳定），数组转顿号串
+            raw_negative = sh.get("negative_prompt")
+            if isinstance(raw_negative, list):
+                negative_text = "、".join(
+                    str(x).strip() for x in raw_negative if str(x or "").strip())
+            else:
+                negative_text = str(raw_negative or "").strip()
             shots.append({
                 "shot_type": str(sh.get("shot_type") or "中景")[:20],
+                # 方案 B：机位角度白名单校验（LLM 输出越界时回退平视）
+                "camera_angle": str(sh.get("camera_angle") or "平视")[:20]
+                if str(sh.get("camera_angle") or "") in CAMERA_ANGLES else "平视",
                 "camera_movement": str(sh.get("camera_movement") or "固定")[:20],
                 "duration": duration,
-                "visual_description": str(sh.get("visual_description") or scene.get("plot") or ""),
+                # visual_description 回退链：LLM 输出 → 动作（画面描述）→ 剧情
+                "visual_description": str(
+                    sh.get("visual_description") or scene.get("action") or scene.get("plot") or ""),
+                # 方案 B：环境光影 / 负面提示词（可空，LLM 未给时不造数据）
+                "lighting": str(sh.get("lighting") or "").strip()[:200] or None,
+                "negative_prompt": negative_text[:300] or None,
+                # 方案 B：声音结构化（音效列表 + 情绪标签；LLM 未给时透传剧情节点自带值）
+                "sfx": ([str(s).strip()[:50] for s in (sh.get("sfx") or [])
+                         if str(s or "").strip()][:5]) or scene_sfx_fallback,
+                "emotion": str(sh.get("emotion") or "").strip()[:50] or scene_emotion_fallback,
                 "dialogue": sh.get("dialogue") or [],
             })
         return shots or _fallback_shots(scene)
@@ -207,57 +261,105 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _match_scene(scene: Dict[str, Any], scene_rows: List[Scene]) -> Tuple[Optional[Scene], str]:
-    """按场景名匹配场景资产（精确相等或互相包含）。
+    """按地点名匹配场景资产（精确相等或互相包含）。
+
+    剧情节点结构（2026-10-17）下 location 才是地点（如「写字楼工位区」），
+    title 是剧情概括标题（如「末位之夜的窒息」，与场景资产名无对应关系），
+    故匹配文本按 location → title 顺序两轮尝试；旧数据（title 即地点）由
+    title 轮兜底兼容。
 
     匹配命中置信度 0.9（应用层匹配策略语义，storyboards 表无独立字段存储；
     未匹配时 scene_id 落 NULL，由告警接口标记「实体未强绑资产」）。
 
     Args:
-        scene: 剧本场景 dict（取 title）。
+        scene: 剧本场景 dict（取 location/title）。
         scene_rows: 项目内场景资产行列表。
 
     Returns:
         Tuple[Optional[Scene], str]: (命中的场景 ORM 对象或 None, 参与提示词的场景名)。
     """
-    title = str(scene.get("title") or "").strip()
-    if title:
+    for key in ("location", "title"):
+        text = str(scene.get(key) or "").strip()
+        if not text:
+            continue
         for row in scene_rows:
-            if row.name == title or row.name in title or title in row.name:
+            if row.name == text or row.name in text or text in row.name:
                 return row, row.name
-    return None, title or "未匹配场景"
+    fallback = str(scene.get("location") or scene.get("title") or "").strip()
+    return None, fallback or "未匹配场景"
 
 
-def _match_characters(dialogue_text: str, char_rows: List[Character]) -> List[Character]:
-    """匹配对白中出现的角色（说话人名匹配角色 name 或 aliases，RD-24 实体链接）。
+def _match_characters(
+    dialogue_text: str, char_rows: List[Character], extra_text: str = "",
+) -> List[Character]:
+    """匹配镜头涉及角色（RD-24 实体链接，两级匹配）。
+
+    一级：对白说话人（行首「角色名：」）精确匹配角色 name 或 aliases；
+    二级兜底：角色名以子串出现在画面描述文本中（覆盖无对白的特写/空镜，
+    如「特写，王小满（…）」）。命中按发现顺序去重。
 
     Args:
         dialogue_text: 多行对白文本（每行 "角色名：台词"）。
-        char_rows: 项目内未删角色资产列表。
+        char_rows: 项目内未删且已启用的角色资产列表。
+        extra_text: 画面描述等兜底匹配文本（可空；空时不做二级匹配）。
 
     Returns:
-        List[Character]: 命中的角色列表（按对白出现顺序去重）。
+        List[Character]: 命中的角色列表。
     """
     hits: List[Character] = []
-    if not dialogue_text:
-        return hits
-    for line in dialogue_text.splitlines():
-        m = re.match(r"^([^：:]{1,20})[：:]", line.strip())
-        if not m:
-            continue
-        speaker = m.group(1).strip()
+    if dialogue_text:
+        for line in dialogue_text.splitlines():
+            m = re.match(r"^([^：:]{1,20})[：:]", line.strip())
+            if not m:
+                continue
+            speaker = m.group(1).strip()
+            for ch in char_rows:
+                aliases = ch.aliases if isinstance(ch.aliases, list) else []
+                if ch.name == speaker or speaker in aliases:
+                    if ch not in hits:
+                        hits.append(ch)
+    if extra_text:
         for ch in char_rows:
-            aliases = ch.aliases if isinstance(ch.aliases, list) else []
-            if ch.name == speaker or speaker in aliases:
-                if ch not in hits:
-                    hits.append(ch)
+            if ch not in hits and ch.name and ch.name in extra_text:
+                hits.append(ch)
+    return hits
+
+
+def _match_props(link_text: str, prop_rows: List[Prop]) -> List[Prop]:
+    """按画面/对白文本匹配项目内道具资产（RD-24 强绑口径，方案 B 扩展）。
+
+    匹配规则：道具名（≥2 字符）以子串形式出现在镜头文本中即命中；
+    应用层置信度 0.6（LINK_CONFIDENCE_PROP，弱于角色说话人匹配）。
+    短名误报风险由「名称 ≥2 字符 + 项目内道具池有限」约束兜底。
+
+    Args:
+        link_text: 参与匹配的镜头文本（画面描述 + 对白拼接）。
+        prop_rows: 项目内未删道具资产行列表。
+
+    Returns:
+        List[Prop]: 命中的道具列表（按道具池顺序去重）。
+    """
+    hits: List[Prop] = []
+    if not link_text:
+        return hits
+    for prop in prop_rows:
+        name = str(prop.name or "").strip()
+        if len(name) >= 2 and name in link_text and prop not in hits:
+            hits.append(prop)
     return hits
 
 
 def _build_prompt_locked(
     project: Project, scene_name: str, characters: List[Character],
     visual_description: str, shot_type: str, camera_movement: str,
+    camera_angle: Optional[str] = None, lighting: Optional[str] = None,
+    negative_prompt: Optional[str] = None,
 ) -> str:
-    """构造五要素提示词锁定层模板（RD-04：风格/场景/角色/画面/景别运镜）。
+    """构造分层提示词锁定层模板（RD-04 分层 + 方案 B 扩展八要素）。
+
+    要素序：统一风格 / 场景 / 角色（外貌圣经）/ 画面（主体动作）/
+    机位角度 / 景别运镜 / 环境光影 / 负面排除——对应 AI 漫剧行业
+    「固定角色卡+动作+环境光影+风格质量+负面排除」分层公式。
 
     角色要素注入「角色圣经固定前缀」（AI 漫剧行业惯例：每条人物提示词以
     角色圣经开头，只改动作/场景）——外貌来源为 characters.description 的
@@ -268,12 +370,15 @@ def _build_prompt_locked(
         project: 项目对象（取全局风格锚点）。
         scene_name: 场景名。
         characters: 绑定的角色 ORM 列表（外貌圣经来源）。
-        visual_description: 画面描述。
+        visual_description: 画面描述（主体动作）。
         shot_type: 景别。
         camera_movement: 运镜。
+        camera_angle: 机位与角度（None 时该要素省略）。
+        lighting: 环境与光影（None 时该要素省略）。
+        negative_prompt: 负面提示词（None 时该要素省略）。
 
     Returns:
-        str: 五要素锁定层提示词。
+        str: 分层锁定层提示词（缺省要素自动省略，存量调用兼容）。
 
     Raises:
         无：纯字符串拼装，角色字段缺失按姓名兜底。
@@ -284,10 +389,19 @@ def _build_prompt_locked(
         bible = build_character_bible_prompt(ch.name, ch.age, appearance)
         char_parts.append(bible[:60])
     names_text = "；".join(char_parts) if char_parts else "无"
+    # 方案 B 扩展要素（缺省省略，保持存量调用输出形态不变）
+    extra_parts: List[str] = []
+    if camera_angle:
+        extra_parts.append(f"机位角度：{camera_angle}")
+    if lighting:
+        extra_parts.append(f"环境光影：{lighting}")
+    if negative_prompt:
+        extra_parts.append(f"负面排除：{negative_prompt}")
+    extra_text = ("；" + "；".join(extra_parts)) if extra_parts else ""
     return (
         f"统一风格：{project.style or '默认风格'}；场景：{scene_name}；"
         f"角色（外貌圣经，跨镜一致）：{names_text}；画面：{visual_description or '无'}；"
-        f"景别运镜：{shot_type}/{camera_movement}"
+        f"景别运镜：{shot_type}/{camera_movement}{extra_text}"
     )
 
 
@@ -297,12 +411,16 @@ def compute_stale_reasons(
     char_version_map: Dict[int, int],
     char_name_map: Dict[int, str],
     scene_version_map: Dict[int, int],
+    prop_links: Optional[List[Dict[str, Any]]] = None,
+    prop_version_map: Optional[Dict[int, int]] = None,
+    prop_name_map: Optional[Dict[int, str]] = None,
 ) -> Tuple[bool, List[str]]:
     """计算单镜过期状态（P0-3 版本透传，模块级纯函数供列表与批量重渲染共用）。
 
     判定规则（快照 NULL = 旧数据视为一致，防存量分镜全量误报）：
     - 任一角色关联的 character_version 与该角色当前 asset_version 不一致 → 过期；
-    - scene_version 与绑定场景当前 asset_version 不一致 → 过期。
+    - scene_version 与绑定场景当前 asset_version 不一致 → 过期；
+    - 任一道具关联的 prop_version 与该道具当前 asset_version 不一致 → 过期（方案 B）。
 
     Args:
         sb: 分镜 ORM 对象（取 scene_id/scene_version）。
@@ -310,6 +428,9 @@ def compute_stale_reasons(
         char_version_map: 角色 ID → 当前 asset_version。
         char_name_map: 角色 ID → 角色名（过期原因文案用）。
         scene_version_map: 场景 ID → 当前 asset_version。
+        prop_links: 该镜的道具关联输出列表（含 prop_id，方案 B，可空兼容存量调用）。
+        prop_version_map: 道具 ID → 当前 asset_version（方案 B，可空）。
+        prop_name_map: 道具 ID → 道具名（过期原因文案用，方案 B，可空）。
 
     Returns:
         Tuple[bool, List[str]]: (是否过期, 过期原因文案列表)。
@@ -324,20 +445,29 @@ def compute_stale_reasons(
         cur_scene = scene_version_map.get(sb.scene_id)
         if cur_scene is not None and sb.scene_version != cur_scene:
             reasons.append("绑定场景概念图已更新")
+    # 方案 B：道具版本快照判定（NULL 快照视为一致，与角色/场景口径一致）
+    for plink in (prop_links or []):
+        cur_prop = (prop_version_map or {}).get(plink["prop_id"])
+        snap_prop = plink.get("prop_version")
+        if snap_prop is not None and cur_prop is not None and snap_prop != cur_prop:
+            reasons.append(
+                f"道具「{(prop_name_map or {}).get(plink['prop_id'], plink['prop_id'])}」标准图已更新")
     return bool(reasons), reasons
 
 
 async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[str, Any]]:
-    """把分镜 ORM 列表转换为输出 dict（批量联查角色关联与场景名，避免 N+1）。
+    """把分镜 ORM 列表转换为输出 dict（批量联查角色/道具关联与场景名，避免 N+1）。
 
     P0-3：输出追加 stale / stale_reasons（引用版本快照 vs 资产当前版本）。
+    方案 B：输出追加 camera_angle / lighting / negative_prompt / audio 与
+    props（道具关联列表，含版本快照参与 stale 判定）。
 
     Args:
         db: 异步数据库会话。
         sbs: 分镜 ORM 列表。
 
     Returns:
-        List[Dict[str, Any]]: 输出列表，每项含 characters 与 scene_name。
+        List[Dict[str, Any]]: 输出列表，每项含 characters / props 与 scene_name。
     """
     if not sbs:
         return []
@@ -364,6 +494,27 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
         })
         char_version_map[link.character_id] = int(cversion or 1)
         char_name_map[link.character_id] = cname
+    # 批量取分镜-道具关联（联道具名与当前版本，供 stale 计算；方案 B）
+    prop_link_rows = (
+        await db.execute(
+            select(StoryboardProp, Prop.name, Prop.asset_version)
+            .join(Prop, Prop.id == StoryboardProp.prop_id)
+            .where(StoryboardProp.storyboard_id.in_(ids))
+            .order_by(StoryboardProp.id.asc())
+        )
+    ).all()
+    props_by_sb: Dict[int, List[Dict[str, Any]]] = {}
+    prop_version_map: Dict[int, int] = {}
+    prop_name_map: Dict[int, str] = {}
+    for plink, pname, pversion in prop_link_rows:
+        props_by_sb.setdefault(plink.storyboard_id, []).append({
+            "prop_id": plink.prop_id,
+            "name": pname,
+            "link_confidence": float(plink.link_confidence) if plink.link_confidence is not None else None,
+            "prop_version": plink.prop_version,
+        })
+        prop_version_map[plink.prop_id] = int(pversion or 1)
+        prop_name_map[plink.prop_id] = pname
     # 批量取场景名与当前版本
     scene_ids = {sb.scene_id for sb in sbs if sb.scene_id}
     scene_names: Dict[int, str] = {}
@@ -379,8 +530,11 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
     out: List[Dict[str, Any]] = []
     for sb in sbs:
         links = links_by_sb.get(sb.id, [])
+        prop_links = props_by_sb.get(sb.id, [])
         stale, stale_reasons = compute_stale_reasons(
-            sb, links, char_version_map, char_name_map, scene_version_map)
+            sb, links, char_version_map, char_name_map, scene_version_map,
+            prop_links=prop_links, prop_version_map=prop_version_map,
+            prop_name_map=prop_name_map)
         out.append({
             "id": sb.id,
             "sequence": sb.sequence,
@@ -405,6 +559,12 @@ async def _build_out_list(db: AsyncSession, sbs: List[Storyboard]) -> List[Dict[
             "stale": stale,
             "stale_reasons": stale_reasons,
             "characters": links,
+            # 方案 B：镜头语言扩展 / 画面分层 / 声音结构化 / 道具关联
+            "camera_angle": sb.camera_angle,
+            "lighting": sb.lighting,
+            "negative_prompt": sb.negative_prompt,
+            "audio": sb.audio,
+            "props": prop_links,
         })
     return out
 
@@ -423,6 +583,11 @@ async def _resequence(db: AsyncSession, project_id: int) -> None:
             .order_by(Storyboard.sequence.asc(), Storyboard.id.asc())
         )
     ).scalars().all()
+    # 两阶段重排（同 _resequence_episodes）：避开 uk_sb_seq 唯一索引下
+    # 重排/合并造成的同集内 sequence 互换平移冲突
+    for sb in sbs:
+        sb.sequence = sb.sequence + 1000000
+    await db.flush()
     for idx, sb in enumerate(sbs, start=1):
         sb.sequence = idx
 
@@ -570,8 +735,9 @@ async def decompose_storyboards(
                 "unready": unready,
             })
 
-    # 项目内场景 / 角色资产（用于强绑与实体链接；角色仅取已启用的——
-    # 按集工作流：角色设定确认未启用的角色不参与分镜实体链接）
+    # 项目内场景 / 角色 / 道具资产（用于强绑与实体链接；角色仅取已启用的——
+    # 按集工作流：角色设定确认未启用的角色不参与分镜实体链接；
+    # 道具过滤软删，方案 B 扩展参与镜头文本匹配）
     scene_rows = (
         await db.execute(select(Scene).where(Scene.project_id == project.id))
     ).scalars().all()
@@ -580,6 +746,12 @@ async def decompose_storyboards(
             select(Character).where(
                 Character.project_id == project.id, Character.deleted_at.is_(None),
                 Character.enabled_at.is_not(None))
+        )
+    ).scalars().all()
+    prop_rows = (
+        await db.execute(
+            select(Prop).where(
+                Prop.project_id == project.id, Prop.deleted_at.is_(None))
         )
     ).scalars().all()
 
@@ -601,8 +773,11 @@ async def decompose_storyboards(
             seq += 1
             shot_type = shot["shot_type"]
             camera_movement = shot["camera_movement"]
-            visual_description = shot["visual_description"]
+            visual_description = str(shot.get("visual_description") or "")
             dialogue_text = _dialogue_to_text(shot.get("dialogue"))
+            # 方案 B：声音结构化（音效 + 情绪）与分层画面字段
+            shot_sfx = shot.get("sfx") or []
+            shot_emotion = shot.get("emotion")
             sb = Storyboard(
                 project_id=project.id,
                 script_id=src_script.id,
@@ -616,15 +791,24 @@ async def decompose_storyboards(
                 scene_id=scene_row.id if scene_row else None,
                 # P0-3：绑定场景时写入当前版本快照（NULL 场景无快照）
                 scene_version=scene_row.asset_version if scene_row else None,
+                # 方案 B：镜头语言 / 画面分层 / 声音结构化
+                camera_angle=shot.get("camera_angle"),
+                lighting=shot.get("lighting"),
+                negative_prompt=shot.get("negative_prompt"),
+                audio={
+                    "sfx": shot_sfx,
+                    "emotion": shot_emotion,
+                } if (shot_sfx or shot_emotion) else None,
                 prompt_locked="",   # 关联角色确定后回填
                 prompt_editable="",
                 status="pending",
             )
             db.add(sb)
-            await db.flush()  # 取 sb.id 供角色关联使用
+            await db.flush()  # 取 sb.id 供角色/道具关联使用
 
-            # 分镜-角色关联：对白中出现的角色（RD-24 强绑，link_confidence=0.8）
-            linked = _match_characters(dialogue_text, char_rows)
+            # 分镜-角色关联（RD-24 强绑，link_confidence=0.8）：
+            # 一级对白说话人 + 二级画面描述角色名兜底（无对白特写也能绑定）
+            linked = _match_characters(dialogue_text, char_rows, extra_text=visual_description or "")
             for ch in linked:
                 db.add(StoryboardCharacter(
                     storyboard_id=sb.id,
@@ -634,13 +818,43 @@ async def decompose_storyboards(
                     character_version=ch.asset_version or 1,
                     link_confidence=LINK_CONFIDENCE,
                 ))
-            # 五要素锁定层提示词（RD-04）：角色要素注入外貌圣经固定前缀
+            # 分镜-道具关联（方案 B）：画面描述 + 对白文本中出现的道具
+            # （RD-24 强绑口径，link_confidence=0.6；含 prop_version 快照）
+            linked_props = _match_props(f"{visual_description or ''}\n{dialogue_text}", prop_rows)
+            for prop in linked_props:
+                db.add(StoryboardProp(
+                    storyboard_id=sb.id,
+                    prop_id=prop.id,
+                    prop_version=prop.asset_version or 1,
+                    link_confidence=LINK_CONFIDENCE_PROP,
+                ))
+            # 分层锁定层提示词（RD-04 + 方案 B 八要素）：角色要素注入外貌圣经固定前缀
             sb.prompt_locked = _build_prompt_locked(
                 project, scene_name, linked,
                 visual_description, shot_type, camera_movement,
+                camera_angle=shot.get("camera_angle"),
+                lighting=shot.get("lighting"),
+                negative_prompt=shot.get("negative_prompt"),
             )
 
     project.status = "storyboard"
+    # 拆解后按项目「单集目标时长」等比对齐（SB-07 同口径缩放，与手动
+    # auto-fit-duration 一致）：新建项目选定的单集时长即总时长锚点，
+    # LLM 按剧情节点 duration_sec 分配的时长仅是相对节奏，须贴合目标。
+    # 按集拆解只缩放该集分镜（其他集已各自对齐，不重复缩放）；全量重建
+    # 时项目分镜即本批新镜，直接整体缩放。目标未设置时跳过。
+    if project.target_duration:
+        fit_conds = [Storyboard.project_id == project.id]
+        if scope_episode_id is not None:
+            fit_conds.append(Storyboard.episode_id == scope_episode_id)
+        fit_sbs = (
+            await db.execute(select(Storyboard).where(*fit_conds))
+        ).scalars().all()
+        fit_total = sum(sb.duration for sb in fit_sbs)
+        if fit_total > 0:
+            scale = project.target_duration / fit_total
+            for sb in fit_sbs:
+                sb.duration = max(1, round(sb.duration * scale))
     # 按集拆解：其他集分镜保留旧 sequence，跨集全局重排为连续 1..n
     # （默认剧集分镜排最前，其余按剧集 sequence；缺省全量重建时 seq 本就连续）
     if scope_episode_id is not None:
@@ -680,8 +894,53 @@ async def _resequence_episodes(db: AsyncSession, project_id: int) -> None:
         ep_order = 0 if sb.episode_id is None else episode_order.get(sb.episode_id, 10**9)
         return (ep_order, sb.sequence, sb.id)
 
+    # 两阶段重排：uk_sb_seq=(project_id, episode_id, sequence) 唯一索引下，
+    # 同集内 1..n → m..k 的平移会与未改行临时撞车（逐行 UPDATE 触发
+    # UniqueViolation）。先把全部行整体偏移到高位区（同集内相对唯一保持，
+    # 偏移阶段安全），flush 落位后再按目标序赋 1..n（落位递增且高位不在
+    # 目标区间，同样不冲突）。
+    for sb in sbs:
+        sb.sequence = sb.sequence + 1000000
+    await db.flush()
     for idx, sb in enumerate(sorted(sbs, key=_sort_key), start=1):
         sb.sequence = idx
+
+
+async def confirm_storyboards(db: AsyncSession, project: Project) -> Dict[str, Any]:
+    """确认分镜（生成阶段门禁动作）：项目状态 storyboard → producing。
+
+    幂等：已处于 producing 直接返回成功（重复点击「确认分镜」不报错）。
+    其余状态（draft/scripting/asset 等）拒绝——分镜流程未完成，先走完拆解。
+
+    Args:
+        db: 异步数据库会话。
+        project: 已校验归属的项目。
+
+    Returns:
+        Dict[str, Any]: {"status": "producing"}。
+
+    Raises:
+        HTTPException: 400 —— 项目尚无分镜（未拆解）或状态不在 storyboard/
+            producing。
+    """
+    if project.status == "producing":
+        return {"status": "producing"}
+    if project.status != "storyboard":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"当前项目状态为「{project.status}」，需先完成剧本与分镜拆解",
+        )
+    cnt = await db.scalar(
+        select(func.count()).select_from(Storyboard).where(Storyboard.project_id == project.id)
+    )
+    if not cnt:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="项目尚无分镜，请先在分镜设计页完成 AI 拆解",
+        )
+    project.status = "producing"
+    await db.commit()
+    return {"status": "producing"}
 
 
 async def list_storyboards(
@@ -738,7 +997,8 @@ async def update_storyboard(
         sb.scene_version = scene.asset_version or 1
 
     for field in ("shot_type", "camera_movement", "duration",
-                  "visual_description", "dialogue", "prompt_editable"):
+                  "visual_description", "dialogue", "prompt_editable",
+                  "camera_angle", "lighting", "negative_prompt", "audio"):
         value = getattr(req, field)
         if value is not None:
             setattr(sb, field, value)
@@ -805,6 +1065,11 @@ async def reorder_storyboards(db: AsyncSession, project: Project, ordered_ids: L
             detail="ordered_ids 必须恰好包含项目全部分镜 ID 且不重复",
         )
     id_to_sb = {sb.id: sb for sb in sbs}
+    # 两阶段重排（同 _resequence）：先整体偏移避开 uk_sb_seq 唯一索引，
+    # 再按目标序落位，防止同集内互换（如 [2,1] → [1,2]）撞唯一约束
+    for sb in sbs:
+        sb.sequence = sb.sequence + 1000000
+    await db.flush()
     for idx, sid in enumerate(ordered_ids, start=1):
         id_to_sb[sid].sequence = idx
     await db.commit()
@@ -863,15 +1128,20 @@ async def split_storyboard(
         visual_description=sb.visual_description,
         dialogue=second_text or None,
         scene_id=sb.scene_id,
+        # 方案 B：拆分出的新镜沿用本镜的镜头语言/画面分层/声音结构
+        camera_angle=sb.camera_angle,
+        lighting=sb.lighting,
+        negative_prompt=sb.negative_prompt,
+        audio=sb.audio,
         prompt_locked=sb.prompt_locked,
         prompt_editable="",
         status="pending",
         regen_count=0,
     )
     db.add(new_sb)
-    await db.flush()  # 取新镜 ID 以复制角色关联
+    await db.flush()  # 取新镜 ID 以复制角色/道具关联
 
-    # 角色关联复制到新镜（两镜沿用同一组绑定角色）
+    # 角色关联复制到新镜（两镜沿用同一组绑定角色，含版本快照）
     old_links = (
         await db.execute(
             select(StoryboardCharacter).where(StoryboardCharacter.storyboard_id == sb.id)
@@ -883,6 +1153,22 @@ async def split_storyboard(
             character_id=link.character_id,
             variant_id=link.variant_id,
             link_confidence=link.link_confidence,
+            character_version=link.character_version,
+            variant_version=link.variant_version,
+        ))
+
+    # 道具关联复制到新镜（方案 B：两镜沿用同一组绑定道具，含版本快照）
+    old_prop_links = (
+        await db.execute(
+            select(StoryboardProp).where(StoryboardProp.storyboard_id == sb.id)
+        )
+    ).scalars().all()
+    for plink in old_prop_links:
+        db.add(StoryboardProp(
+            storyboard_id=new_sb.id,
+            prop_id=plink.prop_id,
+            link_confidence=plink.link_confidence,
+            prop_version=plink.prop_version,
         ))
 
     sb.dialogue = first_text or None
@@ -944,6 +1230,32 @@ async def merge_storyboards(
             character_id=link.character_id,
             variant_id=link.variant_id,
             link_confidence=link.link_confidence,
+            character_version=link.character_version,
+            variant_version=link.variant_version,
+        ))
+
+    # other 的道具关联并入本镜（方案 B：按 prop_id 去重，撞唯一索引）
+    existing_prop_ids = {
+        row for row in (
+            await db.execute(
+                select(StoryboardProp.prop_id).where(
+                    StoryboardProp.storyboard_id == sb.id)
+            )
+        ).scalars().all()
+    }
+    other_prop_links = (
+        await db.execute(
+            select(StoryboardProp).where(StoryboardProp.storyboard_id == other.id)
+        )
+    ).scalars().all()
+    for plink in other_prop_links:
+        if plink.prop_id in existing_prop_ids:
+            continue
+        db.add(StoryboardProp(
+            storyboard_id=sb.id,
+            prop_id=plink.prop_id,
+            link_confidence=plink.link_confidence,
+            prop_version=plink.prop_version,
         ))
 
     # 删除 other（storyboard_characters 由外键级联删除）

@@ -278,6 +278,7 @@ def _candidate_to_out(candidate: dict) -> CharacterProfileOut:
         name=str(candidate.get("name") or "").strip() or "未命名",
         role_type=candidate.get("role_type"),
         age=candidate.get("age"),
+        gender=candidate.get("gender"),
         personality=candidate.get("personality"),
         appearance=candidate.get("appearance"),
         outfit=candidate.get("outfit"),
@@ -309,6 +310,7 @@ def _character_to_out(character: Character) -> CharacterProfileOut:
         name=character.name,
         role_type=character.role_type,
         age=character.age,
+        gender=character.gender,
         personality=character.personality,
         appearance=character.description,
         outfit=character.outfit,
@@ -544,7 +546,7 @@ async def edit_characters(
     # 再执行 upsert：id 优先匹配，未命中按 name 匹配，均未命中则新增
     for item in req.upsert:
         updates = {"name": item.name}
-        for field in ("role_type", "age", "personality", "appearance",
+        for field in ("role_type", "gender", "age", "personality", "appearance",
                       "outfit", "style_note", "motivation", "arc"):
             value = getattr(item, field)
             if value is not None:
@@ -615,7 +617,7 @@ async def regenerate_character(
     if target is not None:
         # 当前设定摘要（供 LLM 参考原设计）
         digest = _build_profile_description(
-            target.get("personality"), target.get("appearance"),
+            target.get("gender"), target.get("personality"), target.get("appearance"),
             target.get("motivation"), target.get("arc")) or target.get("name") or ""
         instruction = f"重新设计角色「{target.get('name')}」（当前设定：{digest}）"
         if user_instruction:
@@ -626,6 +628,7 @@ async def regenerate_character(
         target.update({
             "name": new_char["name"],
             "role_type": new_char["role_type"],
+            "gender": new_char.get("gender"),
             "age": new_char["age"],
             "personality": new_char["personality"],
             "appearance": new_char["appearance"],
@@ -655,6 +658,7 @@ async def regenerate_character(
     result = await plan_characters(project, source_text, instruction=instruction)
     new_char = result[0]
     row.role_type = new_char["role_type"]
+    row.gender = new_char.get("gender")
     row.age = new_char["age"]
     row.personality = new_char["personality"]
     row.outfit = new_char.get("outfit")
@@ -663,7 +667,7 @@ async def regenerate_character(
     row.arc = new_char["arc"]
     row.relations = new_char["relations"]
     row.description = _build_profile_description(
-        new_char["personality"], new_char["appearance"],
+        new_char.get("gender"), new_char["personality"], new_char["appearance"],
         new_char["motivation"], new_char["arc"],
         outfit=new_char.get("outfit"), style_note=new_char.get("style_note"),
     ) or row.description

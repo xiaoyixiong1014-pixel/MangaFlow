@@ -52,6 +52,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from fastapi import HTTPException
 from sqlalchemy import func, or_, select
 
 from app.core.config import settings
@@ -390,15 +391,19 @@ async def _fail_task(db, task: Task, user_id: int, code: str, message: str, bear
             logger.warning("任务 %s 违规处罚写入失败（user_id=%s）", task.id, user_id, exc_info=True)
         # 内容违规不做重试，直接失败并按用户承担退款（RD-28/RD-34）
         task.status = "failed"
-        await refund_frozen(
-            db,
-            user_id=user_id,
-            amount=task.cost_points,
-            ref_task_id=task.id,
-            idempotency_key=f"task_{task.id}_refund",
-            bear="user",
-            remark="内容违规，冻结积分退回",
-        )
+        try:
+            await refund_frozen(
+                db,
+                user_id=user_id,
+                amount=task.cost_points,
+                ref_task_id=task.id,
+                idempotency_key=f"task_{task.id}_refund",
+                bear="user",
+                remark="内容违规，冻结积分退回",
+            )
+        except HTTPException:
+            # 退款兜底（如用户/钱包已删除）：跳过退款继续落终态，防任务无法推进被反复重领
+            logger.warning("任务 %s 违规退款失败（user_id=%s），跳过退款继续落终态", task.id, user_id, exc_info=True)
         await db.commit()
         # 可观测性：failed 终态迁移计数 + 释放进行中任务数
         mark_task("failed")
@@ -426,15 +431,19 @@ async def _fail_task(db, task: Task, user_id: int, code: str, message: str, bear
         # 重试耗尽：终态失败 + 死信标记（进入管理端死信队列）+ 平台承担退款
         task.status = "failed"
         task.dead_letter = True
-        await refund_frozen(
-            db,
-            user_id=user_id,
-            amount=task.cost_points,
-            ref_task_id=task.id,
-            idempotency_key=f"task_{task.id}_refund",
-            bear=bear,
-            remark=f"任务重试 {_MAX_RETRY} 次仍失败，冻结积分退回（平台承担）",
-        )
+        try:
+            await refund_frozen(
+                db,
+                user_id=user_id,
+                amount=task.cost_points,
+                ref_task_id=task.id,
+                idempotency_key=f"task_{task.id}_refund",
+                bear=bear,
+                remark=f"任务重试 {_MAX_RETRY} 次仍失败，冻结积分退回（平台承担）",
+            )
+        except HTTPException:
+            # 退款兜底（如用户/钱包已删除）：跳过退款继续落终态，防任务无法推进被反复重领
+            logger.warning("任务 %s 终态退款失败（user_id=%s），跳过退款继续落死信终态", task.id, user_id, exc_info=True)
         await db.commit()
         # 可观测性：failed 终态迁移计数 + 释放进行中任务数
         mark_task("failed")

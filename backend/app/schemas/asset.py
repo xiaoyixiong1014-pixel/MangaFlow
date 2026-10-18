@@ -107,6 +107,8 @@ class CharacterOut(BaseModel):
     tags: TagsOutField = Field(default_factory=list)
     outfit: Optional[str] = None
     style_note: Optional[str] = None
+    # 角色性别（agent 角色设定生成：男性/女性/中性；生图提示词性别锚定）
+    gender: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 

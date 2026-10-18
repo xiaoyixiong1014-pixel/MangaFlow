@@ -49,6 +49,8 @@ export interface CharacterProfile {
   role_type: RoleType | null
   /** 年龄设定（弹性表述，如「约30岁」「少年」） */
   age: string | null
+  /** 角色性别（男性/女性/中性；agent 角色设定生成） */
+  gender: string | null
   /** 性格设定 */
   personality: string | null
   /** 形象特征（角色圣经视觉段一：发型/五官/体型/肤色） */
@@ -79,6 +81,8 @@ export interface CharacterUpsertPayload {
   role_type?: RoleType | null
   /** 年龄设定（不传=不修改，≤20 字符） */
   age?: string | null
+  /** 角色性别（男性/女性/中性；不传=不修改） */
+  gender?: string | null
   /** 性格设定（不传=不修改） */
   personality?: string | null
   /** 形象特征（不传=不修改） */

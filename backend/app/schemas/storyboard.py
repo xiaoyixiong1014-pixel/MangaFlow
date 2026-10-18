@@ -35,6 +35,20 @@ class StoryboardCharacterLinkOut(BaseModel):
     link_confidence: Optional[float] = None
 
 
+class StoryboardPropLinkOut(BaseModel):
+    """分镜-道具关联输出（方案 B）。
+
+    Attributes:
+        prop_id: 道具资产 ID。
+        name: 道具名（联查回显）。
+        link_confidence: 实体链接置信度（0~1）。
+    """
+
+    prop_id: int
+    name: str
+    link_confidence: Optional[float] = None
+
+
 class StoryboardOut(BaseModel):
     """分镜输出模型。
 
@@ -50,6 +64,10 @@ class StoryboardOut(BaseModel):
         scene_name: 场景名（联查回显）。
         prompt_locked: 提示词系统锁定层（RD-04）。
         prompt_editable: 提示词用户可编辑层。
+        camera_angle: 机位与角度（方案 B，平视/俯拍/仰拍/斜角/过肩/顶摄）。
+        lighting: 环境与光影描述（方案 B，分层提示词「环境与光影层」）。
+        negative_prompt: 负面提示词（方案 B，分层提示词「负面排除层」）。
+        audio: 声音结构化信息（方案 B：{sfx: 音效列表, emotion: 情绪标签}）。
         keyframe_url: 关键帧 URL。
         end_frame_url: 尾帧 URL（P-03/P-08：尾帧任务完成后由执行器回写）。
         video_url: 视频片段 URL。
@@ -57,6 +75,7 @@ class StoryboardOut(BaseModel):
         status: 状态 pending/generating/done/failed。
         regen_count: 重生成次数。
         characters: 关联角色列表。
+        props: 关联道具列表（方案 B）。
         stale: 引用资产是否已过期（P0-3：版本快照 vs 当前版本，true 前端标黄）。
         stale_reasons: 过期原因文案列表（tooltip 展示）。
     """
@@ -74,6 +93,10 @@ class StoryboardOut(BaseModel):
     scene_name: Optional[str] = None
     prompt_locked: Optional[str] = None
     prompt_editable: Optional[str] = None
+    camera_angle: Optional[str] = None
+    lighting: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    audio: Optional[dict] = None
     keyframe_url: Optional[str] = None
     end_frame_url: Optional[str] = None
     video_url: Optional[str] = None
@@ -81,6 +104,7 @@ class StoryboardOut(BaseModel):
     status: str = "pending"
     regen_count: int = 0
     characters: List[StoryboardCharacterLinkOut] = Field(default_factory=list)
+    props: List[StoryboardPropLinkOut] = Field(default_factory=list)
     stale: bool = False
     stale_reasons: List[str] = Field(default_factory=list)
 
@@ -111,6 +135,10 @@ class StoryboardUpdateRequest(BaseModel):
         prompt_editable: 提示词可编辑层。
         scene_id: 强绑场景资产 ID（须属于本项目）。
         character_links: 角色关联列表（提供则整体替换既有关联）。
+        camera_angle: 机位与角度（方案 B，可空表示不修改）。
+        lighting: 环境与光影（方案 B，可空表示不修改）。
+        negative_prompt: 负面提示词（方案 B，可空表示不修改）。
+        audio: 声音结构化信息（方案 B {sfx, emotion}，可空表示不修改）。
     """
 
     shot_type: Optional[str] = Field(default=None, max_length=20)
@@ -121,6 +149,10 @@ class StoryboardUpdateRequest(BaseModel):
     prompt_editable: Optional[str] = None
     scene_id: Optional[int] = None
     character_links: Optional[List[StoryboardCharacterLinkIn]] = None
+    camera_angle: Optional[str] = Field(default=None, max_length=20)
+    lighting: Optional[str] = None
+    negative_prompt: Optional[str] = None
+    audio: Optional[dict] = None
 
 
 class ReorderRequest(BaseModel):

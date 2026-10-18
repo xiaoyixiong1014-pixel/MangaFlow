@@ -12,7 +12,7 @@
 import pytest
 from sqlalchemy import select
 
-from app.models import MediaAsset, ReviewRecord, Storyboard
+from app.models import MediaAsset, Project, ReviewRecord, Storyboard
 from tests.conftest import (
     create_project,
     get_wallet_model,
@@ -24,6 +24,9 @@ from tests.conftest import (
 
 async def _make_project_with_storyboard(client, auth, db, tag: str):
     """辅助：建项目并直插一条分镜，返回 (project_id, storyboard)（内部函数）。
+
+    项目状态同步置为 producing（生成阶段门禁：关键帧任务仅允许
+    已确认分镜的项目发起，与真实用户「确认分镜」后的状态一致）。
 
     Args:
         client: 内存 HTTP 客户端。
@@ -39,6 +42,16 @@ async def _make_project_with_storyboard(client, auth, db, tag: str):
     """
     project = await create_project(client, auth["headers"], title=f"生成项目_{tag}")
     sb = await insert_storyboard(db, project["id"], sequence=1)
+    # 直改状态至 storyboard（模拟拆解完成）后走真实 confirm 链路推进 producing
+    proj = (
+        await db.execute(select(Project).where(Project.id == project["id"]))
+    ).scalar_one()
+    proj.status = "storyboard"
+    await db.commit()
+    confirm = await client.post(
+        f"/api/projects/{project['id']}/storyboards/confirm", headers=auth["headers"]
+    )
+    assert confirm.status_code == 200, confirm.text
     return project["id"], sb
 
 

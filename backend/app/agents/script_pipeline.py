@@ -95,7 +95,8 @@ _CHARACTER_PLANNER_SYSTEM_PROMPT = (
     "设计本剧的角色班底。\n"
     "必须仅输出一个严格合法的 JSON 对象（禁止 markdown 代码块围栏、禁止任何解释文字），"
     "结构如下：\n"
-    '{"characters":[{"name":"角色名","role_type":"lead","age":"约30岁",'
+    '{"characters":[{"name":"角色名","role_type":"lead","gender":"男性/女性/中性",'
+    '"age":"约30岁",'
     '"personality":"性格设定","appearance":"形象特征（发型/五官/体型/肤色等)",'
     '"outfit":"服装配饰完整拆解（上装/下装/鞋履/配饰/标志性物品，逐项列明）",'
     '"style_note":"风格与画质特点（画风/光线/画质关键词，如赛璐璐动漫、柔光、高细节）",'
@@ -103,6 +104,8 @@ _CHARACTER_PLANNER_SYSTEM_PROMPT = (
     '"arc":"人物弧光","relations":[{"target":"对方角色名","relation":"关系描述"}]}]}\n'
     "要求：4~8 个角色；主角（role_type 取 lead）至少 1 名；"
     "role_type 只能取 lead/support/villain/extra；"
+    "gender 必须依据角色名与人设明确判定（男性/女性/中性三选一），"
+    "用于生图时准确把握人物性别特征；"
     "appearance/outfit/style_note 是角色圣经的视觉三段：appearance 写清发型、"
     "五官、体型、肤色等形象特征；outfit 逐项拆解服装与配饰（上装/下装/鞋履/"
     "配饰/标志性物品，具体到颜色与材质）；style_note 写明该角色出图的画风、"
@@ -352,6 +355,7 @@ def _normalize_character_candidates(data: dict) -> List[dict]:
         result.append({
             "name": name[:50],
             "role_type": role_type,
+            "gender": _clean_str(item.get("gender"), 10),
             "age": _clean_str(item.get("age"), 20),
             "personality": _clean_str(item.get("personality"), 500),
             "appearance": _clean_str(item.get("appearance"), 500),
@@ -1151,7 +1155,10 @@ def build_episode_writer_messages(
         lines.append(f"- 核心事件：{outline['core_event']}")
     curve_chars = outline.get("characters") or []
     if curve_chars:
-        lines.append(f"- 出场角色：{'、'.join(str(c) for c in curve_chars)}")
+        lines.append(
+            "- 本集出场角色（正文出场角色必须从本名单与已确认角色名单中选取，"
+            "禁止新造名单外角色；无名路人可一笔带过不具名）："
+            + "、".join(str(c) for c in curve_chars))
     if outline.get("emotion_curve"):
         lines.append(f"- 情绪曲线：{outline['emotion_curve']}")
     lines.append(
@@ -1162,6 +1169,12 @@ def build_episode_writer_messages(
         lines.append(
             f"- {getattr(ch, 'name', '未命名')}"
             f"（{getattr(ch, 'role_type', None) or 'support'}）：{personality or '暂无性格设定'}")
+    # 角色一致性硬约束（RD-01 推广到全档位）：大纲出场角色与已确认名单之外
+    # 不得出现任何具名角色——分集大纲的出场角色是正文的强约束而非参考
+    lines.append(
+        "硬性要求：正文对白与叙述中出现的所有具名角色，必须取自「本集出场角色」"
+        "或「已确认角色名单」，二者之外一律不得命名出现（群像/路人只能以"
+        "「路人」「围观者」等无名方式带过）。")
     return _EPISODE_WRITER_SYSTEM_PROMPT, "\n".join(lines)
 
 
@@ -1254,17 +1267,19 @@ async def write_episode_body(
     内部复用 stream_episode_body 的分段流式逻辑，仅把增量拼接为整串返回
     （供不需要 SSE 透传的调用方/测试使用）。
 
-    faithful 一致性校验（RD-01，不阻断主流程）：faithful 档位下从正文中提取
-    对白行角色名（「角色名（情绪）：台词」/「角色名：台词」格式），与已确认
-    名单比对——名单外角色数超过阈值（2 个）时记录 warning 日志并额外重试
-    1 次；重试仍有则照常返回。校验结果写入 faithful_report["extra_characters"]。
+    角色一致性校验（RD-01，**全档位生效**，不阻断主流程）：从正文中提取
+    对白行角色名（「角色名（情绪）：台词」/「角色名：台词」格式），与
+    「已确认名单 ∪ 本集大纲出场角色」比对——名单外角色数超过阈值（2 个）
+    时记录 warning 日志并额外重试 1 次；重试仍有则照常返回。校验结果写入
+    faithful_report["extra_characters"]（参数名保留 faithful 口径以兼容
+    既有调用方）。
 
     Args:
         project: 项目对象。
         episode: 剧集对象。
         confirmed_characters: 已确认角色列表（characters 表 ORM 对象）。
         fidelity_ctx: 忠实度档位覆盖（None 时取 project.fidelity or "free"）。
-        faithful_report: 可选回填容器（faithful 校验结果落
+        faithful_report: 可选回填容器（校验结果落
             {"extra_characters": [...]}；None 时仅日志）。
 
     Returns:
@@ -1274,33 +1289,37 @@ async def write_episode_body(
         Exception: 底层 LLM 渠道异常向上抛出。
     """
     fidelity = fidelity_ctx or project.fidelity or "free"
+    outline = episode.outline if isinstance(episode.outline, dict) else {}
+    # 一致性基准：已确认名单 ∪ 本集大纲出场角色（大纲角色是正文合法出场者）
     allowed = {
         str(getattr(ch, "name", "") or "").strip()
         for ch in confirmed_characters
         if str(getattr(ch, "name", "") or "").strip()
     }
-    faithful = fidelity == "faithful" and bool(allowed)
+    allowed |= {str(c).strip() for c in (outline.get("characters") or []) if str(c).strip()}
+    enforce = bool(allowed)
     extra_names: set = set()
     text = ""
-    for attempt in range(2):  # 首次 + 最多 1 次 faithful 重试
+    for attempt in range(2):  # 首次 + 最多 1 次一致性重试
         parts: List[str] = []
         async for kind, delta in stream_episode_body(
                 project, episode, confirmed_characters, fidelity_ctx):
             if kind == "delta":
                 parts.append(delta)
         text = "".join(parts)
-        if not faithful:
+        if not enforce:
             break
         extra_names = _extract_body_character_names(text) - allowed
         if len(extra_names) <= _FAITHFUL_EXTRA_CHARACTER_LIMIT:
             break
         logger.warning(
-            "faithful 忠实度校验：正文出现名单外角色 %s（超过阈值 %d）",
-            sorted(extra_names), _FAITHFUL_EXTRA_CHARACTER_LIMIT)
+            "角色一致性校验（%s）：正文出现名单外角色 %s（超过阈值 %d）",
+            fidelity, sorted(extra_names), _FAITHFUL_EXTRA_CHARACTER_LIMIT)
         if attempt == 0:
             continue  # 额外重试 1 次（不阻断主流程）
         logger.warning(
-            "faithful 忠实度校验：重试后仍存在名单外角色 %s，已返回", sorted(extra_names))
+            "角色一致性校验（%s）：重试后仍存在名单外角色 %s，已返回",
+            fidelity, sorted(extra_names))
     if faithful_report is not None:
         faithful_report["extra_characters"] = sorted(extra_names)
     return text

@@ -194,6 +194,7 @@ CANDIDATES_KEY = "script_characters"
 
 
 def build_profile_description(
+    gender: Optional[str],
     personality: Optional[str],
     appearance: Optional[str],
     motivation: Optional[str],
@@ -203,11 +204,12 @@ def build_profile_description(
 ) -> Optional[str]:
     """把人设要素拼接为 characters.description 摘要文本。
 
-    视觉三段（外观/服装配饰/风格画质）连排在动机/弧光之前，便于
-    extract_appearance_from_description 按段提取「外观+服装配饰+风格画质」
-    作为角色圣经视觉锁定描述。
+    性别放最前（生图性别锚定的人类可读位），视觉三段（外观/服装配饰/风格画质）
+    连排在动机/弧光之前，便于 extract_appearance_from_description 按段提取
+    「外观+服装配饰+风格画质」作为角色圣经视觉锁定描述。
 
     Args:
+        gender: 角色性别（男性/女性/中性；可空）。
         personality: 性格设定。
         appearance: 形象特征。
         motivation: 行为动机。
@@ -216,13 +218,15 @@ def build_profile_description(
         style_note: 风格与画质特点（可选）。
 
     Returns:
-        Optional[str]: 「性格：…；外观：…；服装配饰：…；风格画质：…；
+        Optional[str]: 「性别：…；性格：…；外观：…；服装配饰：…；风格画质：…；
             动机：…；弧光：…」形式摘要；全空时返回 None。
 
     Raises:
         无：纯字符串拼装。
     """
     parts = []
+    if gender:
+        parts.append(f"性别：{gender}")
     if personality:
         parts.append(f"性格：{personality}")
     if appearance:
@@ -433,6 +437,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
         cand = cand if isinstance(cand, dict) else {}
         values = {
             "role_type": item.get("role_type") or cand.get("role_type"),
+            "gender": item.get("gender") or cand.get("gender"),
             "age": item.get("age") or cand.get("age"),
             "personality": item.get("personality") or cand.get("personality"),
             "appearance": item.get("appearance") or cand.get("appearance"),
@@ -445,7 +450,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
                           else list(cand.get("relations") or [])),
         }
         description = build_profile_description(
-            values["personality"], values["appearance"],
+            values["gender"], values["personality"], values["appearance"],
             values["motivation"], values["arc"],
             outfit=values["outfit"], style_note=values["style_note"])
         # 角色圣经视觉三段（形象特征 + 服装配饰 + 风格画质），生图一致性锁定用
@@ -466,6 +471,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
         ).scalar_one_or_none()
         if exist is not None:
             exist.role_type = values["role_type"]
+            exist.gender = values["gender"]
             exist.age = values["age"]
             exist.personality = values["personality"]
             exist.outfit = values["outfit"]
@@ -500,6 +506,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
                         name=name, description=description or name)
                 ),
                 role_type=values["role_type"],
+                gender=values["gender"],
                 age=values["age"],
                 personality=values["personality"],
                 outfit=values["outfit"],

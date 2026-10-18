@@ -55,6 +55,7 @@ from app.services.script_service import get_owned_project
 from app.services.generation_service import render_stale_storyboards
 from app.services.storyboard_service import (
     auto_fit_duration,
+    confirm_storyboards,
     continuity_check,
     decompose_storyboards,
     deliver_to_canvas,
@@ -214,6 +215,32 @@ async def auto_fit_duration_endpoint(
     await _episode_owned_or_404(db, project, req.episode_id)
     result = await auto_fit_duration(db, project, req.target_seconds, req.episode_id)
     return AutoFitDurationOut.model_validate(result)
+
+
+@router.post("/api/projects/{project_id}/storyboards/confirm")
+async def confirm_storyboards_endpoint(
+    project_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """确认分镜（进入生成阶段的门禁动作）：项目状态 storyboard → producing。
+
+    幂等：已处于 production（及之后阶段）时直接返回成功，不重复校验分镜。
+
+    Args:
+        project_id: 项目 ID。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"status": "production"}。
+
+    Raises:
+        HTTPException: 400 —— 项目尚无分镜（未拆解）或状态不在 storyboard/
+            production；404 —— 项目不存在/非本人。
+    """
+    project = await _owned(db, project_id, user)
+    return await confirm_storyboards(db, project)
 
 
 @router.post("/api/projects/{project_id}/storyboards/deliver-to-canvas", response_model=DeliverCanvasOut)
