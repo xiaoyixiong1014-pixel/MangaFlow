@@ -201,12 +201,14 @@ def build_profile_description(
     arc: Optional[str],
     outfit: Optional[str] = None,
     style_note: Optional[str] = None,
+    voice_note: Optional[str] = None,
 ) -> Optional[str]:
     """把人设要素拼接为 characters.description 摘要文本。
 
     性别放最前（生图性别锚定的人类可读位），视觉三段（外观/服装配饰/风格画质）
     连排在动机/弧光之前，便于 extract_appearance_from_description 按段提取
-    「外观+服装配饰+风格画质」作为角色圣经视觉锁定描述。
+    「外观+服装配饰+风格画质」作为角色圣经视觉锁定描述；音色段供配音路由
+    溯源（不参与视觉提取）。
 
     Args:
         gender: 角色性别（男性/女性/中性；可空）。
@@ -216,10 +218,11 @@ def build_profile_description(
         arc: 人物弧光。
         outfit: 服装配饰完整拆解（可选）。
         style_note: 风格与画质特点（可选）。
+        voice_note: 音色设定（可选）。
 
     Returns:
         Optional[str]: 「性别：…；性格：…；外观：…；服装配饰：…；风格画质：…；
-            动机：…；弧光：…」形式摘要；全空时返回 None。
+            音色：…；动机：…；弧光：…」形式摘要；全空时返回 None。
 
     Raises:
         无：纯字符串拼装。
@@ -235,6 +238,8 @@ def build_profile_description(
         parts.append(f"服装配饰：{outfit}")
     if style_note:
         parts.append(f"风格画质：{style_note}")
+    if voice_note:
+        parts.append(f"音色：{voice_note}")
     if motivation:
         parts.append(f"动机：{motivation}")
     if arc:
@@ -443,6 +448,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
             "appearance": item.get("appearance") or cand.get("appearance"),
             "outfit": item.get("outfit") or cand.get("outfit"),
             "style_note": item.get("style_note") or cand.get("style_note"),
+            "voice_note": item.get("voice_note") or cand.get("voice_note"),
             "motivation": item.get("motivation") or cand.get("motivation"),
             "arc": item.get("arc") or cand.get("arc"),
             "relations": (item.get("relations")
@@ -452,7 +458,8 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
         description = build_profile_description(
             values["gender"], values["personality"], values["appearance"],
             values["motivation"], values["arc"],
-            outfit=values["outfit"], style_note=values["style_note"])
+            outfit=values["outfit"], style_note=values["style_note"],
+            voice_note=values["voice_note"])
         # 角色圣经视觉三段（形象特征 + 服装配饰 + 风格画质），生图一致性锁定用
         visual_bible = build_character_bible_prompt(
             name, values["age"],
@@ -476,6 +483,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
             exist.personality = values["personality"]
             exist.outfit = values["outfit"]
             exist.style_note = values["style_note"]
+            exist.voice_note = values["voice_note"]
             exist.motivation = values["motivation"]
             exist.arc = values["arc"]
             exist.relations = values["relations"]
@@ -484,7 +492,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
             # 定制提示词——视觉三段全空不动 visual_prompt）
             if (values["appearance"] or values["outfit"] or values["style_note"]):
                 exist.visual_prompt = (
-                    f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+                    f"统一视觉风格，角色圣经（固定外貌与服装，跨图一致）："
                     f"{visual_bible}。"
                     "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。")
             exist.confirmed_at = confirmed_at
@@ -498,7 +506,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
                 # （形象特征+服装配饰+风格画质）开头，跨镜头保持一致性；
                 # 三段全空时回退既有缺省模板（description 兜底）
                 visual_prompt=(
-                    f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+                    f"统一视觉风格，角色圣经（固定外貌与服装，跨图一致）："
                     f"{visual_bible}。"
                     "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。"
                     if (values["appearance"] or values["outfit"] or values["style_note"] or values["age"])
@@ -511,6 +519,7 @@ async def confirm_character_entries(db: AsyncSession, project: Project, entries:
                 personality=values["personality"],
                 outfit=values["outfit"],
                 style_note=values["style_note"],
+                voice_note=values["voice_note"],
                 motivation=values["motivation"],
                 arc=values["arc"],
                 relations=values["relations"],

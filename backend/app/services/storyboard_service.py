@@ -87,7 +87,10 @@ _SHOTS_SYSTEM_PROMPT = (
     "模糊变形、画面杂乱元素），按画面内容选取 2~4 项；\n"
     "- camera_angle 按镜头情绪选择：平视=客观叙事、俯拍=渺小/压迫、仰拍=威严/崇高、"
     "斜角=不安/冲突、过肩=对话机位、顶摄=宿命感；\n"
-    "- 画面中角色的外貌/服装必须与剧本角色设定保持一致，禁止换装换发型；\n"
+    "- 画面中角色的外貌/服装必须与剧本角色设定（外观描述）严格一致，禁止换装换发型；"
+    "「场景动作/画面描述」文本与角色设定冲突时（如动作文本写了不同的服装/发型/配色），"
+    "以角色设定为准改写该段描述——仅可保留动作与状态变化（淋湿/破损/凌乱/沾污等），"
+    "服装类型与颜色、发色发型、年龄性别一律不可改变；\n"
     "- camera_movement 从白名单中按镜头意图选择（推=强调主体、拉=揭示环境、"
     "摇=跟随扫视、移=建立空间、跟随=角色跟拍、升降=氛围强调、旋转=眩晕/冲突）；\n"
     "- duration 按节奏取值：快卡点镜头 2~3 秒、常规叙事镜头 4~6 秒、"
@@ -181,11 +184,15 @@ def _fallback_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
     ]
 
 
-async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
+async def _llm_shots(
+    scene: Dict[str, Any], character_profiles: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """LLM 单场景拆解：生成 1~3 个分镜；异常或输出非法时规则降级。
 
     Args:
         scene: 剧本场景 dict。
+        character_profiles: 项目主要角色外观设定清单（「姓名：外观段」串联，
+            可空——注入后 LLM 拆镜的画面描述与角色定妆照形象对齐）。
 
     Returns:
         List[Dict[str, Any]]: 规整后的镜头列表（每项含 shot_type/camera_movement/
@@ -201,7 +208,8 @@ async def _llm_shots(scene: Dict[str, Any]) -> List[Dict[str, Any]]:
         f"场景剧情：{scene.get('plot', '')}\n"
         f"场景动作/画面描述：{scene.get('action') or ''}\n"
         f"场景对白：{json.dumps(scene.get('dialogue') or [], ensure_ascii=False)}\n"
-        f"场景时长：{scene.get('duration_sec', 30)} 秒"
+        f"场景时长：{scene.get('duration_sec', 30)} 秒\n"
+        f"出场角色外观设定：{character_profiles or '无'}"
     )
     try:
         # 声音兜底（循环外算一次）：LLM 未给音效/情绪时透传剧情节点自带值
@@ -592,8 +600,10 @@ async def _resequence(db: AsyncSession, project_id: int) -> None:
         sb.sequence = idx
 
 
-async def check_lock_readiness(db: AsyncSession, project: Project) -> List[Dict[str, Any]]:
-    """校验项目主要角色定妆照锁定就绪度（P0-1 锁定门禁）。
+async def check_lock_readiness(
+    db: AsyncSession, project: Project, scope_episode_id: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """校验主要角色定妆照锁定就绪度（P0-1 锁定门禁，按集工作流口径）。
 
     主要角色判定（复用 P-1 角色定位字段 role_type 分级）：
     lead 主角 / support 配角 / villain 反派 视为主要；extra 群像放行；
@@ -605,9 +615,15 @@ async def check_lock_readiness(db: AsyncSession, project: Project) -> List[Dict[
     - generation_status=generating → "生成中"（严格拦截防引用半成品）；
     - face_locked=False → "未锁定"。
 
+    按集门禁（S-06）：scope_episode_id 传值时只检查「本集涉及的角色」——
+    该集剧本剧情节点的对白说话人（精确）+ 剧情/动作/标题文本中的角色名
+    （包含兜底），与 decompose 的实体绑定口径一致；其他集的角色（即使
+    未定妆）不拦截本集拆解。scope 为 None（全量重建）时仍检查全部角色。
+
     Args:
         db: 请求级异步数据库会话。
         project: 已校验归属的项目。
+        scope_episode_id: 按集拆解范围剧集 ID（None = 检查项目全部角色）。
 
     Returns:
         List[Dict[str, Any]]: 未就绪角色清单
@@ -622,8 +638,15 @@ async def check_lock_readiness(db: AsyncSession, project: Project) -> List[Dict[
                 Character.enabled_at.is_not(None))
         )
     ).scalars().all()
+    # 按集门禁：先算「本集涉及角色」集合（无剧本/无节点时集合为空 → 全放行）
+    involved: Optional[set] = None
+    if scope_episode_id is not None:
+        involved = await _episode_involved_character_ids(
+            db, project.id, scope_episode_id, rows)
     unready: List[Dict[str, Any]] = []
     for ch in rows:
+        if involved is not None and ch.id not in involved:
+            continue  # 非本集涉及的角色不拦截本集拆解
         if ch.role_type == "extra":
             continue  # 群像不做定妆强制（对应小云雀只锁 3~5 主角的策略）
         if ch.asset_url is None and ch.generation_status == "pending":
@@ -646,6 +669,47 @@ async def check_lock_readiness(db: AsyncSession, project: Project) -> List[Dict[
             "reason": reason,
         })
     return unready
+
+
+async def _episode_involved_character_ids(
+    db: AsyncSession, project_id: int, episode_id: int,
+    char_rows: List[Character],
+) -> set:
+    """提取「某集涉及的角色 ID 集合」（按集锁定门禁内部函数）。
+
+    取该集绑定的剧本行（uk_scripts_project 每集一行），解包剧情节点后：
+    对白说话人经 _match_characters 精确匹配（aliases 支持），剧情/动作/标题
+    全文经名字包含兜底匹配——与 decompose 的实体绑定口径完全一致，
+    保证「拆解会绑到的角色 ⊆ 门禁检查的角色」。
+
+    Args:
+        db: 异步数据库会话。
+        project_id: 项目 ID。
+        episode_id: 剧集 ID。
+        char_rows: 项目内已启用的角色 ORM 列表（匹配池）。
+
+    Returns:
+        set: 本集涉及的角色 ID 集合（无剧本或无涉及角色时为空集）。
+    """
+    involved: set = set()
+    script_rows = (
+        await db.execute(
+            select(Script).where(
+                Script.project_id == project_id, Script.episode_id == episode_id)
+        )
+    ).scalars().all()
+    for row in script_rows:
+        for scene in unwrap_scenes(row.content):
+            if not isinstance(scene, dict):
+                continue
+            dialogue_text = _dialogue_to_text(scene.get("dialogue"))
+            extra_text = "；".join(filter(None, (
+                str(scene.get("title") or ""), str(scene.get("plot") or ""),
+                str(scene.get("action") or ""),
+            )))
+            for ch in _match_characters(dialogue_text, char_rows, extra_text=extra_text):
+                involved.add(ch.id)
+    return involved
 
 
 async def decompose_storyboards(
@@ -725,9 +789,10 @@ async def decompose_storyboards(
     if not scene_entries:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="剧本中无场景数据，无法拆解")
 
-    # P0-1 锁定门禁：在删除既有分镜之前校验（409 拦截时不清空用户既有分镜）
+    # P0-1 锁定门禁：在删除既有分镜之前校验（409 拦截时不清空用户既有分镜）；
+    # 按集拆解只检查「本集涉及的角色」（其他集未定妆角色不拦截本集）
     if not skip_lock_check:
-        unready = await check_lock_readiness(db, project)
+        unready = await check_lock_readiness(db, project, scope_episode_id=scope_episode_id)
         if unready:
             raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={
                 "code": "asset_lock_not_ready",
@@ -755,6 +820,15 @@ async def decompose_storyboards(
         )
     ).scalars().all()
 
+    # 拆解输入注入角色外观设定：LLM 拆镜时对齐服装/发型/配色，防止画面描述
+    # 自由发挥导致与定妆照不一致（生成侧参考图依赖分镜描述与资产形象对齐）；
+    # 仅注入主要角色（lead/support/villain），群像不占提示词预算，每角色截 80 字
+    character_profiles = "；".join(
+        f"{ch.name}：{(extract_appearance_from_description(ch.description) or '外观未描述')[:80]}"
+        for ch in char_rows
+        if (ch.role_type or "lead") in ("lead", "support", "villain")
+    ) or None
+
     # 幂等重建：按集拆解时只删该集分镜（跨集全局重排 sequence），
     # 缺省全量重建删全部（storyboard_characters 由外键级联删除）
     delete_conds = [Storyboard.project_id == project.id]
@@ -765,7 +839,7 @@ async def decompose_storyboards(
     seq = 0
     degraded = False
     for src_script, scene in scene_entries:
-        shots = await _llm_shots(scene)
+        shots = await _llm_shots(scene, character_profiles)
         if any("规则降级" in str(s.get("visual_description") or "") for s in shots):
             degraded = True
         scene_row, scene_name = _match_scene(scene, scene_rows)

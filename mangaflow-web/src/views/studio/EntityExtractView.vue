@@ -313,12 +313,13 @@ async function submitConfirm(): Promise<void> {
       scenes: checkedScenes.value.map((s) => ({
         name: s.name,
         description: s.description,
-        visual_prompt: s.visual_prompt,
+        // 场景提示词不随确认提交：后端确认入池时自动跑 AI 六要素识别合成
+        // （抽取页预填的模板文本仅作预览，避免覆盖自动识别）
       })),
       props: checkedProps.value.map((p) => ({
         name: p.name,
         description: p.description,
-        visual_prompt: p.visual_prompt,
+        // 道具提示词同场景：确认后由后端自动识别合成
       })),
       // 按集工作流：确认名单 union 落该集启用名单（资产管理页按集视图据此显示）
       episode_id: currentEpisodeId.value ?? undefined,

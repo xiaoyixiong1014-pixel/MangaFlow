@@ -6,7 +6,8 @@
   - 顶部积分消耗条：billing.wallet 的可用 / 冻结积分；
   - 三个 Tab（el-tabs）：
     ① 关键帧：分镜网格卡（keyframe_url 图或占位 + 状态角标 + D3「演示占位」角标）；
-      「打样第一镜」keyframes(phase=trial)；「全量生成」确认框（将生成 N 张、
+      每张卡片提供「生成 / 重新生成」按钮 keyframes(phase=trial) 单镜生成
+      （已有关键帧时先确认覆盖）；「全量生成」确认框（将生成 N 张、
       预计 N×10 积分）后 keyframes(phase=full)；已完成关键帧卡片提供
       「上传替换」入口（P-06：multipart 一步上传调 /tasks/{id}/replace，
       成功后刷新分镜与任务列表）；任务提交后不阻塞，由任务面板跟踪；
@@ -36,7 +37,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
-import { Upload as UploadIcon, VideoPause, VideoPlay } from '@element-plus/icons-vue'
+import { Loading as LoadingIcon, Upload as UploadIcon, VideoPause, VideoPlay } from '@element-plus/icons-vue'
 import * as productionApi from '@/api/production'
 import * as billingApi from '@/api/billing'
 import * as bgmApi from '@/api/bgm'
@@ -302,28 +303,52 @@ const taskTypeLabel: Record<string, string> = {
 /** 提交关键帧任务进行中（防重复点击） */
 const kfBusy = ref(false)
 
+/** 单镜「生成」进行中的分镜 ID 集合（防重复点击） */
+const genBusyIds = ref<number[]>([])
+
 /**
- * 打样第一镜（trial：单分镜 1 张，确认风格后再放开全量，RD-27）。
+ * 判断某分镜关键帧是否正在生成（本地提交中或任务面板存在排队/进行中任务）。
+ * @param b 目标分镜
+ * @returns 是否生成中
+ */
+function isKeyframeBusy(b: Storyboard): boolean {
+  if (genBusyIds.value.includes(b.id)) return true
+  return tasks.value.some(
+    (t) => t.type === 'image' && t.storyboard_id === b.id
+      && (t.status === 'queued' || t.status === 'running'),
+  )
+}
+
+/**
+ * 单镜生成关键帧（trial：单分镜 1 张，替代原「打样第一镜」入口）。
+ * 已有关键帧的镜重新生成前确认覆盖；进行中任务由右侧任务面板跟踪。
+ * @param b 目标分镜
  * @returns 无
  */
-async function trialKeyframe(): Promise<void> {
+async function genKeyframe(b: Storyboard): Promise<void> {
   if (!ensureProductionReady()) return
-  const first = boards.value[0]
-  if (!first) {
-    ElMessage.warning('暂无分镜，请先完成分镜拆解')
-    return
+  if (isKeyframeBusy(b)) return
+  if (b.keyframe_url) {
+    try {
+      await ElMessageBox.confirm(
+        `#${String(b.sequence).padStart(2, '0')} 镜已有关键帧，重新生成将覆盖原图（10 积分/张）。是否继续？`,
+        '重新生成',
+        { type: 'warning', confirmButtonText: '重新生成' },
+      )
+    } catch {
+      return
+    }
   }
-  if (kfBusy.value) return
-  kfBusy.value = true
+  genBusyIds.value = [...genBusyIds.value, b.id]
   try {
-    const res = await productionApi.keyframes(projectId.value, first.id, { phase: 'trial' })
-    ElMessage.success(`打样任务已提交，冻结 ${res.total_cost} 积分`)
+    const res = await productionApi.keyframes(projectId.value, b.id, { phase: 'trial' })
+    ElMessage.success(`#${String(b.sequence).padStart(2, '0')} 镜生成任务已提交，冻结 ${res.total_cost} 积分`)
     panelVisible.value = true
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
   } finally {
-    kfBusy.value = false
+    genBusyIds.value = genBusyIds.value.filter((i) => i !== b.id)
   }
 }
 
@@ -517,18 +542,20 @@ async function genEndFrame(b: Storyboard): Promise<void> {
 // 配音与合成 Tab（S-08）
 // ============================================================
 
-/** 角色音色映射（角色 ID → 音色） */
-const voiceMap = reactive<Record<number, 'male_01' | 'female_01'>>({})
+/** 角色音色映射（角色 ID → 音色；用户手动指定优先于后端自动路由） */
+const voiceMap = reactive<Record<number, 'male_01' | 'male_02' | 'female_01' | 'female_02'>>({})
 
 /**
- * 取某镜使用的音色：取该镜第一个绑定角色的映射，缺省 female_01。
+ * 取某镜的显式音色：仅当用户为第一个绑定角色手动指定过音色时返回；
+ * 未指定返回 undefined——后端按绑定角色的「音色设定」（角色圣经 voice_note）
+ * 自动路由，不再全项目共用固定缺省音色。
  * @param b 目标分镜
- * @returns 音色标识
+ * @returns 显式音色标识（未手动指定为 undefined）
  */
-function voiceOf(b: Storyboard): 'male_01' | 'female_01' {
+function voiceOf(b: Storyboard): 'male_01' | 'male_02' | 'female_01' | 'female_02' | undefined {
   const first = b.characters[0]
-  if (first) return voiceMap[first.character_id] ?? 'female_01'
-  return 'female_01'
+  if (first) return voiceMap[first.character_id]
+  return undefined
 }
 
 /** 配音任务提交中的分镜 ID 集合（防重复点击） */
@@ -588,7 +615,12 @@ async function genTts(b: Storyboard): Promise<void> {
   if (ttsBusyIds.value.includes(b.id)) return
   ttsBusyIds.value = [...ttsBusyIds.value, b.id]
   try {
-    const task = await productionApi.tts(projectId.value, b.id, { voice: voiceOf(b) })
+    // voice 未手动指定时不传——后端按绑定角色的音色设定（voice_note）自动路由
+    const explicitVoice = voiceOf(b)
+    const task = await productionApi.tts(
+      projectId.value, b.id,
+      explicitVoice ? { voice: explicitVoice } : {},
+    )
     ElMessage.success(`配音任务 #${task.id} 已提交`)
     startTaskStream()
     void refreshTasks()
@@ -894,13 +926,10 @@ onBeforeUnmount(() => {
       <!-- ============ 关键帧 Tab ============ -->
       <template v-if="activeTab === 'keyframes'">
         <div class="kf-ops">
-          <el-button type="primary" plain :loading="kfBusy" @click="trialKeyframe">
-            打样第一镜
-          </el-button>
           <el-button type="primary" :loading="kfBusy" @click="fullKeyframes">
             全量生成（{{ boards.length }} 张 ≈ {{ boards.length * 10 }} 积分）
           </el-button>
-          <span class="kf-tip">提示：先打样确认风格，再放开全量批量（打样任务在右侧任务面板跟踪）</span>
+          <span class="kf-tip">提示：可先单镜点击卡片上的「生成」确认风格，再全量批量（任务在右侧任务面板跟踪）</span>
         </div>
         <div class="kf-grid">
           <el-card
@@ -909,7 +938,7 @@ onBeforeUnmount(() => {
             :key="b.id"
             shadow="hover"
             class="kf-card"
-            :class="{ 'kf-card--target': highlightSbId === b.id }"
+            :class="{ 'kf-card--target': highlightSbId === b.id, 'kf-card--generating': isKeyframeBusy(b) }"
           >
             <div class="kf-img-wrap">
               <el-image
@@ -932,6 +961,16 @@ onBeforeUnmount(() => {
               >
                 {{ b.keyframe_url ? '已完成' : b.status === 'failed' ? '失败' : '待生成' }}
               </el-tag>
+              <!-- hover 浮层：滑过卡片浮现生成/重新生成按钮；生成中常驻显示 spinner（遮罩不拦截点击，可继续预览大图） -->
+              <div class="kf-gen-overlay" :class="{ 'is-generating': isKeyframeBusy(b) }">
+                <template v-if="isKeyframeBusy(b)">
+                  <el-icon class="kf-gen-spin"><LoadingIcon /></el-icon>
+                  <span class="kf-gen-text">生成中…</span>
+                </template>
+                <el-button v-else type="primary" size="small" @click="genKeyframe(b)">
+                  {{ b.keyframe_url ? '重新生成' : '生成' }}
+                </el-button>
+              </div>
             </div>
             <div class="kf-caption">
               <span>#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</span>
@@ -1100,7 +1139,13 @@ onBeforeUnmount(() => {
               <template #default="{ row }">{{ row.duration }}s</template>
             </el-table-column>
             <el-table-column label="音色" width="110">
-              <template #default="{ row }">{{ voiceOf(row) === 'male_01' ? '男声' : '女声' }}</template>
+              <template #default="{ row }">
+                {{
+                  voiceOf(row)
+                    ? (voiceOf(row)!.startsWith('male') ? '男声（手动）' : '女声（手动）')
+                    : '按角色音色自动'
+                }}
+              </template>
             </el-table-column>
             <el-table-column label="操作" width="190">
               <template #default="{ row }">
@@ -1394,6 +1439,8 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   justify-content: center;
+  cursor: default;
+  user-select: none;
   background: linear-gradient(135deg, var(--mf-surface-2), var(--mf-border));
   color: var(--mf-text-3);
   font-size: var(--mf-fs-2xl);
@@ -1410,6 +1457,76 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 6px;
+}
+/* 单镜生成 hover 浮层：滑过卡片浮现，遮罩不拦截点击（保留图片预览） */
+.kf-gen-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--mf-sp-2);
+  background: rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.kf-card:hover .kf-gen-overlay {
+  opacity: 1;
+}
+/* 浮层整体穿透（保留图片预览），仅按钮恢复可点击 */
+.kf-gen-overlay .el-button {
+  pointer-events: auto;
+}
+/* 生成中：浮层常驻，spinner + 文案替代按钮 */
+.kf-gen-overlay.is-generating {
+  opacity: 1;
+}
+.kf-gen-spin {
+  color: var(--mf-brand);
+  font-size: 28px;
+  animation: kf-spin 1s linear infinite;
+}
+.kf-gen-text {
+  color: #fff;
+  font-size: var(--mf-fs-sm);
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.5);
+}
+@keyframes kf-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+/* 生成中扫光：斜向高光带循环扫过图片区域（不拦截点击） */
+.kf-card--generating .kf-img-wrap::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: linear-gradient(
+    105deg,
+    transparent 38%,
+    rgba(255, 255, 255, 0.16) 50%,
+    transparent 62%
+  );
+  transform: translateX(-100%);
+  animation: kf-shimmer 1.6s ease-in-out infinite;
+}
+@keyframes kf-shimmer {
+  to {
+    transform: translateX(100%);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .kf-card--generating .kf-img-wrap::after {
+    animation: none;
+  }
+  .kf-gen-spin {
+    animation-duration: 2.4s;
+  }
 }
 /* P-06 上传替换入口（关键帧卡片下方，右对齐） */
 .kf-replace {

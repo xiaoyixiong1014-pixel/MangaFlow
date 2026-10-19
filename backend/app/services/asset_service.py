@@ -55,14 +55,15 @@ CHARACTER_IMAGE_COST = 10
 # 定妆照四格横向排版固定构图模板（角色形象定调参考图）：无论 visual_prompt 还是
 # 用户覆盖 prompt，最终提示词均追加该段构图指令，保证所有定妆照输出形态统一——
 # 1 张面部特写 + 3 张全身多视角（正面/四分之三侧/背面），纯白无影背景，
-# 便于统一不同镜头的人物形象与穿搭
+# 16:9 横向图输出，便于统一不同镜头的人物形象与穿搭
 CHARACTER_PORTRAIT_SHEET_PROMPT = (
     "采用1张面部特写+3张全身多视角的四格横向排版，纯白无影背景，无多余元素干扰："
     "左侧为正面头部以上特写，聚焦面部五官、发型细节与上半身服装配饰；"
     "右侧横向依次排列正面全身、四分之三侧全身、背面全身，"
     "完整展示人物体型、服装前后侧全貌与身形线条；"
     "整体构图规整统一，信息维度完整，作为漫剧/真人短视频的角色定调参考图，"
-    "便于统一不同镜头的人物形象与穿搭。"
+    "便于统一不同镜头的人物形象与穿搭；"
+    "最终成图以16:9横向比例输出（横版画幅，宽高比 16:9）。"
 )
 
 # 各资产类型 -> (ORM 类, 允许的变体类型集合)。
@@ -1000,6 +1001,41 @@ async def _build_asset_script_context(
     return "\n\n".join(uniq)[:6000]
 
 
+def compose_prompt_from_elements(
+    asset_type: str, name: str, elements: Dict[str, Any]
+) -> str:
+    """按六要素合成完整视觉提示词（场景/道具模板各异；与前端合成规则保持一致）。
+
+    Args:
+        asset_type: 资产类型 scene/prop。
+        name: 资产名。
+        elements: 六要素 dict（anchors 为字符串数组，其余为字符串）。
+
+    Returns:
+        str: 合成后的完整提示词。
+
+    Raises:
+        无：缺省要素按空串处理。
+    """
+    anchors = "、".join(
+        str(a).strip() for a in (elements.get("anchors") or []) if str(a or "").strip())
+    if asset_type == "scene":
+        return (
+            f"统一{elements.get('style_base') or ''}插画风格，"
+            f"场景：{name}（{elements.get('space_type') or ''}）。"
+            f"核心锚点：{anchors}。光照氛围：{elements.get('lighting') or ''}。"
+            f"构图与视角：{elements.get('composition') or ''}。"
+            f"负面约束：画面中不出现{elements.get('negative') or '人物、文字水印'}。"
+        )
+    return (
+        f"道具：{name}。尺度参照：{elements.get('scale_ref') or ''}。"
+        f"核心锚点：{anchors}。材质与表面工艺：{elements.get('material') or ''}。"
+        f"唯一标记：{elements.get('marker') or ''}。"
+        f"功能与操作方式：{elements.get('usage') or ''}。"
+        f"可读文字政策：{elements.get('text_policy') or '表面不出现可读文字'}。"
+    )
+
+
 async def suggest_asset_prompt(
     db: AsyncSession, project: Project, asset_type: str, asset: Any
 ) -> Dict[str, Any]:
@@ -1064,4 +1100,35 @@ async def suggest_asset_prompt(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail="AI 识别失败，请稍后重试或手写提示词",
         )
-    return {"type": asset_type, "elements": elements}
+    return {
+        "type": asset_type,
+        "elements": elements,
+        # 后端合成的完整视觉提示词（确认入池自动写入 visual_prompt 用）
+        "visual_prompt": compose_prompt_from_elements(asset_type, name, elements),
+    }
+
+
+def _is_default_visual_prompt(visual_prompt: Optional[str]) -> bool:
+    """判断场景/道具 visual_prompt 是否仍为缺省模板（自动识别是否需要覆盖）。
+
+    以 DEFAULT_VISUAL_TEMPLATE 的首段（「统一视觉风格」）为模板指纹前缀，
+    并兼容抽取页旧预填模板前缀（「统一风格插画」）：
+    两类缺省模板命中；六要素合成提示词（「统一XX插画风格，场景：…」/「道具：…」）
+    与用户手写提示词均不命中——已有人工/识别提示词不覆盖（跨集视觉一致性）。
+
+    Args:
+        visual_prompt: 当前 visual_prompt（可空）。
+
+    Returns:
+        bool: True=仍为缺省模板或为空（可自动识别覆盖）。
+
+    Raises:
+        无：纯字符串前缀判断。
+    """
+    text = str(visual_prompt or "").strip()
+    template_prefix = DEFAULT_VISUAL_TEMPLATE.split("，")[0]
+    # 旧前缀防御：抽取页曾预填「统一风格插画，场景：…」模板（存量数据与旧前端路径），
+    # 命中视为缺省模板，确保确认入池自动识别仍会覆盖
+    if text.startswith("统一风格插画"):
+        return True
+    return (not text) or text.startswith(template_prefix)

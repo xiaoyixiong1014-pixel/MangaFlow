@@ -1,7 +1,8 @@
 """模型配置路由模块（文件级说明）。
 
 实现逻辑模型目录 / 平台渠道信息 / 用户自有 Key 管理 / 渠道健康摘要 / 效果对比：
-- GET    /api/models/catalog                逻辑模型（按能力分组，附渠道健康）+ 平台渠道信息（不含 Key）
+- GET    /api/models/catalog                逻辑模型（按能力分组，附渠道健康与用户启用偏好）+ 平台渠道信息（不含 Key）
+- PUT    /api/models/catalog/{id}/enabled   切换当前用户对系统逻辑模型的启用/停用偏好
 - GET    /api/models/health-summary         平台渠道健康摘要（D-05，用户端可见只读）
 - POST   /api/models/compare                模型效果对比（PL-11，逐渠道生成并返回结果）
 - GET    /api/models/channels               当前用户自有渠道（api_key 脱敏前4后4）
@@ -51,6 +52,7 @@ from app.schemas.model_config import (
     CompareResponse,
     HealthChannelItem,
     HealthSummaryOut,
+    LogicalModelEnabledRequest,
     PlatformChannelOut,
 )
 from app.services.model_router import ResolvedChannel, _extract_default_model
@@ -112,7 +114,8 @@ async def get_catalog(
     """查询逻辑模型目录：按能力分组返回模型与首选渠道健康状态，附平台渠道信息。
 
     health 取该模型降级链路（channel_priority）中第一个渠道的健康状态，
-    渠道不存在时为 'unknown'（PL-08 / PL-26~PL-29）。
+    渠道不存在时为 'unknown'（PL-08 / PL-26~PL-29）。enabled 反映当前用户
+    对该系统模型的启用偏好（停用的模型生成时跳过其平台渠道链）。
 
     Args:
         user: 当前用户。
@@ -127,6 +130,7 @@ async def get_catalog(
     models = (await db.execute(select(LogicalModel).order_by(LogicalModel.id))).scalars().all()
     channels = (await db.execute(select(ModelChannel))).scalars().all()
     channel_health: Dict[int, str] = {c.id: c.health_status for c in channels}
+    disabled_ids = _disabled_model_ids(user)
 
     # 按能力分组（固定顺序输出）
     grouped: Dict[str, List[CatalogModelOut]] = {cap: [] for cap in _CAPABILITY_ORDER}
@@ -142,6 +146,7 @@ async def get_catalog(
             scene_desc=model.scene_desc,
             doc_url=model.doc_url,
             health=health,
+            enabled=model.id not in disabled_ids,
         )
         grouped.setdefault(model.capability, []).append(item)
 
@@ -161,6 +166,78 @@ async def get_catalog(
         for c in channels if c.owner_user_id is None
     ]
     return CatalogOut(capabilities=capabilities, platform_channels=platform_channels)
+
+
+def _disabled_model_ids(user: User) -> set:
+    """读取用户停用的逻辑模型 ID 集合（内部函数）。
+
+    Args:
+        user: 当前用户 ORM 对象。
+
+    Returns:
+        set: 停用的逻辑模型 ID 集合（NULL/结构异常按空集处理）。
+
+    Raises:
+        无：结构异常安全返回空集。
+    """
+    raw = user.disabled_model_ids
+    if not isinstance(raw, list):
+        return set()
+    try:
+        return {int(mid) for mid in raw}
+    except (TypeError, ValueError):
+        return set()
+
+
+@router.put("/catalog/{model_id}/enabled", response_model=CatalogModelOut)
+async def set_logical_model_enabled(
+    model_id: int,
+    req: LogicalModelEnabledRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CatalogModelOut:
+    """切换当前用户对系统逻辑模型的启用/停用偏好。
+
+    停用后生成路由跳过该逻辑模型的平台渠道链（仅自有渠道参与 + mock 哨兵
+    兜底）；启用恢复默认链。偏好存于 users.disabled_model_ids（JSONB 数组）。
+
+    Args:
+        model_id: 逻辑模型 ID。
+        req: 启用/停用请求。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CatalogModelOut: 更新后的模型条目（含 enabled 状态与健康）。
+
+    Raises:
+        HTTPException: 404 —— 逻辑模型不存在；401 —— 未认证。
+    """
+    model = await db.get(LogicalModel, model_id)
+    if model is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="逻辑模型不存在")
+
+    disabled = _disabled_model_ids(user)
+    if req.enabled:
+        disabled.discard(model_id)
+    else:
+        disabled.add(model_id)
+    user.disabled_model_ids = sorted(disabled)  # 整体重新赋值触发 JSONB 变更检测
+    await db.commit()
+
+    priority = model.channel_priority if isinstance(model.channel_priority, list) else []
+    first_channel = priority[0] if priority else None
+    channel = await db.get(ModelChannel, first_channel) if isinstance(first_channel, int) else None
+    return CatalogModelOut(
+        id=model.id,
+        name=model.name,
+        is_default=model.is_default,
+        price_per_unit=model.price_per_unit,
+        scene_desc=model.scene_desc,
+        doc_url=model.doc_url,
+        health=channel.health_status if channel else "unknown",
+        enabled=req.enabled,
+    )
 
 
 @router.get("/health-summary", response_model=HealthSummaryOut)
@@ -535,12 +612,17 @@ async def test_channel(
 ) -> ChannelTestResponse:
     """测试自有渠道连通性（按渠道登记的模型用途分派探测），并更新健康状态。
 
-    探测分派（models 目录能力键优先级 chat > image）：
+    探测分派（models 目录能力键优先级 chat > image > video > tts）：
     - 含 "chat" 键：按渠道协议（openai chat / openai responses / anthropic
       messages）发送最短文本消息（probe_llm_channel）；
-    - 仅含 "image" 键：向 {base}/images/generations 发极小主体请求，非
-      401/403 的 4xx 视为连通（参数合法性不代表渠道不可用，避免真实出图
-      计费），401/403/网络异常为 down（与平台渠道健康探测口径一致）。
+    - 仅含 "image" 键：openai 协议向 {base}/images/generations 发极小主体
+      请求；dashscope 协议向多模态生成端点发无效模型请求——非 401/403 的
+      4xx 视为连通（参数合法性不代表渠道不可用，避免真实出图计费）；
+    - 仅含 "video" 键：openai 协议向 {base}/videos 发极小主体请求；
+      dashscope 协议向 video-synthesis 端点发无效模型请求（口径同上）；
+    - 仅含 "tts" 键：向 {base}/audio/speech 发最短文本请求（与平台渠道
+      健康探测口径一致；注意语音合成实际执行走百炼 WS 推理协议，本探测
+      仅验证地址与 Key 的鉴权层有效性）。
 
     Args:
         channel_id: 渠道 ID（须为本人自有渠道）。
@@ -557,23 +639,52 @@ async def test_channel(
 
     # 从 models 目录提取能力键与首个模型名
     models_cfg: Any = channel.models or {}
-    chat_names: list = models_cfg.get("chat") if isinstance(models_cfg, dict) else None
-    image_names: list = models_cfg.get("image") if isinstance(models_cfg, dict) else None
+
+    def _names_of(key: str) -> Optional[list]:
+        """读取 models 目录中指定能力键的模型名列表（内部函数）。
+
+        Args:
+            key: 能力键（chat/image/video/tts）。
+
+        Returns:
+            Optional[list]: 非空列表或 None。
+        """
+        val = models_cfg.get(key) if isinstance(models_cfg, dict) else None
+        return val if isinstance(val, list) and val else None
+
+    chat_names = _names_of("chat")
+    image_names = _names_of("image")
+    video_names = _names_of("video")
+    tts_names = _names_of("tts")
     probe_model: Optional[str] = None
-    for names in (chat_names, image_names):
-        if isinstance(names, list) and names:
+    for names in (chat_names, image_names, video_names, tts_names):
+        if names:
             probe_model = str(names[0])
             break
 
     api_key = _decrypt_api_key(channel.api_key_encrypted) or "missing-key"
-    if channel.protocol == "dashscope":
-        # DashScope 原生渠道（百炼文生图）：以无效模型名提交探测任务——
-        # 鉴权失败返回 401/403，鉴权通过但模型非法返回 4xx 其他值（不计费）
+    if channel.protocol == "dashscope" and video_names:
+        # DashScope 原生视频渠道（百炼 wan 系列）：video-synthesis 端点无效模型探测
+        ok, error = await _probe_dashscope_video(channel.base_url, api_key)
+    elif channel.protocol == "dashscope":
+        # DashScope 原生图像渠道（百炼 qwen-image）：多模态生成端点无效模型探测
         ok, error = await _probe_dashscope_image(channel.base_url, api_key)
-    elif not chat_names and isinstance(image_names, list) and image_names:
+    elif chat_names:
+        ok, error = await probe_llm_channel(
+            channel.protocol, channel.base_url, api_key, probe_model or "gpt-4o-mini",
+        )
+    elif image_names:
         # 图像渠道：images 端点极小请求探测（非 401/403 的 4xx 视为连通，避免计费）
         ok, error = await _probe_image_endpoint(
             channel.base_url, api_key, probe_model or "qwen-image-3.0")
+    elif video_names:
+        # 视频渠道：videos 端点极小请求探测（口径同图像，避免真实出片计费）
+        ok, error = await _probe_video_endpoint(
+            channel.base_url, api_key, probe_model or "wan2.7-i2v")
+    elif tts_names:
+        # 语音渠道：audio/speech 最短文本探测（与平台渠道健康探测口径一致）
+        ok, error = await _probe_tts_endpoint(
+            channel.base_url, api_key, probe_model or "qwen-audio-tts")
     else:
         ok, error = await probe_llm_channel(
             channel.protocol, channel.base_url, api_key, probe_model or "gpt-4o-mini",
@@ -612,6 +723,113 @@ async def _probe_dashscope_image(base_url: str, api_key: str) -> tuple:
         "model": "__probe_invalid_model__",
         "input": {"messages": [{"role": "user", "content": [{"text": "ping"}]}]},
     }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_dashscope_video(base_url: str, api_key: str) -> tuple:
+    """向 DashScope 原生视频合成端点发起无效模型探测（内部函数，不计费）。
+
+    以非法模型名提交异步视频合成任务（wan 系列走 video-synthesis 端点，
+    平台渠道 wan2.7-i2v 同契约）：401/403 视为鉴权失败（down）；其余 4xx
+    （model not found 等参数错误）证明鉴权通过、端点可达（不会产生真实
+    出片计费）。
+
+    Args:
+        base_url: 渠道接口地址（根域名，含协议）。
+        api_key: 明文 API Key。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    root = base_url.rstrip("/")
+    if "://" in root:
+        root = root.split("://", 1)[0] + "://" + root.split("://", 1)[1].split("/", 1)[0]
+    url = f"{root}/api/v1/services/aigc/video-generation/video-synthesis"
+    headers = {"Authorization": f"Bearer {api_key}", "X-DashScope-Async": "enable"}
+    payload = {
+        "model": "__probe_invalid_model__",
+        "input": {"media": [{"type": "first_frame", "url": "data:image/png;base64,iVBORw0KGgo="}]},
+        "parameters": {"duration": 2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_video_endpoint(base_url: str, api_key: str, model: str) -> tuple:
+    """向 OpenAI 兼容视频端点发起极小请求探测（内部函数，不计费）。
+
+    2xx 或非 401/403 的 4xx 视为连通（请求体参数问题不代表渠道不可用，
+    避免真实出片产生计费）；401/403 为鉴权失败，网络异常为不可用。
+
+    Args:
+        base_url: 渠道接口地址（含 /v1）。
+        api_key: 明文 API Key。
+        model: 探测模型名。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    base = base_url.rstrip("/")
+    url = f"{base}/videos"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {"model": model, "prompt": "ping", "seconds": "1"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if 200 <= resp.status_code < 300 or 400 <= resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_tts_endpoint(base_url: str, api_key: str, model: str) -> tuple:
+    """向 OpenAI 兼容语音合成端点发起最短文本探测（内部函数）。
+
+    与平台渠道健康探测口径一致（POST {base}/audio/speech 最短文本接受
+    2xx；401/403 为鉴权失败）。注意自有语音渠道实际合成走百炼 WS 推理
+    协议，本探测仅验证地址与 Key 的鉴权层有效性。
+
+    Args:
+        base_url: 渠道接口地址（含 /v1）。
+        api_key: 明文 API Key。
+        model: 探测模型名。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    base = base_url.rstrip("/")
+    url = f"{base}/audio/speech"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {"model": model, "input": "ping", "voice": "Cherry", "response_format": "wav"}
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=headers, json=payload)

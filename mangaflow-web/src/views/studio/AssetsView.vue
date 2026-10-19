@@ -367,6 +367,117 @@ async function generateProp(p: PropAsset): Promise<void> {
 }
 
 /**
+ * 一键生成全部场景图：对所有缺图场景批量提交任务，再串行轮询至全部终态。
+ * @returns 无
+ */
+async function generateAllScenes(): Promise<void> {
+  if (sceneAllBusy.value) return
+  const targets = assets.value.scenes.filter(
+    (s) => !s.asset_url && !sceneGenBusyIds.value.includes(s.id),
+  )
+  if (!targets.length) {
+    ElMessage.info('所有场景都已有图')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为 ${targets.length} 个场景生成概念图，预计消耗 ${targets.length * 10} 积分。是否继续？`,
+      '生成全部场景图',
+      { type: 'info', confirmButtonText: '开始生成' },
+    )
+  } catch {
+    return
+  }
+  sceneAllBusy.value = true
+  // 全部 targets 先进 busy（遮罩立即生效），提交后统一串行轮询
+  sceneGenBusyIds.value = [...sceneGenBusyIds.value, ...targets.map((s) => s.id)]
+  const submitted: Array<{ id: number; name: string }> = []
+  try {
+    for (const s of targets) {
+      try {
+        const task = (await studioApi.generateAssetImage(projectId.value, 'scene', s.id)) as {
+          id: number
+        }
+        submitted.push({ id: task.id, name: s.name })
+      } catch {
+        // 单个提交失败（余额/防重复 409）继续其余任务
+      }
+    }
+    if (!submitted.length) {
+      ElMessage.error('全部场景图任务提交失败，请检查积分余额后重试')
+      return
+    }
+    ElMessage.success(`已提交 ${submitted.length} 个场景图生成任务`)
+    await loadAssets(true)
+    // 串行轮询（等待并行任务），全部终态后统一刷新与清 busy
+    for (const t of submitted) await pollAssetTask(t.id, t.name)
+  } finally {
+    const done = new Set(submitted.map((t) => t.id))
+    sceneGenBusyIds.value = sceneGenBusyIds.value.filter(
+      (id) => !targets.some((s) => s.id === id) || !done.has(id),
+    )
+    sceneAllBusy.value = false
+  }
+}
+
+/** 全部场景图批量生成进行中（按钮 loading） */
+const sceneAllBusy = ref(false)
+/** 全部道具图批量生成进行中（按钮 loading） */
+const propAllBusy = ref(false)
+
+/**
+ * 一键生成全部道具图：对所有缺图道具批量提交任务，再串行轮询至全部终态。
+ * @returns 无
+ */
+async function generateAllProps(): Promise<void> {
+  if (propAllBusy.value) return
+  const targets = assets.value.props.filter(
+    (p) => !p.asset_url && !propGenBusyIds.value.includes(p.id),
+  )
+  if (!targets.length) {
+    ElMessage.info('所有道具都已有图')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为 ${targets.length} 个道具生成标准图，预计消耗 ${targets.length * 10} 积分。是否继续？`,
+      '生成全部道具图',
+      { type: 'info', confirmButtonText: '开始生成' },
+    )
+  } catch {
+    return
+  }
+  propAllBusy.value = true
+  propGenBusyIds.value = [...propGenBusyIds.value, ...targets.map((p) => p.id)]
+  const submitted: Array<{ id: number; name: string }> = []
+  try {
+    for (const p of targets) {
+      try {
+        const task = (await studioApi.generateAssetImage(projectId.value, 'prop', p.id)) as {
+          id: number
+        }
+        submitted.push({ id: task.id, name: p.name })
+      } catch {
+        // 单个提交失败继续其余任务
+      }
+    }
+    if (!submitted.length) {
+      ElMessage.error('全部道具图任务提交失败，请检查积分余额后重试')
+      return
+    }
+    ElMessage.success(`已提交 ${submitted.length} 个道具图生成任务`)
+    await loadAssets(true)
+    for (const t of submitted) await pollAssetTask(t.id, t.name)
+  } finally {
+    const done = new Set(submitted.map((t) => t.id))
+    propGenBusyIds.value = propGenBusyIds.value.filter(
+      (id) => !targets.some((p) => p.id === id) || !done.has(id),
+    )
+    propAllBusy.value = false
+  }
+}
+
+/**
  * 生成全部主照：对所有缺图角色批量提交（确认框提示张数与预估积分）。
  * @returns 无
  */
@@ -1056,6 +1167,24 @@ onMounted(() => {
           @click="generateAll"
         >
           生成全部主照
+        </el-button>
+        <el-button
+          v-if="activeTab === 'scenes' && assets.scenes.length"
+          type="primary"
+          plain
+          :loading="sceneAllBusy"
+          @click="generateAllScenes"
+        >
+          生成全部场景图
+        </el-button>
+        <el-button
+          v-if="activeTab === 'props' && assets.props.length"
+          type="primary"
+          plain
+          :loading="propAllBusy"
+          @click="generateAllProps"
+        >
+          生成全部道具图
         </el-button>
       </div>
     </div>

@@ -123,6 +123,8 @@ async def generate_image(
     out_dir: Path,
     seed: int,
     reference_image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,
+    aspect_ratio: Optional[str] = None,
 ) -> Optional[Dict]:
     """生成一张 SVG 占位关键帧图（Mock 图像渠道，可插拔）。
 
@@ -132,12 +134,17 @@ async def generate_image(
         seed: 随机种子（一般传任务 ID，保证同名任务结果可复现且文件名唯一）。
         reference_image_url: 可选参考图 URL（A-04：与真实渠道签名对齐；
             mock 不消费参考图内容，仅在 meta 中留痕供溯源断言）。
+        reference_image_urls: 可选多张参考图列表（关键帧绑定资产参考图组，
+            仅 meta 留痕不消费）。
+        aspect_ratio: 可选输出画幅（9:16/16:9/1:1，mock 占位图不消费仅留痕）。
 
     Returns:
         Optional[Dict]: 成功返回
             {"url": "/storage/generated/placeholder_keyframe_{seed}_{ts}.svg",
              "meta": {"mock": True, "format": "svg", "placeholder": True,
-                      "reference_image_url": 参考图（传入时才有）}}；
+                      "reference_image_url": 参考图（传入时才有）,
+                      "reference_image_urls": 多参考图（传入时才有）,
+                      "aspect_ratio": 画幅（传入时才有）}}；
             写盘失败等异常场景返回 None（由调用方按平台错误处理）。
 
     Raises:
@@ -153,6 +160,10 @@ async def generate_image(
         # A-04：收到参考图时在 meta 留痕（不影响 placeholder 打标与计费豁免语义）
         if reference_image_url:
             meta["reference_image_url"] = reference_image_url
+        if reference_image_urls:
+            meta["reference_image_urls"] = reference_image_urls
+        if aspect_ratio:
+            meta["aspect_ratio"] = aspect_ratio
         return {
             "url": f"{_URL_PREFIX}/{filename}",
             "meta": meta,

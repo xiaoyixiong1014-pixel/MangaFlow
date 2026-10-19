@@ -185,6 +185,7 @@ function fillForm(item: DisplayCharacter): void {
     appearance: item.appearance ?? '',
     outfit: item.outfit ?? '',
     style_note: item.style_note ?? '',
+    voice_note: item.voice_note ?? '',
     motivation: item.motivation ?? '',
     arc: item.arc ?? '',
     relations: item.relations.map((r) => ({ target: r.target, relation: r.relation })),
@@ -215,6 +216,8 @@ interface CharacterForm {
   outfit: string
   /** 风格与画质特点（角色圣经视觉段三：画风/光线/画质） */
   style_note: string
+  /** 音色设定（配音选音色依据：性别/年龄感/音色质地/说话习惯） */
+  voice_note: string
   /** 行为动机 */
   motivation: string
   /** 人物弧光 */
@@ -230,7 +233,7 @@ interface CharacterForm {
 function emptyForm(): CharacterForm {
   return {
     name: '', role_type: null, age: '', personality: '',
-    appearance: '', outfit: '', style_note: '',
+    appearance: '', outfit: '', style_note: '', voice_note: '',
     motivation: '', arc: '', relations: [],
   }
 }
@@ -336,6 +339,7 @@ async function handleSaveChar(): Promise<void> {
       appearance: form.value.appearance.trim() || null,
       outfit: form.value.outfit.trim() || null,
       style_note: form.value.style_note.trim() || null,
+      voice_note: form.value.voice_note.trim() || null,
       motivation: form.value.motivation.trim() || null,
       arc: form.value.arc.trim() || null,
       relations,
@@ -467,6 +471,7 @@ async function handleConfirm(): Promise<void> {
         appearance: c.appearance,
         outfit: c.outfit,
         style_note: c.style_note,
+        voice_note: c.voice_note,
         motivation: c.motivation,
         arc: c.arc,
         relations: c.relations,
@@ -690,6 +695,11 @@ defineExpose({
             <el-form-item label="风格画质">
               <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 风格画质`" scope="characters" class="quote-field">
                 <el-input v-model="form.style_note" type="textarea" :rows="2" placeholder="风格与画质：画风/光线/画质关键词（与项目视觉风格一致）" />
+              </QuotableText>
+            </el-form-item>
+            <el-form-item label="音色设定">
+              <QuotableText :source="`角色设定 · ${activeItem?.name ?? '新增'} · 音色设定`" scope="characters" class="quote-field">
+                <el-input v-model="form.voice_note" type="textarea" :rows="2" placeholder="音色设定：性别/年龄感/音色质地/说话习惯（如青年男声、低沉磁性、语速偏慢；配音自动选音色的依据）" />
               </QuotableText>
             </el-form-item>
             <el-form-item label="动机">

@@ -88,6 +88,7 @@ class CharacterProfileOut(BaseModel):
     appearance: Optional[str] = Field(default=None, description="形象特征（角色圣经视觉段一）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（角色圣经视觉段二）")
     style_note: Optional[str] = Field(default=None, description="风格与画质特点（角色圣经视觉段三）")
+    voice_note: Optional[str] = Field(default=None, description="音色设定（配音选音色依据）")
     motivation: Optional[str] = Field(default=None, description="行为动机")
     arc: Optional[str] = Field(default=None, description="人物弧光（角色成长线）")
     relations: List[CharacterRelation] = Field(default_factory=list, description="人物关系数组")
@@ -140,6 +141,7 @@ class CharacterProfileUpsert(BaseModel):
     appearance: Optional[str] = Field(default=None, description="形象特征（None=不修改）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=不修改）")
     style_note: Optional[str] = Field(default=None, description="风格与画质特点（None=不修改）")
+    voice_note: Optional[str] = Field(default=None, description="音色设定（None=不修改）")
     motivation: Optional[str] = Field(default=None, description="行为动机（None=不修改）")
     arc: Optional[str] = Field(default=None, description="人物弧光（None=不修改）")
     relations: Optional[List[CharacterRelation]] = Field(
@@ -203,6 +205,7 @@ class CharacterConfirmItem(BaseModel):
     appearance: Optional[str] = Field(default=None, description="形象特征（None=沿用候选）")
     outfit: Optional[str] = Field(default=None, description="服装配饰完整拆解（None=沿用候选）")
     style_note: Optional[str] = Field(default=None, description="风格与画质特点（None=沿用候选）")
+    voice_note: Optional[str] = Field(default=None, description="音色设定（None=沿用候选）")
     motivation: Optional[str] = Field(default=None, description="行为动机（None=沿用候选）")
     arc: Optional[str] = Field(default=None, description="人物弧光（None=沿用候选）")
     relations: Optional[List[CharacterRelation]] = Field(

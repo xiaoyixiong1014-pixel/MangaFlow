@@ -40,8 +40,9 @@ from app.agents.llm_adapter import llm
 from app.models import Character, Project, Prop, Scene, Script, Style, VersionSnapshot
 from app.schemas.script import validate_script_content
 
-# visual_prompt 缺省中文模板（抽取确认 / 手工建角色共用）
-DEFAULT_VISUAL_TEMPLATE = "统一风格插画，{name}，{description}，全身立绘，纯色背景，高细节"
+# visual_prompt 缺省中文模板（抽取确认 / 手工建角色共用；
+# 「视觉风格」不绑定具体画风，实际画风由项目 style 的系统级前缀注入——真人写实系无「插画」冲突）
+DEFAULT_VISUAL_TEMPLATE = "统一视觉风格，{name}，{description}，全身立绘，纯色背景，高细节"
 
 
 def build_character_bible_prompt(
@@ -2083,12 +2084,15 @@ async def serialize_project_assets(db: AsyncSession, project_id: int) -> Dict[st
 async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[str, int]:
     """抽取确认入池：按确认清单建/更 characters / scenes / props 资产行。
 
-    - visual_prompt 缺省使用中文模板「统一风格插画，{name}，{description}，全身立绘，纯色背景，高细节」；
+    - visual_prompt 缺省使用中文模板「统一视觉风格，{name}，{description}，全身立绘，纯色背景，高细节」；
     - 同名资产已存在时更新描述/别名（幂等确认，不重复建行）；visual_prompt
       已存在非空时保留（跨集一致性：同一资产全项目仅一份视觉设定）；
     - 命中已软删的同名资产时复活（deleted_at 置空）；
     - req.episode_id 传值时把确认的资产名 union 追加到该集 enabled_assets
       启用名单（资产管理页按集视图仅显示名单内资产）；
+    - 场景/道具确认入池时自动跑 AI 六要素识别并回写合成 visual_prompt
+      （仅新建或仍为缺省模板的行；已有人工/识别提示词不覆盖；识别失败
+      降级保留缺省模板不阻断）——用户无需再手动点「AI 识别六要素」；
     - project.status 置 'asset'，写 version_snapshots(stage='extract_confirmed')。
 
     Args:
@@ -2143,6 +2147,7 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
 
     # ---------- 场景 ----------
     scene_seen: set = set()
+    pending_scenes: list = []  # 本轮确认的场景 ORM 引用（供提示词自动识别回写）
     for item in req.scenes:
         if item.name in scene_seen:
             continue
@@ -2163,16 +2168,20 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
                 exist.visual_prompt = item.visual_prompt
             if exist.deleted_at is not None:
                 exist.deleted_at = None  # 已删同名场景复活
+            pending_scenes.append(exist)
         else:
-            db.add(Scene(
+            scene = Scene(
                 project_id=project.id,
                 name=item.name,
                 description=item.description or None,
                 visual_prompt=visual_prompt,
-            ))
+            )
+            db.add(scene)
+            pending_scenes.append(scene)
 
     # ---------- 道具 ----------
     prop_seen: set = set()
+    pending_props: list = []  # 本轮确认的道具 ORM 引用（供提示词自动识别回写）
     for item in req.props:
         if item.name in prop_seen:
             continue
@@ -2196,13 +2205,42 @@ async def confirm_extract(db: AsyncSession, project: Project, req: Any) -> Dict[
                 exist.visual_prompt = item.visual_prompt
             if exist.deleted_at is not None:
                 exist.deleted_at = None  # 已删同名道具复活
+            pending_props.append(exist)
         else:
-            db.add(Prop(
+            prop = Prop(
                 project_id=project.id,
                 name=item.name,
                 description=item.description or None,
                 visual_prompt=visual_prompt,
-            ))
+            )
+            db.add(prop)
+            pending_props.append(prop)
+
+    # ---------- 场景/道具提示词自动识别（AI 六要素，省去用户再点「AI 识别」） ----------
+    # 仅对"新建或仍为缺省模板"的行识别（已有人工/识别提示词不覆盖，跨集一致）；
+    # 单个识别失败降级保留缺省模板，不阻断确认流程。LLM 调用有画风硬约束
+    # （style_base 锚定项目画风）+ 后端合成（compose_prompt_from_elements）。
+    # 局部导入：asset_service 模块级反向依赖本模块（DEFAULT_VISUAL_TEMPLATE 等），
+    # 顶层互导会触发循环导入。
+    from app.services.asset_service import _is_default_visual_prompt, suggest_asset_prompt
+    for scene in pending_scenes:
+        if not _is_default_visual_prompt(scene.visual_prompt):
+            continue
+        try:
+            sug = await suggest_asset_prompt(db, project, "scene", scene)
+            scene.visual_prompt = sug["visual_prompt"]
+        except Exception:  # noqa: BLE001 —— 识别失败降级模板，确认流程不中断
+            logger.warning("场景提示词自动识别失败（name=%s），保留缺省模板",
+                           scene.name, exc_info=True)
+    for prop in pending_props:
+        if not _is_default_visual_prompt(prop.visual_prompt):
+            continue
+        try:
+            sug = await suggest_asset_prompt(db, project, "prop", prop)
+            prop.visual_prompt = sug["visual_prompt"]
+        except Exception:  # noqa: BLE001 —— 识别失败降级模板，确认流程不中断
+            logger.warning("道具提示词自动识别失败（name=%s），保留缺省模板",
+                           prop.name, exc_info=True)
 
     # ---------- 默认风格自动落池（风格不从剧本抽取，取项目创建时选定的画风） ----------
     has_style = (

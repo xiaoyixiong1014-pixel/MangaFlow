@@ -283,6 +283,7 @@ def _candidate_to_out(candidate: dict) -> CharacterProfileOut:
         appearance=candidate.get("appearance"),
         outfit=candidate.get("outfit"),
         style_note=candidate.get("style_note"),
+        voice_note=candidate.get("voice_note"),
         motivation=candidate.get("motivation"),
         arc=candidate.get("arc"),
         relations=list(candidate.get("relations") or []),
@@ -315,6 +316,7 @@ def _character_to_out(character: Character) -> CharacterProfileOut:
         appearance=character.description,
         outfit=character.outfit,
         style_note=character.style_note,
+        voice_note=character.voice_note,
         motivation=character.motivation,
         arc=character.arc,
         relations=list(character.relations or []),
@@ -547,7 +549,7 @@ async def edit_characters(
     for item in req.upsert:
         updates = {"name": item.name}
         for field in ("role_type", "gender", "age", "personality", "appearance",
-                      "outfit", "style_note", "motivation", "arc"):
+                      "outfit", "style_note", "voice_note", "motivation", "arc"):
             value = getattr(item, field)
             if value is not None:
                 updates[field] = value
@@ -634,6 +636,7 @@ async def regenerate_character(
             "appearance": new_char["appearance"],
             "outfit": new_char.get("outfit"),
             "style_note": new_char.get("style_note"),
+            "voice_note": new_char.get("voice_note"),
             "motivation": new_char["motivation"],
             "arc": new_char["arc"],
             "relations": new_char["relations"],
@@ -663,6 +666,7 @@ async def regenerate_character(
     row.personality = new_char["personality"]
     row.outfit = new_char.get("outfit")
     row.style_note = new_char.get("style_note")
+    row.voice_note = new_char.get("voice_note")
     row.motivation = new_char["motivation"]
     row.arc = new_char["arc"]
     row.relations = new_char["relations"]
@@ -670,6 +674,7 @@ async def regenerate_character(
         new_char.get("gender"), new_char["personality"], new_char["appearance"],
         new_char["motivation"], new_char["arc"],
         outfit=new_char.get("outfit"), style_note=new_char.get("style_note"),
+        voice_note=new_char.get("voice_note"),
     ) or row.description
     # 圣经 visual_prompt 同步重建（重生成覆盖人设，视觉三段随之刷新）
     visual_bible = build_character_bible_prompt(
@@ -679,7 +684,7 @@ async def regenerate_character(
             new_char.get("style_note")) if v))
     if visual_bible:
         row.visual_prompt = (
-            f"统一风格插画，角色圣经（固定外貌与服装，跨图一致）："
+            f"统一视觉风格，角色圣经（固定外貌与服装，跨图一致）："
             f"{visual_bible}。"
             "全身立绘，纯色背景，高细节；五官/发型/服装/画风严格按上述设定，禁止变更。")
     await db.commit()

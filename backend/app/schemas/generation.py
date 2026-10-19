@@ -45,12 +45,13 @@ class TtsCreateRequest(BaseModel):
     """配音（TTS）生成请求。
 
     Attributes:
-        voice: 音色标识（male_01 / female_01）。
+        voice: 音色标识（male_01/male_02/female_01/female_02；None/缺省=按
+            分镜绑定角色的音色设定自动路由）。
         speed: 语速倍率（0.5 ~ 2.0）。
         pitch: 音调倍率（0.5 ~ 2.0）。
     """
 
-    voice: Literal["male_01", "female_01"] = "female_01"
+    voice: Optional[Literal["male_01", "male_02", "female_01", "female_02"]] = None
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     pitch: float = Field(default=1.0, ge=0.5, le=2.0)
 

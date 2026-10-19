@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from fastapi import HTTPException
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, text, update
 
 from app.core.config import settings
 from app.core.database import SessionLocal
@@ -518,6 +518,10 @@ async def _succeed_task(db, task: Task, user_id: int) -> None:
         )
     task.status = "done"
     task.progress = 100
+    # 清空历史失败残留：重试/一致性重抽等场景任务可能带旧 error_message 落 done，
+    # 不清空会导致任务面板「已完成」条目仍展示红色错误文案
+    task.error_message = None
+    task.error_code = None
     await db.commit()
     # 可观测性：done 终态迁移计数 + 释放进行中任务数
     mark_task("done")
@@ -860,10 +864,13 @@ async def _generate_with_fallback(
     """按渠道降级链依次尝试生成（渠道执行公共逻辑）。
 
     通过 model_router.resolve_channels_chain 解析候选渠道链（user_id 非空时
-    用户自有渠道优先参与路由），并在链尾追加本地 mock 哨兵渠道（channel_id=0）
-    兜底；逐候选执行 executor(channel)，成功（结果非 None）即返回；每个候选
-    （无论成败）都回写渠道健康状态，失败原因累积进 fallback 列表供任务 meta
-    溯源。
+    用户自有渠道优先参与路由），并按 mock_fallback_enabled 决定是否在链尾
+    追加本地 mock 哨兵渠道（channel_id=0）兜底：开关关闭（生产默认）时仅在
+    降级链完全为空（未配置任何渠道）时追加，保证全新部署开箱可用；真实渠道
+    全部失败时任务落 failed（平台退款可重试），不再产出「演示占位」产物。
+    开关开启（开发联调/测试套件）时恢复恒追加旧行为。逐候选执行 executor，
+    成功（结果非 None）即返回；每个候选（无论成败）都回写渠道健康状态，失败
+    原因累积进 fallback 列表供任务 meta 溯源。
 
     Args:
         db: 异步数据库会话（解析渠道链与健康状态回写）。
@@ -880,7 +887,11 @@ async def _generate_with_fallback(
         无：executor 抛出的异常被捕获并计入 fallback，不向上传播。
     """
     chain = await model_router.resolve_channels_chain(db, capability, user_id=user_id)
-    chain.append(model_router.mock_sentinel(capability))
+    # mock 哨兵兜底：仅在「演示开关开启」或「降级链为空（未配置任何渠道）」时
+    # 追加（channel_id=0，执行器分派本地占位生成）；配置了真实渠道且全部失败
+    # 时任务落 failed（平台退款可重试），不产出演示占位产物
+    if settings.mock_fallback_enabled or not chain:
+        chain.append(model_router.mock_sentinel(capability))
     fallback: list = []
     for channel in chain:
         error: Optional[str] = None
@@ -1074,8 +1085,12 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         无：provider 异常被捕获后走失败流程。
     """
     prompt = meta.get("prompt", "")
-    # A-04 参考图锚点：任务 meta 携带参考图时透传给 provider（资产图一致性锚定）
+    # A-04 参考图锚点：任务 meta 携带参考图时透传给 provider（资产图一致性锚定）；
+    # 关键帧/尾帧任务用 reference_image_urls 多图（角色→场景→道具），资产生成用单图
     reference_image_url: Optional[str] = meta.get("reference_image_url")
+    reference_image_urls: List[str] = meta.get("reference_image_urls") or []
+    # 输出画幅（关键帧任务按项目 aspect_ratio 透传，资产生成为 None 走渠道默认）
+    aspect_ratio: Optional[str] = meta.get("aspect_ratio")
     # 机审闸门一：违规词命中直接拦截（不调用 provider）
     if await _check_violation(db, task, user_id, prompt, "image"):
         return
@@ -1095,18 +1110,31 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         Raises:
             无（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
-        if channel.channel_id == 0:
+        if channel.channel_id == 0 or channel.protocol == "mock":
+            # 本地 mock 生成：链尾哨兵（channel_id=0）与用户自建 mock 协议渠道行
+            # （base_url=local://mock，不可走真实 HTTP）统一分派本地占位生成
             return await generate_image(
-                prompt, out_dir, seed=task.id, reference_image_url=reference_image_url)
+                prompt, out_dir, seed=task.id,
+                reference_image_url=reference_image_url,
+                reference_image_urls=reference_image_urls,
+                aspect_ratio=aspect_ratio)
         if channel.protocol == "dashscope":
             return await generate_image_dashscope(
-                prompt, out_dir, task.id, channel, reference_image_url=reference_image_url)
+                prompt, out_dir, task.id, channel,
+                reference_image_url=reference_image_url,
+                reference_image_urls=reference_image_urls,
+                aspect_ratio=aspect_ratio)
         return await generate_image_real(
-            prompt, out_dir, task.id, channel, reference_image_url=reference_image_url)
+            prompt, out_dir, task.id, channel,
+            reference_image_url=reference_image_url,
+            reference_image_urls=reference_image_urls,
+            aspect_ratio=aspect_ratio)
 
     result, used_channel, fallback = await _generate_with_fallback(
         db, "image", _generate, user_id=user_id)
     if result is None:
+        # 溯源：把逐渠道失败明细写入任务 meta（JSONB 整体重赋值触发变更检测）
+        task.meta = {**meta, "fallback_chain": fallback}
         await _fail_task(db, task, user_id, "platform_error", "图像供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
@@ -1169,6 +1197,22 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
         if sb:
             sb.keyframe_url = result["url"]
             sb.status = "done"
+            # P0-3 stale 闭环：关键帧回写后把引用版本快照刷新为当前资产版本。
+            # 不刷新则 stale 判定恒成立（如角色定妆照重生成 asset_version+1 后，
+            # 分镜标黄永远无法消除，重渲染形同虚设）。
+            if sb.scene_id:
+                cur_scene = await db.get(Scene, sb.scene_id)
+                if cur_scene is not None:
+                    sb.scene_version = cur_scene.asset_version or 1
+            await db.execute(
+                text(
+                    "UPDATE storyboard_characters sbc "
+                    "SET character_version = ch.asset_version "
+                    "FROM characters ch "
+                    "WHERE ch.id = sbc.character_id AND sbc.storyboard_id = :sid"
+                ),
+                {"sid": sb.id},
+            )
     elif target_type == "storyboard_end_frame" and target_id:
         # P-03/P-08 尾帧任务：回写分镜尾帧地址（不影响关键帧与分镜状态）
         sb = await db.get(Storyboard, target_id)
@@ -1245,7 +1289,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
             VideoQueueFullError: Agnes 队列满（供弹性等待重试判定）。
             无其他（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
-        if channel.channel_id == 0:
+        if channel.channel_id == 0 or channel.protocol == "mock":
+            # 本地 mock 生成：链尾哨兵与用户自建 mock 协议渠道行统一分派
             return await generate_video(
                 prompt, duration, out_dir, seed=task.id,
                 video_params=video_params,
@@ -1287,6 +1332,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         await db.commit()
         await asyncio.sleep(_VIDEO_QUEUE_WAIT_INTERVAL)
     if result is None:
+        # 溯源：把逐渠道失败明细写入任务 meta（保留队列等待轮数记录）
+        task.meta = {**meta, "queue_wait_rounds": queue_rounds, "fallback_chain": fallback}
         await _fail_task(db, task, user_id, "platform_error", "视频供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
@@ -1342,7 +1389,8 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
     out_dir = settings.storage_path() / "generated"
 
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
-        """单渠道语音合成回调：channel_id==0 走本地 mock，否则走百炼真实渠道。
+        """单渠道语音合成回调：链尾哨兵/用户自建 mock 协议渠道行走本地 mock，
+        其余走百炼真实渠道。
 
         Args:
             channel: 当前候选渠道。
@@ -1353,13 +1401,15 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         Raises:
             无（provider 内部已收敛异常；异常由 _generate_with_fallback 捕获）。
         """
-        if channel.channel_id == 0:
+        if channel.channel_id == 0 or channel.protocol == "mock":
             return await generate_tts(text, voice, out_dir)
         return await generate_tts_real(text, voice, out_dir, channel)
 
     result, used_channel, fallback = await _generate_with_fallback(
         db, "tts", _generate, user_id=user_id)
     if result is None:
+        # 溯源：把逐渠道失败明细写入任务 meta（JSONB 整体重赋值触发变更检测）
+        task.meta = {**meta, "fallback_chain": fallback}
         await _fail_task(db, task, user_id, "platform_error", "语音供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]

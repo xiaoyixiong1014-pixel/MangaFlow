@@ -1,78 +1,844 @@
-INFO:     127.0.0.1:50858 - "POST /api/auth/login HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58511 - "GET /api/agent/threads HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59981 - "GET /api/auth/me HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58512 - "GET /api/projects?page=1&page_size=4 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59982 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50753 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50754 - "GET /api/projects?page=1&page_size=12&sort=updated_at&order=desc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50632 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57473 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59185 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52801 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52802 - "GET /api/projects?page=1&page_size=12&sort=updated_at&order=desc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63148 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63147 - "GET /api/characters HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62181 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62180 - "GET /api/media?page=1&page_size=12&media_type=image HTTP/1.1" 200 OK
-INFO:     127.0.0.1:52574 - "GET /api/prompts?scope=public&page=1&page_size=9 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49327 - "GET /api/models/channels HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49326 - "GET /api/models/catalog HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53878 - "GET /api/billing/packages HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58327 - "GET /api/billing/wallet HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53877 - "GET /api/billing/wallet/summary HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53879 - "GET /api/billing/orders?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53880 - "GET /api/billing/transactions?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53410 - "GET /api/users/me/usage HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62414 - "GET /api/users/me/logs?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58989 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58990 - "GET /api/projects?page=1&page_size=12&sort=updated_at&order=desc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58988 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62329 - "GET /api/projects?page=1&page_size=4 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62328 - "GET /api/agent/threads HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55267 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55265 - "GET /api/projects?page=1&page_size=4 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55266 - "GET /api/auth/me HTTP/1.1" 200 OK
-INFO:     127.0.0.1:55264 - "GET /api/agent/threads HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50061 - "POST /api/auth/login HTTP/1.1" 401 Unauthorized
-INFO:     127.0.0.1:57623 - "POST /api/auth/login HTTP/1.1" 401 Unauthorized
-INFO:     127.0.0.1:50169 - "POST /api/auth/login HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63900 - "POST /api/auth/login HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58728 - "POST /api/auth/login HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65128 - "GET /api/admin/dashboard/alerts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65127 - "GET /api/admin/dashboard/overview?range=7d HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50077 - "GET /api/admin/users?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63200 - "GET /api/admin/review?page=1&page_size=20&tab=pending HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59823 - "GET /api/admin/models/channels HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59824 - "GET /api/admin/models/logical HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49842 - "GET /api/admin/orders?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62119 - "GET /api/admin/content/announcements?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:62120 - "GET /api/admin/content/prompts?page=1&page_size=10 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60420 - "GET /api/admin/settings/backups HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60419 - "GET /api/admin/settings HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50629 - "GET /api/admin/dashboard/alerts HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50628 - "GET /api/admin/dashboard/overview?range=7d HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65096 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65097 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65098 - "GET /api/projects?page=1&page_size=12&sort=updated_at&order=desc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57379 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49267 - "GET /api/announcements HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49268 - "GET /api/projects?page=1&page_size=100 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49269 - "GET /api/projects?page=1&page_size=12&sort=updated_at&order=desc HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51117 - "GET /api/agent/threads HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51116 - "GET /api/projects?page=1&page_size=4 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:53242 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63178 - "POST /api/canvases HTTP/1.1" 201 Created
-INFO:     127.0.0.1:62605 - "GET /api/canvases/13 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:63799 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:59262 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:61185 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60658 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:65073 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:51218 - "PUT /api/canvases/13/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:49670 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:60488 - "DELETE /api/canvases/13 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:57616 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58246 - "POST /api/canvases HTTP/1.1" 201 Created
-INFO:     127.0.0.1:64928 - "GET /api/canvases/14 HTTP/1.1" 200 OK
-INFO:     127.0.0.1:50320 - "PUT /api/canvases/14/graph HTTP/1.1" 200 OK
-INFO:     127.0.0.1:58117 - "GET /api/canvases?page=1&page_size=12 HTTP/1.1" 200 OK
+﻿.\.venv\Scripts\python.exe : INFO:     Started server process [33496]
+At line:15 char:2583
++ ... ow\backend; .\.venv\Scripts\python.exe -m uvicorn app.main:app --host ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO:     Started server process [33496]:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO:     Waiting for application startup.
+2026-10-18 20:25:43,953 INFO mangaflow.init_db 数据库 mangaflow 已存在，跳过创建
+2026-10-18 20:25:44,077 INFO mangaflow.init_db 存量表补列完成检查：agent_threads
+2026-10-18 20:25:44,078 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,079 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,080 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,081 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,081 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,082 INFO mangaflow.init_db 存量表补列完成检查：review_records
+2026-10-18 20:25:44,083 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,084 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,085 INFO mangaflow.init_db 存量表补列完成检查：agent_threads
+2026-10-18 20:25:44,085 INFO mangaflow.init_db 存量表补列完成检查：prompts
+2026-10-18 20:25:44,086 INFO mangaflow.init_db 存量表补列完成检查：review_records
+2026-10-18 20:25:44,086 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,087 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,087 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,088 INFO mangaflow.init_db 存量表补列完成检查：tasks
+2026-10-18 20:25:44,088 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,089 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,090 INFO mangaflow.init_db 存量表补列完成检查：canvas_nodes
+2026-10-18 20:25:44,091 INFO mangaflow.init_db 存量表补列完成检查：canvas_nodes
+2026-10-18 20:25:44,103 INFO mangaflow.init_db 存量表补列完成检查：canvas_nodes
+2026-10-18 20:25:44,104 INFO mangaflow.init_db 存量表补列完成检查：operation_logs
+2026-10-18 20:25:44,105 INFO mangaflow.init_db 存量表补列完成检查：operation_logs
+2026-10-18 20:25:44,108 INFO mangaflow.init_db 存量表补列完成检查：operation_logs
+2026-10-18 20:25:44,109 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,109 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,110 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,110 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,111 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,111 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,112 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,113 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,114 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,114 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,115 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,116 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,116 INFO mangaflow.init_db 存量表补列完成检查：canvas_nodes
+2026-10-18 20:25:44,117 INFO mangaflow.init_db 存量表补列完成检查：canvas_nodes
+2026-10-18 20:25:44,117 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,118 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,118 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,119 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,120 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,120 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,121 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,122 INFO mangaflow.init_db 存量表补列完成检查：styles
+2026-10-18 20:25:44,122 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,123 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,124 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,124 INFO mangaflow.init_db 存量表补列完成检查：styles
+2026-10-18 20:25:44,125 INFO mangaflow.init_db 存量表补列完成检查：projects
+2026-10-18 20:25:44,126 INFO mangaflow.init_db 存量表补列完成检查：projects
+2026-10-18 20:25:44,127 INFO mangaflow.init_db 存量表补列完成检查：projects
+2026-10-18 20:25:44,127 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,128 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,129 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,129 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,130 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,130 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,131 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,132 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,133 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,133 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,134 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,134 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,135 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,136 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,137 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,137 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,138 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,138 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,139 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,140 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,140 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,147 INFO mangaflow.init_db 存量表补列完成检查：version_snapshots
+2026-10-18 20:25:44,147 INFO mangaflow.init_db 存量表补列完成检查：version_snapshots
+2026-10-18 20:25:44,148 INFO mangaflow.init_db 存量表补列完成检查：projects
+2026-10-18 20:25:44,149 INFO mangaflow.init_db 存量表补列完成检查：projects
+2026-10-18 20:25:44,149 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,150 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,150 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,151 INFO mangaflow.init_db 存量表补列完成检查：asset_variants
+2026-10-18 20:25:44,152 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,152 INFO mangaflow.init_db 存量表补列完成检查：scenes
+2026-10-18 20:25:44,153 INFO mangaflow.init_db 存量表补列完成检查：props
+2026-10-18 20:25:44,153 INFO mangaflow.init_db 存量表补列完成检查：asset_variants
+2026-10-18 20:25:44,154 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,155 INFO mangaflow.init_db 存量表补列完成检查：storyboard_characters
+2026-10-18 20:25:44,155 INFO mangaflow.init_db 存量表补列完成检查：storyboard_characters
+2026-10-18 20:25:44,156 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,156 INFO mangaflow.init_db 存量表补列完成检查：storyboard_characters
+2026-10-18 20:25:44,157 INFO mangaflow.init_db 存量表补列完成检查：storyboard_characters
+2026-10-18 20:25:44,157 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,158 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,159 INFO mangaflow.init_db 存量表补列完成检查：asset_embeddings
+2026-10-18 20:25:44,159 INFO mangaflow.init_db 存量表补列完成检查：asset_embeddings
+2026-10-18 20:25:44,160 INFO mangaflow.init_db 存量表补列完成检查：asset_embeddings
+2026-10-18 20:25:44,160 INFO mangaflow.init_db 存量表补列完成检查：asset_embeddings
+2026-10-18 20:25:44,161 INFO mangaflow.init_db 存量表补列完成检查：styles
+2026-10-18 20:25:44,161 INFO mangaflow.init_db 存量表补列完成检查：styles
+2026-10-18 20:25:44,162 INFO mangaflow.init_db 存量表补列完成检查：model_channels
+2026-10-18 20:25:44,162 INFO mangaflow.init_db 存量表补列完成检查：model_channels
+2026-10-18 20:25:44,163 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,163 INFO mangaflow.init_db 存量表补列完成检查：characters
+2026-10-18 20:25:44,164 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,164 INFO mangaflow.init_db 存量表补列完成检查：episodes
+2026-10-18 20:25:44,165 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,166 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,166 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,167 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,167 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,168 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,169 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,169 INFO mangaflow.init_db 存量表补列完成检查：storyboards
+2026-10-18 20:25:44,170 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,171 INFO mangaflow.init_db 存量表补列完成检查：users
+2026-10-18 20:25:44,210 INFO mangaflow.init_db 用户 admin 已存在，跳过
+2026-10-18 20:25:44,211 INFO mangaflow.init_db 用户 demo 已存在，跳过
+2026-10-18 20:25:44,219 INFO mangaflow.init_db 模型渠道 id=1 已存在，跳过
+2026-10-18 20:25:44,219 INFO mangaflow.init_db 模型渠道 id=2 已存在，跳过
+2026-10-18 20:25:44,220 INFO mangaflow.init_db 模型渠道 id=3 已存在，跳过
+2026-10-18 20:25:44,221 INFO mangaflow.init_db 模型渠道 id=4 已存在，跳过
+2026-10-18 20:25:44,221 INFO mangaflow.init_db 模型渠道 id=5 已存在，跳过
+2026-10-18 20:25:44,222 INFO mangaflow.init_db 模型渠道 id=9 已存在，跳过
+2026-10-18 20:25:44,222 INFO mangaflow.init_db 模型渠道 id=6 已存在，跳过
+2026-10-18 20:25:44,223 INFO mangaflow.init_db 模型渠道 id=7 已存在，跳过
+2026-10-18 20:25:44,223 INFO mangaflow.init_db 模型渠道 id=8 已存在，跳过
+2026-10-18 20:25:44,231 INFO mangaflow.init_db 逻辑模型 llm/deepseek-chat 已存在，跳过
+2026-10-18 20:25:44,232 INFO mangaflow.init_db 逻辑模型 image/mock-image 已存在，跳过
+2026-10-18 20:25:44,232 INFO mangaflow.init_db 逻辑模型 video/mock-video 已存在，跳过
+2026-10-18 20:25:44,233 INFO mangaflow.init_db 逻辑模型 tts/mock-tts 已存在，跳过
+2026-10-18 20:25:44,236 INFO mangaflow.init_db 逻辑模型 image/agnes-image-2.5-flash 已存在，跳过
+2026-10-18 20:25:44,237 INFO mangaflow.init_db 逻辑模型 video/wan2.7-i2v 已存在，跳过
+2026-10-18 20:25:44,239 INFO mangaflow.init_db 逻辑模型 tts/qwen-audio-3.1-tts-flash 已存在，跳过
+2026-10-18 20:25:44,252 INFO mangaflow.init_db 提示词 角色定妆 · 全身立绘 已存在，跳过
+2026-10-18 20:25:44,253 INFO mangaflow.init_db 提示词 角色定妆 · 表情差分 已存在，跳过
+2026-10-18 20:25:44,254 INFO mangaflow.init_db 提示词 分镜画面 · 关键帧构图 已存在，跳过
+2026-10-18 20:25:44,254 INFO mangaflow.init_db 提示词 运镜 · 镜头语言设计 已存在，跳过
+2026-10-18 20:25:44,255 INFO mangaflow.init_db 提示词 配音 · 台词情绪朗读 已存在，跳过
+2026-10-18 20:25:44,262 INFO mangaflow.init_db 公告 漫序 MangaFlow 平台正式上线 已存在，跳过
+2026-10-18 20:25:44,263 INFO mangaflow.init_db 公告 新用户注册即送 50,000 创作积分 已存在，跳过
+2026-10-18 20:25:44,269 INFO mangaflow.init_db 站点设置 KV 已存在，跳过
+2026-10-18 20:25:44,276 INFO mangaflow.init_db 内置插件 builtin:text-enhance 已存在，跳过
+2026-10-18 20:25:44,277 INFO mangaflow.init_db 种子数据写入完成
+2026-10-18 20:25:44,278 INFO mangaflow.init_db BGM 曲库目录已就绪：D:\Code_Work\MangaFlow\backend\storage\bgm
+2026-10-18 20:25:44,279 INFO mangaflow.main 数据库初始化完成（建库/建表/种子）
+2026-10-18 20:25:44,282 WARNING mangaflow.services.vector_store pgvector 扩展探测失败，向量检索将走 JSONB+Python 余弦降级路径：(sqlalchemy.
+dialects.postgresql.asyncpg.Error) extension "vector" is not available
+[SQL: CREATE EXTENSION IF NOT EXISTS vector]
+(Background on this error at: https://sqlalche.me/e/21/dbapi)
+2026-10-18 20:25:44,282 INFO mangaflow.services.vector_store pgvector 不可用，跳过影子列/索引初始化（检索走 JSONB+Python 余弦降级路径）
+2026-10-18 20:25:44,296 INFO mangaflow.tasks.runner 任务执行器已启动（3 个 worker）
+2026-10-18 20:25:44,296 INFO mangaflow.main 任务执行器启动完成
+2026-10-18 20:25:44,297 INFO mangaflow.tasks.runner worker-0 启动
+2026-10-18 20:25:44,297 INFO mangaflow.tasks.runner worker-1 启动
+2026-10-18 20:25:44,303 INFO mangaflow.tasks.runner worker-2 启动
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8300 (Press CTRL+C to quit)
+INFO:     127.0.0.1:49917 - "GET /docs HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60008 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60007 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60006 - "GET /api/projects/32/storyboards HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60009 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55796 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50937 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49985 - "GET /storage/generated/keyframe_222_1792325541.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49986 - "GET /storage/generated/placeholder_keyframe_223_1792325585.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49987 - "GET /storage/generated/placeholder_keyframe_224_1792325416.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:49984 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49983 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52004 - "GET /storage/generated/placeholder_keyframe_218_1792325068.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62789 - "GET /storage/generated/placeholder_keyframe_227_1792325642.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52002 - "GET /storage/generated/placeholder_keyframe_220_1792325287.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52003 - "GET /storage/generated/placeholder_keyframe_216_1792325063.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51456 - "GET /storage/generated/keyframe_219_1792325284.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:56017 - "GET /storage/generated/placeholder_keyframe_221_1792325301.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:59295 - "GET /storage/generated/placeholder_keyframe_217_1792325053.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60563 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52504 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54958 - "GET /storage/generated/keyframe_225_1792325661.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:58979 - "GET /storage/generated/placeholder_keyframe_226_1792325631.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:56997 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52507 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56998 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55710 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52505 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51661 - "POST /api/projects/32/storyboards/580/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55652 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55150 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55149 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:26:31,955 INFO mangaflow.tasks.runner 任务 228（image，优先级 5）开始执行
+2026-10-18 20:29:01,501 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 200 OK"
+2026-10-18 20:29:01,665 INFO httpx HTTP Request: GET https://dashscope-a717.oss-accelerate.aliyuncs.com/1d/33/20261018/
+010b2f0f/dfe408f8-db0e-9066-bf7a-089b50317da1_qwen_image3_serving_output_0.png?Expires=1792412939&OSSAccessKeyId=LTAI5t
+PxpiCM2hjmWrFXrym1&Signature=4pHhhEnJyBYLRvXcE6ycfiriCns%3D "HTTP/1.1 200 OK"
+2026-10-18 20:29:14,944 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/chat/completions "HTTP/1.1 503 Ser
+vice Unavailable"
+2026-10-18 20:29:14,945 WARNING mangaflow.tasks.runner 任务 228 图像视觉机审失败，降级 LLM 文本机审
+Traceback (most recent call last):
+  File "D:\Code_Work\MangaFlow\backend\app\tasks\runner.py", line 649, in _review_generated_image
+    vr = await vision_review.review_image(image_url=task.result_url, context=text)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\app\providers\vision_review.py", line 284, in review_image
+    data = await asyncio.wait_for(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+        _request_vision_json(image_ref, context), timeout=_VISION_TIMEOUT
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\Dev_Soft\Python\Python313\Lib\asyncio\tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\app\providers\vision_review.py", line 245, in _request_vision_json
+    raise RuntimeError(
+        f"视觉模型返回 HTTP {resp.status_code}：{resp.text[:200]}"
+    )
+RuntimeError: 视觉模型返回 HTTP 503：{"error":{"code":"model_not_found","message":"No available channel for model agnes-3.0-fl
+ash-max under group default (distributor) (request id: 2026101812291533769706yi9jUyz9)","type":"AgnesAI_error"}
+2026-10-18 20:29:15,812 INFO httpx2 HTTP Request: POST https://api.deepseek.com/chat/completions "HTTP/1.1 200 OK"
+INFO:     127.0.0.1:62825 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62823 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62824 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59447 - "GET /storage/generated/keyframe_228_1792326543.png HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52265 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50181 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51882 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50180 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50182 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52716 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52714 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52715 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63331 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63329 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63330 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61843 - "POST /api/projects/32/storyboards/581/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50811 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57437 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57436 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:29:36,895 INFO mangaflow.tasks.runner 任务 229（image，优先级 5）开始执行
+INFO:     127.0.0.1:59868 - "POST /api/projects/32/storyboards/582/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56746 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54785 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54784 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:29:42,682 INFO mangaflow.tasks.runner 任务 230（image，优先级 5）开始执行
+INFO:     127.0.0.1:54743 - "POST /api/projects/32/storyboards/583/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50708 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52821 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52820 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:29:46,525 INFO mangaflow.tasks.runner 任务 231（image，优先级 5）开始执行
+2026-10-18 20:29:46,636 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:29:46,637 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"78d65223-6b33-97ec-baa1-b5df8f133993","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:29:46,644 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:29:46,644 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:29:58,538 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:29:58,539 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"73a8a60c-2d0a-956e-851b-9bffc1cfe20b","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:29:58,549 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:29:58,549 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:30:45,965 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:30:45,965 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018123031463568951Mnfnfw5e)","type":"","param":"","code":null}}
+2026-10-18 20:30:45,972 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:30:45,972 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:30:48,402 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:30:48,413 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:30:48,413 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:30:48,433 WARNING mangaflow.tasks.runner 任务 231 第 1 次失败，2 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:31:07,633 ERROR sqlalchemy.pool.impl.AsyncAdaptedQueuePool Exception terminating connection <AdaptedConne
+ction <asyncpg.connection.Connection object at 0x0000011E48059750>>
+Traceback (most recent call last):
+  File "D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\sqlalchemy\pool\base.py", line 370, in _close_connection
+    self._dialect.do_terminate(connection)
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\sqlalchemy\dialects\postgresql\asyncpg.py", line 1175, i
+n do_terminate
+    dbapi_connection.terminate()
+    ~~~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\sqlalchemy\connectors\asyncio.py", line 440, in terminat
+e
+    await_(asyncio.shield(self._terminate_graceful_close()))
+    ~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\sqlalchemy\util\concurrency.py", line 167, in await_
+    return current.parent.switch(awaitable)  # type: ignore[no-any-return]
+           ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\sqlalchemy\util\concurrency.py", line 205, in greenlet_s
+pawn
+    value = await result
+            ^^^^^^^^^^^^
+asyncio.exceptions.CancelledError: Cancelled via cancel scope 11e49b472f0 by <Task pending name='Task-827' coro=<Reques
+tResponseCycle.run_asgi() running at D:\Code_Work\MangaFlow\backend\.venv\Lib\site-packages\uvicorn\protocols\http\http
+tools_impl.py:422> cb=[set.discard()]>
+INFO:     127.0.0.1:55399 - "GET /api/projects/32/assets?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55400 - "GET /storage/generated/keyframe_193_1792323960.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54998 - "GET /storage/generated/keyframe_194_1792323914.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50858 - "GET /storage/generated/keyframe_195_1792323896.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52690 - "GET /storage/generated/keyframe_180_1792308101.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52689 - "GET /storage/generated/keyframe_196_1792324016.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52691 - "GET /storage/generated/keyframe_181_1792308108.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62274 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62275 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62273 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62272 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54156 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62205 - "GET /storage/generated/keyframe_222_1792325541.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62207 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62209 - "GET /storage/generated/placeholder_keyframe_224_1792325416.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62208 - "GET /storage/generated/keyframe_228_1792326543.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62206 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55030 - "GET /storage/generated/placeholder_keyframe_221_1792325301.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:64946 - "GET /storage/generated/keyframe_219_1792325284.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:64947 - "GET /storage/generated/placeholder_keyframe_218_1792325068.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54831 - "GET /storage/generated/placeholder_keyframe_220_1792325287.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50661 - "GET /storage/generated/placeholder_keyframe_216_1792325063.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:57976 - "GET /storage/generated/placeholder_keyframe_227_1792325642.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52373 - "GET /storage/generated/placeholder_keyframe_217_1792325053.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52374 - "GET /storage/generated/keyframe_225_1792325661.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:52375 - "GET /storage/generated/placeholder_keyframe_226_1792325631.svg HTTP/1.1" 304 Not Modified
+2026-10-18 20:31:51,698 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成异常：
+2026-10-18 20:31:51,717 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:31:51,717 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:31:54,171 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:31:54,182 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:31:54,182 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:31:54,199 WARNING mangaflow.tasks.runner 任务 229 第 1 次失败，2 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:32:45,667 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 文生图异常：
+2026-10-18 20:32:45,685 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:32:45,685 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:32:48,854 INFO mangaflow.tasks.runner 任务 231（image，优先级 5）开始执行
+2026-10-18 20:32:56,807 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:32:56,808 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"1426a405-2720-9d2a-811e-a9c04342b445","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:32:56,813 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:32:56,813 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:33:39,993 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:33:39,994 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018123329543208915FYwv6ODs)","type":"","param":"","code":null}}
+2026-10-18 20:33:40,000 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:33:40,000 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:33:42,005 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:33:42,015 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:33:42,015 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:33:42,023 WARNING mangaflow.tasks.runner 任务 230 第 1 次失败，2 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:33:53,372 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:33:53,373 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018123339973304324K6hbQGsJ)","type":"","param":"","code":null}}
+2026-10-18 20:33:53,380 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:33:53,380 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:33:55,688 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:33:55,699 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:33:55,699 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:33:55,714 WARNING mangaflow.tasks.runner 任务 231 第 2 次失败，4 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:33:55,715 INFO mangaflow.tasks.runner 任务 229（image，优先级 5）开始执行
+2026-10-18 20:34:03,681 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:34:03,682 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"7c5b731e-3044-97c8-9b22-1c33ae6de8c1","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:34:03,691 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:34:03,691 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:34:49,407 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:34:49,407 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 202610181234334683505624ggjNTfL)","type":"","param":"","code":null}}
+2026-10-18 20:34:49,415 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:34:49,415 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:34:51,725 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:34:51,739 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:34:51,739 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:34:51,745 WARNING mangaflow.tasks.runner 任务 229 第 2 次失败，4 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:35:42,592 INFO mangaflow.tasks.runner 任务 230（image，优先级 5）开始执行
+2026-10-18 20:37:56,042 INFO mangaflow.tasks.runner 任务 231（image，优先级 5）开始执行
+2026-10-18 20:38:05,045 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:38:05,046 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"5492869f-fa66-9a82-9d66-1c4e7ffaa66f","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:38:05,054 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:38:05,054 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:38:21,014 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 200 OK"
+2026-10-18 20:38:21,161 INFO httpx HTTP Request: GET https://dashscope-a717.oss-accelerate.aliyuncs.com/1d/68/20261018/
+010b2f0f/04567a40-4f04-9c26-b1e9-f5634d51aaa7_qwen_image3_serving_output_0.png?Expires=1792413499&OSSAccessKeyId=LTAI5t
+PxpiCM2hjmWrFXrym1&Signature=acxFVHJmfoqHag0WOV3%2FirdG73Q%3D "HTTP/1.1 200 OK"
+2026-10-18 20:38:33,836 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/chat/completions "HTTP/1.1 503 Ser
+vice Unavailable"
+2026-10-18 20:38:33,837 WARNING mangaflow.tasks.runner 任务 230 图像视觉机审失败，降级 LLM 文本机审
+Traceback (most recent call last):
+  File "D:\Code_Work\MangaFlow\backend\app\tasks\runner.py", line 649, in _review_generated_image
+    vr = await vision_review.review_image(image_url=task.result_url, context=text)
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\app\providers\vision_review.py", line 284, in review_image
+    data = await asyncio.wait_for(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+        _request_vision_json(image_ref, context), timeout=_VISION_TIMEOUT
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    )
+    ^
+  File "D:\Dev_Soft\Python\Python313\Lib\asyncio\tasks.py", line 507, in wait_for
+    return await fut
+           ^^^^^^^^^
+  File "D:\Code_Work\MangaFlow\backend\app\providers\vision_review.py", line 245, in _request_vision_json
+    raise RuntimeError(
+        f"视觉模型返回 HTTP {resp.status_code}：{resp.text[:200]}"
+    )
+RuntimeError: 视觉模型返回 HTTP 503：{"error":{"code":"model_not_found","message":"No available channel for model agnes-3.0-fl
+ash-max under group default (distributor) (request id: 20261018123832971614146Q1RP7JGf)","type":"AgnesAI_error"
+2026-10-18 20:38:33,965 INFO httpx2 HTTP Request: POST https://api.deepseek.com/chat/completions "HTTP/1.1 200 OK"
+2026-10-18 20:38:35,120 INFO mangaflow.tasks.runner 任务 230 生成内容复审判定 suspect，已记录待人工复核
+2026-10-18 20:38:42,730 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:38:42,731 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 202610181238307519352614Fl48gPy)","type":"","param":"","code":null}}
+2026-10-18 20:38:42,737 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:38:42,737 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:38:45,052 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:38:45,063 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:38:45,063 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:38:45,087 ERROR mangaflow.tasks.runner 任务 231 重试耗尽，终态失败并进入死信队列：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 20:38:52,180 INFO mangaflow.tasks.runner 任务 229（image，优先级 5）开始执行
+2026-10-18 20:39:00,551 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:39:00,552 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"4f05ef33-ef85-9bbe-8628-329be7e3aeaf","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:39:00,558 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:39:00,558 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+INFO:     127.0.0.1:61222 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61223 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61220 - "GET /api/projects/32/storyboards HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61224 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61221 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54593 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54595 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54594 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54396 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58770 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65215 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65216 - "GET /storage/generated/keyframe_222_1792325541.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:65217 - "GET /storage/generated/keyframe_228_1792326543.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:65214 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60845 - "GET /storage/generated/placeholder_keyframe_224_1792325416.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60019 - "GET /storage/generated/keyframe_230_1792327102.png HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57733 - "GET /storage/generated/placeholder_keyframe_220_1792325287.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:57734 - "GET /storage/generated/placeholder_keyframe_217_1792325053.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:55071 - "GET /storage/generated/placeholder_keyframe_227_1792325642.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:61231 - "GET /storage/generated/placeholder_keyframe_216_1792325063.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54275 - "GET /storage/generated/placeholder_keyframe_226_1792325631.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:64628 - "GET /storage/generated/placeholder_keyframe_218_1792325068.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:58718 - "GET /storage/generated/keyframe_219_1792325284.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:58719 - "GET /storage/generated/placeholder_keyframe_221_1792325301.svg HTTP/1.1" 304 Not Modified
+2026-10-18 20:39:31,069 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:39:31,070 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018123918701996450ZEgTqOqc)","type":"","param":"","code":null}}
+2026-10-18 20:39:31,076 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:39:31,076 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:39:33,327 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:39:33,338 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:39:33,339 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:39:33,360 ERROR mangaflow.tasks.runner 任务 229 重试耗尽，终态失败并进入死信队列：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:51956 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63225 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52949 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63223 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63224 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56142 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52776 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56143 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53947 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53945 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53946 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63890 - "POST /api/projects/32/storyboards/584/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58310 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61490 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61489 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:39:55,652 INFO mangaflow.tasks.runner 任务 232（image，优先级 5）开始执行
+2026-10-18 20:40:06,115 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:40:06,115 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"2efbb8fe-f8d9-9430-a8fc-ea1cac264c05","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 5 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:40:06,122 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:40:06,122 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+INFO:     127.0.0.1:50554 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50555 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50556 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50557 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53209 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50773 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50772 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51598 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51599 - "GET /api/models/channels HTTP/1.1" 200 OK
+2026-10-18 20:40:30,554 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+INFO:     127.0.0.1:61355 - "POST /api/models/channels/10/test HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57478 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52908 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63321 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63320 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58518 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58519 - "GET /api/projects/32/script/characters HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58521 - "GET /api/projects/32/script/episodes/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58520 - "GET /api/projects/32 HTTP/1.1" 200 OK
+2026-10-18 20:40:39,715 WARNING app.agents.graph AsyncPostgresSaver 初始化失败（当前为 Windows ProactorEventLoop，psycopg 异步模式不兼容
+），尝试同步线程池适配方案
+2026-10-18 20:40:40,048 INFO app.agents.graph LangGraph 检查点已启用 PostgresSaver（同步线程池适配；异步方案失败原因：当前为 Windows ProactorEvent
+Loop，psycopg 异步模式不兼容）
+INFO:     127.0.0.1:58522 - "GET /api/projects/32/episodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63277 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57415 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57416 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57414 - "GET /api/projects/32/script?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61417 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61416 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61418 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57543 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62947 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62161 - "GET /storage/generated/keyframe_230_1792327102.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62164 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62162 - "GET /storage/generated/keyframe_228_1792326543.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62163 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56803 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:41:01,362 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:41:01,363 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018124046456654073nPgc0Sw3)","type":"","param":"","code":null}}
+2026-10-18 20:41:01,371 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:41:01,371 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:41:03,808 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:41:03,824 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:41:03,824 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:41:03,841 WARNING mangaflow.tasks.runner 任务 232 第 1 次失败，2 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:64093 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60653 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59937 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59936 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59935 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:65276 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64989 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64988 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60225 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60224 - "GET /api/models/catalog HTTP/1.1" 200 OK
+2026-10-18 20:43:04,680 INFO mangaflow.tasks.runner 任务 232（image，优先级 5）开始执行
+2026-10-18 20:43:14,708 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:43:14,709 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"d2f9e68f-dfc0-9f6e-86c2-ded03035cfd2","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 5 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:43:14,715 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:43:14,716 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 20:43:55,537 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:43:55,538 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 2026101812433931885806qay7aQei)","type":"","param":"","code":null}}
+2026-10-18 20:43:55,544 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:43:55,544 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:43:57,882 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:43:57,895 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:43:57,895 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:43:57,909 WARNING mangaflow.tasks.runner 任务 232 第 2 次失败，4 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:64878 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64876 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64877 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55343 - "GET /api/projects/32/script/characters HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55344 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52489 - "GET /api/projects/32/script/episodes/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52488 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60091 - "GET /api/projects/32/episodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51726 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61467 - "GET /api/projects/32/script?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61468 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61469 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52442 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52443 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52440 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52441 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53691 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56033 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53692 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61340 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 20:47:58,159 INFO mangaflow.tasks.runner 任务 232（image，优先级 5）开始执行
+2026-10-18 20:48:08,657 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 20:48:08,657 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"bfc990d7-e57e-9513-97ce-db23c256f88b","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 5 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 20:48:08,664 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:48:08,664 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+INFO:     127.0.0.1:52534 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52532 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52533 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52535 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64848 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64849 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64850 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51142 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51141 - "GET /api/models/catalog HTTP/1.1" 200 OK
+2026-10-18 20:48:57,127 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 20:48:57,128 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018124841558814463PXjtwADM)","type":"","param":"","code":null}}
+2026-10-18 20:48:57,134 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:48:57,135 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 20:48:59,458 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 20:48:59,469 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 20:48:59,469 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 20:48:59,488 ERROR mangaflow.tasks.runner 任务 232 重试耗尽，终态失败并进入死信队列：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:58771 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58772 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62157 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62156 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54620 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54621 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54619 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54622 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54624 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54623 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62252 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49317 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49319 - "POST /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49321 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61919 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61917 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61918 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59126 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59128 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59127 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64583 - "POST /api/auth/login HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64585 - "DELETE /api/models/channels/11 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51815 - "PUT /api/models/channels/10 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51301 - "GET /api/models/channels HTTP/1.1" 200 OK
+2026-10-18 21:02:59,386 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+INFO:     127.0.0.1:63441 - "POST /api/models/channels/10/test HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50883 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58015 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58016 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52510 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52509 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53474 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53475 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58007 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58008 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57925 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57927 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57926 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57928 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57930 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57929 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59911 - "GET /api/models/catalog HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59913 - "GET /api/auth/me HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59912 - "GET /api/models/channels HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59914 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59916 - "GET /api/notifications/unread-count HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59915 - "GET /api/notifications?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61857 - "GET /api/announcements HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61859 - "GET /api/projects?page=1&page_size=12&sort=recent&order=desc HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61858 - "GET /api/users/me/creation-stats HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63102 - "GET /api/projects/32/script/characters HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63103 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63105 - "GET /api/projects/32/script/episodes/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63104 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63106 - "GET /api/projects/32/episodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57903 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63319 - "GET /api/projects/32/script?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63320 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63321 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58534 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60994 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58535 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60995 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53235 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51134 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51135 - "GET /storage/generated/keyframe_228_1792326543.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51133 - "GET /storage/generated/keyframe_222_1792325541.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51136 - "GET /storage/generated/placeholder_keyframe_224_1792325416.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:51137 - "GET /storage/generated/keyframe_230_1792327102.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:60445 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59925 - "GET /storage/generated/placeholder_keyframe_216_1792325063.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62147 - "GET /storage/generated/placeholder_keyframe_220_1792325287.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54554 - "GET /storage/generated/placeholder_keyframe_227_1792325642.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54555 - "GET /storage/generated/keyframe_219_1792325284.png HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:62148 - "GET /storage/generated/placeholder_keyframe_218_1792325068.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:50061 - "GET /storage/generated/placeholder_keyframe_221_1792325301.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:59276 - "GET /storage/generated/placeholder_keyframe_217_1792325053.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:56591 - "GET /storage/generated/placeholder_keyframe_226_1792325631.svg HTTP/1.1" 304 Not Modified
+INFO:     127.0.0.1:54825 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54823 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54824 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52694 - "POST /api/projects/32/storyboards/581/keyframes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61084 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54408 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54407 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 21:08:18,612 INFO mangaflow.tasks.runner 任务 233（image，优先级 5）开始执行
+2026-10-18 21:08:27,278 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 21:08:27,279 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"09316467-b2ee-99aa-8234-bb9d069353da","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 21:08:27,285 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:08:27,285 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+2026-10-18 21:09:07,040 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 21:09:07,041 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 2026101813085378784534O4A8hFVl)","type":"","param":"","code":null}}
+2026-10-18 21:09:07,046 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:09:07,046 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 21:09:09,225 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 21:09:09,235 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:09:09,235 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 21:09:09,250 WARNING mangaflow.tasks.runner 任务 233 第 1 次失败，2 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:65076 - "GET /api/projects/32/script/characters HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54319 - "GET /api/projects/32/script/episodes/plan HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54318 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64548 - "GET /api/projects/32/episodes HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64549 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49954 - "GET /api/projects/32/script?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52113 - "GET /api/projects/32/script/pipeline/status HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52114 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:63144 - "GET /api/projects/32/script/setting HTTP/1.1" 200 OK
+2026-10-18 21:11:10,098 INFO mangaflow.tasks.runner 任务 233（image，优先级 5）开始执行
+2026-10-18 21:11:17,407 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 21:11:17,408 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"d5026e78-b2a6-965b-9071-d7a89dbcec67","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 21:11:17,412 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:11:17,412 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+INFO:     127.0.0.1:59873 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54316 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54314 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54315 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54317 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56538 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56540 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56539 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60106 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61073 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:62780 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61074 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61072 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53803 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50672 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:50671 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+2026-10-18 21:11:51,147 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 21:11:51,147 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018131136880560332NtaBeUz6)","type":"","param":"","code":null}}
+2026-10-18 21:11:51,153 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:11:51,153 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 21:11:52,535 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 21:11:52,545 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:11:52,545 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 21:11:52,548 WARNING mangaflow.tasks.runner 任务 233 第 2 次失败，4 分钟后自动重试：图像供应商返回空结果（已尝试全部渠道）
+2026-10-18 21:15:53,159 INFO mangaflow.tasks.runner 任务 233（image，优先级 5）开始执行
+2026-10-18 21:16:04,715 INFO httpx HTTP Request: POST https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-ge
+neration/generation "HTTP/1.1 400 Bad Request"
+2026-10-18 21:16:04,716 WARNING mangaflow.providers.image_dashscope 渠道 阿里云百炼 图像生成失败（HTTP 400，model=qwen-image-3.0）：{"re
+quest_id":"29c8e82a-7ff1-9106-ac16-bd3f274563db","code":"InvalidParameter","message":"Model 'qwen-image-3.0-distill' su
+pports 0~3 image content items. Got 4 image items. (0 images = T2I mode, 1~3 images = I2I mode)"}
+2026-10-18 21:16:04,720 WARNING mangaflow.services.model_router 渠道 id=10 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:16:04,721 WARNING mangaflow.tasks.runner 能力 image 渠道 阿里云百炼 生成失败：provider 返回空结果
+INFO:     127.0.0.1:56463 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+2026-10-18 21:16:44,081 INFO httpx HTTP Request: POST https://apihub.agnes-ai.com/v1/images/generations "HTTP/1.1 503 S
+ervice Unavailable"
+2026-10-18 21:16:44,081 WARNING mangaflow.providers.image_agnes 渠道 openai-3 图像生成失败（HTTP 503）：{"error":{"message":"image
+ queue is full, please retry later (request id: 20261018131632100057199KOJnJdyI)","type":"","param":"","code":null}}
+2026-10-18 21:16:44,086 WARNING mangaflow.services.model_router 渠道 id=3 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:16:44,086 WARNING mangaflow.tasks.runner 能力 image 渠道 openai-3 生成失败：provider 返回空结果
+2026-10-18 21:16:45,623 WARNING mangaflow.providers.image_agnes 渠道 mock-6 图像生成异常：Request URL has an unsupported protoco
+l 'local://'.
+2026-10-18 21:16:45,632 WARNING mangaflow.services.model_router 渠道 id=6 调用失败，健康置为 degraded：provider 返回空结果
+2026-10-18 21:16:45,633 WARNING mangaflow.tasks.runner 能力 image 渠道 mock-6 生成失败：provider 返回空结果
+2026-10-18 21:16:45,650 ERROR mangaflow.tasks.runner 任务 233 重试耗尽，终态失败并进入死信队列：图像供应商返回空结果（已尝试全部渠道）
+INFO:     127.0.0.1:61128 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53275 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53274 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57955 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:60678 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51285 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59254 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52187 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52188 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64168 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64166 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64167 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64759 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64757 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64758 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51658 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59341 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51659 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51660 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52956 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52954 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52955 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61348 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61346 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61347 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57870 - "GET /api/notifications/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:53556 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52468 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52469 - "GET /api/projects/32 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:52467 - "GET /api/projects/32/assets HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55173 - "GET /api/bgm HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55171 - "GET /api/projects/32/tasks/stream HTTP/1.1" 200 OK
+INFO:     127.0.0.1:55172 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54313 - "GET /api/billing/wallet HTTP/1.1" 200 OK
+INFO:     127.0.0.1:58039 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54312 - "GET /api/projects/32/storyboards?episode_id=29 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57020 - "GET /api/projects/32/tasks?page=1&page_size=20 HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51861 - "GET /api/notifications/stream HTTP/1.1" 200 OK

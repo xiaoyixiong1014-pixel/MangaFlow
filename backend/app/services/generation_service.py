@@ -11,7 +11,7 @@
 """
 
 import math
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from fastapi import HTTPException, status
@@ -19,8 +19,22 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import LogicalModel, Project, Storyboard, Task, User, Wallet
+from app.models import (
+    AssetVariant,
+    Character,
+    LogicalModel,
+    Project,
+    Prop,
+    Scene,
+    Storyboard,
+    StoryboardCharacter,
+    StoryboardProp,
+    Task,
+    User,
+    Wallet,
+)
 from app.services.billing_service import freeze_points
+from app.services.voice_router import resolve_voice
 
 # 关键帧单价（积分/张）
 IMAGE_COST_PER_FRAME = 10
@@ -127,6 +141,95 @@ async def get_storyboard_of_project(
     if sb is None or sb.project_id != project_id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="分镜不存在")
     return sb
+
+
+# 单镜关键帧参考图上限（角色 + 场景 + 道具合计）。qwen-image-3.0 图生图
+# 模式硬限制 0~3 张图片输入（0=T2I，1~3=I2I，2026-10-18 实测 400 报错），
+# 故上限取 3：排序即重要性（角色 → 场景 → 道具），超出截断
+_KEYFRAME_REF_LIMIT = 3
+
+# 关键帧一致性生成指令（动态追加进正向提示词，不写入 prompt_locked 快照，
+# 存量分镜无需重新拆解即生效；置于锁定层/可编辑层/风格锚点之后）
+CONSISTENCY_DIRECTIVE = (
+    "生成要求：严格按照上述画面描述出图；提供的参考图为该镜绑定角色的定妆照/造型变体图、"
+    "场景概念图与道具标准图，角色外貌与服装、场景环境、道具样式必须与参考图严格保持一致，"
+    "禁止改动参考图中的形象设定；不得新增画面描述与参考图之外的角色、场景元素与物体"
+)
+
+
+async def _resolve_keyframe_references(
+    db: AsyncSession, storyboard_ids: List[int]
+) -> Dict[int, List[str]]:
+    """解析分镜关键帧的多张参考图（角色 + 场景 + 道具，A-04 扩展）。
+
+    关键帧一致性锚点：从资产管理中收集该镜绑定资产的已生成图片，按
+    「角色（绑定顺序，变体图优先）→ 场景概念图 → 道具标准图」排序透传
+    生图渠道（排序即重要性，越靠前权重越高）。无绑定资产的分镜返回
+    空列表（回退纯文本提示词生成，与存量行为一致）。
+
+    Args:
+        db: 异步数据库会话。
+        storyboard_ids: 分镜 ID 列表（批量查询防 N+1）。
+
+    Returns:
+        Dict[int, List[str]]: 分镜 ID → 参考图 URL 列表（无可用图时空列表）。
+
+    Raises:
+        无：数据库查询异常向上抛出（由调用方事务回滚）。
+    """
+    if not storyboard_ids:
+        return {}
+    # 一次联查：分镜 → 场景图 + 角色（定妆照/变体图），按绑定顺序展开
+    rows = (
+        await db.execute(
+            select(
+                Storyboard.id.label("sb_id"),
+                Scene.asset_url.label("scene_url"),
+                StoryboardCharacter.id.label("link_id"),
+                StoryboardCharacter.variant_id,
+                Character.asset_url.label("char_url"),
+                AssetVariant.asset_url.label("variant_url"),
+            )
+            .select_from(Storyboard)
+            .outerjoin(Scene, Scene.id == Storyboard.scene_id)
+            .outerjoin(StoryboardCharacter, StoryboardCharacter.storyboard_id == Storyboard.id)
+            .outerjoin(Character, Character.id == StoryboardCharacter.character_id)
+            .outerjoin(AssetVariant, AssetVariant.id == StoryboardCharacter.variant_id)
+            .where(Storyboard.id.in_(storyboard_ids))
+            .order_by(Storyboard.id.asc(), StoryboardCharacter.id.asc())
+        )
+    ).all()
+    # 道具标准图单独联查（storyboard_props 与角色关联不同表）
+    prop_rows = (
+        await db.execute(
+            select(StoryboardProp.storyboard_id, Prop.asset_url)
+            .join(Prop, Prop.id == StoryboardProp.prop_id)
+            .where(StoryboardProp.storyboard_id.in_(storyboard_ids))
+            .order_by(StoryboardProp.storyboard_id.asc(), StoryboardProp.id.asc())
+        )
+    ).all()
+
+    refs: Dict[int, List[str]] = {}
+    scene_map: Dict[int, str] = {}
+    for sb_id, scene_url, _link_id, variant_id, char_url, variant_url in rows:
+        bucket = refs.setdefault(sb_id, [])
+        if scene_url:
+            scene_map.setdefault(sb_id, scene_url)
+        # 角色图：绑定记录指向变体时优先变体图，回退主定妆照
+        char_ref = (variant_url if variant_id is not None else None) or char_url
+        if char_ref and char_ref not in bucket:
+            bucket.append(char_ref)
+    # 场景概念图插在角色之后（权重顺序：角色 → 场景 → 道具）
+    for sb_id, scene_url in scene_map.items():
+        bucket = refs.setdefault(sb_id, [])
+        if scene_url not in bucket:
+            bucket.append(scene_url)
+    # 道具标准图追加在末尾
+    for sb_id, prop_url in prop_rows:
+        if prop_url and prop_url not in refs.setdefault(sb_id, []):
+            refs[sb_id].append(prop_url)
+    # 截断上限：排序即重要性（角色 → 场景 → 道具），超出部分丢弃
+    return {sb_id: bucket[:_KEYFRAME_REF_LIMIT] for sb_id, bucket in refs.items()}
 
 
 def build_prompt(*parts: Optional[str]) -> str:
@@ -356,16 +459,20 @@ async def create_keyframe_tasks(
 
     await _ensure_no_active_image_task(db, [sb.id for sb in targets], phase)
 
+    # A-04 扩展：批量解析各镜绑定角色参考图（定妆照/变体图）供生图渠道锚定
+    ref_map = await _resolve_keyframe_references(db, [sb.id for sb in targets])
+
     total_cost = len(targets) * IMAGE_COST_PER_FRAME
     await _precheck_balance(db, project.user_id, total_cost)
 
     tasks: List[Task] = []
     for sb in targets:
-        # 提示词分层拼接：锁定层 + 可编辑层（trial 用请求值，full 用分镜自身字段）+ 风格锚点；
+        # 提示词分层拼接：锁定层 + 可编辑层（trial 用请求值，full 用分镜自身字段）+ 风格锚点
+        # + 一致性生成指令（动态追加，存量分镜即时生效）；
         # 方案 B：负面排除段从锁定层剥离，单独入 meta 供执行器透传
         editable = prompt_editable if phase == "trial" else sb.prompt_editable
         locked_positive, locked_negative = split_prompt_negative(sb.prompt_locked)
-        prompt = build_prompt(locked_positive, editable, project.style)
+        prompt = build_prompt(locked_positive, editable, project.style, CONSISTENCY_DIRECTIVE)
         idem = f"keyframe_{sb.id}_{phase}_{uuid4().hex[:8]}"
         task = await freeze_and_create_task(
             db,
@@ -377,6 +484,10 @@ async def create_keyframe_tasks(
             meta={
                 "prompt": prompt,
                 "negative_prompt": locked_negative,
+                # A-04 扩展：绑定资产参考图组（角色[变体优先]→场景→道具，无图为空列表）
+                "reference_image_urls": ref_map.get(sb.id) or [],
+                # 输出画幅跟随项目配置（9:16/16:9/1:1，渠道映射输出尺寸）
+                "aspect_ratio": project.aspect_ratio,
                 "target_type": "storyboard_keyframe",
                 "target_id": sb.id,
             },
@@ -496,7 +607,9 @@ async def create_end_frame_task(
     await _precheck_balance(db, project.user_id, total_cost)
     # 方案 B：负面排除段从锁定层剥离，单独入 meta
     locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
-    prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style)
+    prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style, CONSISTENCY_DIRECTIVE)
+    # A-04 扩展：尾帧与关键帧共用同镜绑定资产参考图（形象一致）
+    ref_map = await _resolve_keyframe_references(db, [storyboard.id])
     return await freeze_and_create_task(
         db,
         project=project,
@@ -507,6 +620,10 @@ async def create_end_frame_task(
         meta={
             "prompt": prompt,
             "negative_prompt": locked_negative,
+            # A-04 扩展：绑定资产参考图组（角色[变体优先]→场景→道具）
+            "reference_image_urls": ref_map.get(storyboard.id) or [],
+            # 输出画幅跟随项目配置
+            "aspect_ratio": project.aspect_ratio,
             "target_type": "storyboard_end_frame",
             "target_id": storyboard.id,
             "storyboard_id": storyboard.id,
@@ -521,17 +638,23 @@ async def create_tts_task(
     *,
     project: Project,
     storyboard: Storyboard,
-    voice: str,
+    voice: Optional[str],
     speed: float,
     pitch: float,
 ) -> Task:
     """创建配音（TTS）生成任务（成本 = ceil(字数/100)×5 积分）。
 
+    音色路由（角色圣经 voice_note）：voice 显式传入时直接使用（用户在前端
+    手动指定）；未指定（None/空）时按分镜第一个绑定角色的「音色设定 +
+    性别」经 voice_router.resolve_voice 自动路由（角色圣经 voice_note 由
+    角色设定 agent 生成，配音选音色的依据），无绑定角色/无音色设定时回退
+    female_01。
+
     Args:
         db: 异步数据库会话。
         project: 归属项目。
         storyboard: 目标分镜（文本取 dialogue，为空回退 visual_description）。
-        voice: 音色标识 male_01 / female_01。
+        voice: 音色标识（male_01/male_02/female_01/female_02；None/空=按角色自动路由）。
         speed: 语速倍率。
         pitch: 音调倍率。
 
@@ -544,6 +667,24 @@ async def create_tts_task(
     text = (storyboard.dialogue or "").strip() or (storyboard.visual_description or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该分镜无可配音文本（对白与画面描述均为空）")
+    resolved_voice = (voice or "").strip()
+    voice_note_used: Optional[str] = None
+    if not resolved_voice:
+        # 自动路由：分镜第一个绑定角色（拆解时按对白 speaker 关联）的音色设定
+        first_char = (
+            await db.execute(
+                select(Character)
+                .join(StoryboardCharacter, StoryboardCharacter.character_id == Character.id)
+                .where(StoryboardCharacter.storyboard_id == storyboard.id)
+                .order_by(StoryboardCharacter.id.asc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if first_char is not None:
+            voice_note_used = first_char.voice_note
+            resolved_voice = resolve_voice(first_char.voice_note, first_char.gender)
+        else:
+            resolved_voice = "female_01"
     cost = max(1, math.ceil(len(text) / 100) * TTS_COST_PER_100_CHARS)
     await _precheck_balance(db, project.user_id, cost)
     return await freeze_and_create_task(
@@ -555,10 +696,11 @@ async def create_tts_task(
         storyboard_id=storyboard.id,
         meta={
             "text": text,
-            "voice": voice,
+            "voice": resolved_voice,
             "speed": speed,
             "pitch": pitch,
             "storyboard_id": storyboard.id,
+            **({"voice_note": voice_note_used} if voice_note_used else {}),
         },
         idempotency_key=f"tts_{storyboard.id}_{uuid4().hex[:8]}",
     )
@@ -719,6 +861,9 @@ async def render_stale_storyboards(
     total_cost = len(target_ids) * IMAGE_COST_PER_FRAME
     await _precheck_balance(db, project.user_id, total_cost)
 
+    # A-04 扩展：批量解析重渲染镜头的绑定角色参考图（定妆照/变体图）
+    ref_map = await _resolve_keyframe_references(db, target_ids)
+
     queued_ids: List[int] = []
     target_set = set(target_ids)
     for o in outs:
@@ -729,7 +874,7 @@ async def render_stale_storyboards(
             continue
         # 方案 B：负面排除段从锁定层剥离，单独入 meta
         locked_positive, locked_negative = split_prompt_negative(sb.prompt_locked)
-        prompt = build_prompt(locked_positive, sb.prompt_editable, project.style)
+        prompt = build_prompt(locked_positive, sb.prompt_editable, project.style, CONSISTENCY_DIRECTIVE)
         await freeze_and_create_task(
             db,
             project=project,
@@ -740,6 +885,10 @@ async def render_stale_storyboards(
             meta={
                 "prompt": prompt,
                 "negative_prompt": locked_negative,
+                # A-04 扩展：绑定资产参考图组（角色[变体优先]→场景→道具）
+                "reference_image_urls": ref_map.get(sb.id) or [],
+                # 输出画幅跟随项目配置
+                "aspect_ratio": project.aspect_ratio,
                 "target_type": "storyboard_keyframe",
                 "target_id": sb.id,
                 # P0-3 溯源：标记本次入队为过期重渲染

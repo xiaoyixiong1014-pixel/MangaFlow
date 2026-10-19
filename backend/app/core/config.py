@@ -171,6 +171,14 @@ class Settings(BaseSettings):
     # 产品成功上线后于 backend/.env 或环境变量设 PUNISHMENT_ENABLED=true 即可重新启用。
     punishment_enabled: bool = False
 
+    # 生成渠道全失败时的本地 mock 占位兜底（演示模式）。
+    # False（默认）：真实渠道全部失败时任务落 failed（平台退款，可在任务面板重试），
+    # 不再产出「演示占位」图污染分镜；仅当降级链完全为空（未配置任何渠道）时
+    # 仍追加 mock 哨兵，保证全新部署开箱可用。
+    # True：恢复旧行为——链尾恒追加 mock 哨兵（开发联调/纯演示部署使用，
+    # 测试套件经 conftest autouse fixture 强制开启）。
+    mock_fallback_enabled: bool = False
+
     # 启动钩子开关：lifespan 在 create_all 之前可选执行 Alembic 迁移（alembic upgrade
     # head，程序化 API）。默认 False 保持现状（仅 create_all + 幂等补列），生产部署
     # 可设 ALEMBIC_ON_STARTUP=true 或由部署流水线在启动前显式执行迁移

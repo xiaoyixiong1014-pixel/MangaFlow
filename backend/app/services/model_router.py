@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.crypto import decrypt_text
 from app.core.metrics import set_channel_health
-from app.models import LogicalModel, ModelChannel
+from app.models import LogicalModel, ModelChannel, User
 from app.schemas.model_config import SUPPORTED_CHANNEL_PROTOCOLS
 
 logger = logging.getLogger("mangaflow.services.model_router")
@@ -136,6 +136,64 @@ def mock_sentinel(capability: str) -> ResolvedChannel:
     )
 
 
+async def _resolve_own_channels(
+    session: AsyncSession,
+    capability: str,
+    user_id: Optional[int],
+    seen_ids: set,
+) -> List[ResolvedChannel]:
+    """解析用户自有渠道段（内部函数，能力键匹配按 id 升序插链首）。
+
+    加载该用户自有的受支持协议渠道（enabled、非 down、models 目录含对应
+    能力键），解密 Key 后组装 ResolvedChannel 列表；官方无逻辑模型的能力
+    （如 2026-10-19 精简后的语音）同样生效。
+
+    Args:
+        session: 异步数据库会话。
+        capability: 能力类型（llm/image/video/tts）。
+        user_id: 用户 ID；None 返回空列表。
+        seen_ids: 共享去重集合（自有渠道 id 写入，供平台段去重）。
+
+    Returns:
+        List[ResolvedChannel]: 自有渠道视图列表（可能为空）。
+
+    Raises:
+        无：目录结构异常的渠道跳过。
+    """
+    if user_id is None:
+        return []
+    cap_key = _CAPABILITY_MODELS_KEY.get(capability)
+    own_rows = (
+        await session.execute(
+            select(ModelChannel)
+            .where(
+                ModelChannel.owner_user_id == user_id,
+                ModelChannel.protocol.in_(SUPPORTED_CHANNEL_PROTOCOLS),
+                ModelChannel.enabled.is_(True),
+                ModelChannel.health_status != "down",
+            )
+            .order_by(ModelChannel.id)
+        )
+    ).scalars().all()
+    own_chain: List[ResolvedChannel] = []
+    for channel in own_rows:
+        models = channel.models if isinstance(channel.models, dict) else {}
+        if not cap_key or not isinstance(models.get(cap_key), (list, tuple)) or not models.get(cap_key):
+            continue
+        seen_ids.add(channel.id)
+        own_chain.append(ResolvedChannel(
+            channel_id=channel.id,
+            name=channel.name or f"own-{channel.id}",
+            protocol=channel.protocol,
+            base_url=channel.base_url,
+            api_key=_decrypt_key(channel.api_key_encrypted),
+            model=_extract_default_model(models) or "",
+            capability=capability,
+            owner_user_id=user_id,
+        ))
+    return own_chain
+
+
 async def resolve_channels_chain(
     session: AsyncSession,
     capability: str,
@@ -153,6 +211,10 @@ async def resolve_channels_chain(
     自有的 openai 协议渠道（enabled、非 down、models 目录含对应能力键），按
     id 升序插入链首——自有 Key 免生成积分，优先消耗；随后拼接平台渠道链
     （按 id 去重），全部失败仍由调用方追加 mock 哨兵兜底。
+
+    用户停用系统模型（2026-10-18）：user.disabled_model_ids 含该逻辑模型 ID
+    时跳过平台渠道段（仅自有渠道参与 + mock 兜底），实现「用自己的还是
+    系统的」按模型粒度选择。
 
     Args:
         session: 异步数据库会话（由调用方管理事务）。
@@ -178,45 +240,36 @@ async def resolve_channels_chain(
                 )
             )
         ).scalar_one_or_none()
-    if logical is None:
-        logger.warning("能力 %s 未找到可用逻辑模型，渠道链为空", capability)
-        return []
 
-    priority = logical.channel_priority if isinstance(logical.channel_priority, list) else []
+    # 自有渠道段（官方无模型的能力也解析：如语音/视频官方已精简，
+    # 用户经「添加模型」接入的自有渠道直接生效）
     chain: List[ResolvedChannel] = []
     seen_ids: set = set()
+    chain.extend(await _resolve_own_channels(session, capability, user_id, seen_ids))
 
-    # 自有渠道优先：用户本人的 LLM 渠道（openai chat / openai responses /
-    # anthropic messages 三种协议），models 目录含对应能力键即参与该能力
+    if logical is None:
+        # 官方未配置该能力逻辑模型：仅自有渠道参与（调用方链尾 mock 兜底）
+        logger.info("能力 %s 无官方逻辑模型，仅用户自有渠道参与路由", capability)
+        return chain
+
+    # 用户停用检查：该逻辑模型的平台渠道段是否被当前用户停用
+    platform_disabled = False
     if user_id is not None:
-        cap_key = _CAPABILITY_MODELS_KEY.get(capability)
-        own_rows = (
-            await session.execute(
-                select(ModelChannel)
-                .where(
-                    ModelChannel.owner_user_id == user_id,
-                    ModelChannel.protocol.in_(SUPPORTED_CHANNEL_PROTOCOLS),
-                    ModelChannel.enabled.is_(True),
-                    ModelChannel.health_status != "down",
-                )
-                .order_by(ModelChannel.id)
-            )
-        ).scalars().all()
-        for channel in own_rows:
-            models = channel.models if isinstance(channel.models, dict) else {}
-            if not cap_key or not isinstance(models.get(cap_key), (list, tuple)) or not models.get(cap_key):
-                continue
-            seen_ids.add(channel.id)
-            chain.append(ResolvedChannel(
-                channel_id=channel.id,
-                name=channel.name or f"own-{channel.id}",
-                protocol=channel.protocol,
-                base_url=channel.base_url,
-                api_key=_decrypt_key(channel.api_key_encrypted),
-                model=_extract_default_model(models) or "",
-                capability=capability,
-                owner_user_id=user_id,
-            ))
+        user = await session.get(User, user_id)
+        raw = user.disabled_model_ids if user else None
+        if isinstance(raw, list):
+            try:
+                platform_disabled = logical.id in {int(mid) for mid in raw}
+            except (TypeError, ValueError):
+                platform_disabled = False
+
+    priority = logical.channel_priority if isinstance(logical.channel_priority, list) else []
+
+    # 平台渠道段：被用户停用时整体跳过（仅自有渠道参与，链尾 mock 兜底）
+    if platform_disabled:
+        logger.info("逻辑模型 %s（id=%s）已被用户 %s 停用，跳过平台渠道段",
+                    logical.name, logical.id, user_id)
+        return chain
 
     for raw_id in priority:
         try:
@@ -248,8 +301,8 @@ async def resolve_channels_chain(
     return chain
 
 
-async def get_user_llm_channel_tuples(user_id: Optional[int]) -> List[Tuple[str, str, str, str, str]]:
-    """获取用户自有 LLM 渠道五元组（供 AgentLLM 前置注入默认渠道链）。
+async def get_user_llm_channel_tuples(user_id: Optional[int]) -> Tuple[List[Tuple[str, str, str, str, str]], bool]:
+    """获取用户自有 LLM 渠道五元组与默认链追加标记（供 AgentLLM 前置注入）。
 
     独立短会话查询（调用方多为无请求级会话的 Agent 上下文）：加载该用户
     自有 LLM 渠道（协议 openai chat / openai responses / anthropic messages，
@@ -257,18 +310,22 @@ async def get_user_llm_channel_tuples(user_id: Optional[int]) -> List[Tuple[str,
     (base_url, api_key, 首个模型名, 渠道名, 协议) 列表，按 id 升序。查询或
     解密异常均收敛为空列表，不阻断默认渠道链。
 
+    用户停用系统模型（2026-10-18）：llm 能力默认逻辑模型被用户停用时
+    append_default=False（AgentLLM 不再拼接平台默认链，仅自有渠道参与，
+    自有渠道也失败则任务侧 mock 兜底）。
+
     Args:
         user_id: 用户 ID；None 直接返回空列表。
 
     Returns:
-        List[Tuple[str, str, str, str, str]]: 与 providers.llm._channels() 同构的
-            渠道五元组列表（可能为空）。
+        Tuple[List[Tuple[str, str, str, str, str]], bool]: (自有渠道五元组列表,
+            是否追加平台默认链)。
 
     Raises:
         无：全部异常内部捕获。
     """
     if user_id is None:
-        return []
+        return [], True
     try:
         from app.core.database import SessionLocal
 
@@ -301,10 +358,26 @@ async def get_user_llm_channel_tuples(user_id: Optional[int]) -> List[Tuple[str,
                     channel.name or f"own-{channel.id}",
                     channel.protocol,
                 ))
-            return tuples
+            # 默认链追加判断：llm 能力默认逻辑模型被用户停用时不追加
+            append_default = True
+            user = await session.get(User, user_id)
+            raw = user.disabled_model_ids if user else None
+            if user is not None and isinstance(raw, list):
+                disabled = {int(mid) for mid in raw if str(mid).lstrip("-").isdigit()}
+                default_llm = (
+                    await session.execute(
+                        select(LogicalModel).where(
+                            LogicalModel.capability == "llm",
+                            LogicalModel.is_default.is_(True),
+                        )
+                    )
+                ).scalar_one_or_none()
+                if default_llm is not None and default_llm.id in disabled:
+                    append_default = False
+            return tuples, append_default
     except Exception:  # noqa: BLE001 —— 自有渠道加载失败不应阻断默认渠道链
         logger.exception("加载用户自有 LLM 渠道失败（user_id=%s），跳过前置注入", user_id)
-        return []
+        return [], True
 
 
 async def record_result(

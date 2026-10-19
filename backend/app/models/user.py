@@ -8,7 +8,7 @@ orders（订单）、operation_logs（操作日志）。
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, Numeric, SmallInteger, String, TIMESTAMP, Text
+from sqlalchemy import BigInteger, CheckConstraint, ForeignKey, Index, Integer, Numeric, SmallInteger, String, TIMESTAMP, Text, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -64,6 +64,9 @@ class User(Base):
     violation_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0",
         comment="内容违规累计次数（C-04：1-2 次受限、≥3 次禁用）")
+    disabled_model_ids: Mapped[Optional[dict]] = mapped_column(
+        JSONB, nullable=True, server_default=text("'[]'::jsonb"),
+        comment="用户停用的逻辑模型 ID 数组（JSONB；NULL/[]=全部启用，生成时跳过其平台渠道链）")
     last_login_at: Mapped[Optional[datetime]] = mapped_column(
         TIMESTAMP(timezone=True), nullable=True, comment="最近登录时间")
 

@@ -99,23 +99,88 @@ _CHARACTER_PLANNER_SYSTEM_PROMPT = (
     '"age":"约30岁",'
     '"personality":"性格设定","appearance":"形象特征（发型/五官/体型/肤色等)",'
     '"outfit":"服装配饰完整拆解（上装/下装/鞋履/配饰/标志性物品，逐项列明）",'
-    '"style_note":"风格与画质特点（画风/光线/画质关键词，如赛璐璐动漫、柔光、高细节）",'
+    '"style_note":"风格与画质特点（画风/光线/画质关键词）",'
+    '"voice_note":"音色设定（声音性别+年龄感+音色质地+说话习惯，一句话量身定制）",'
     '"motivation":"行为动机",'
     '"arc":"人物弧光","relations":[{"target":"对方角色名","relation":"关系描述"}]}]}\n'
     "要求：4~8 个角色；主角（role_type 取 lead）至少 1 名；"
     "role_type 只能取 lead/support/villain/extra；"
-    "gender 必须依据角色名与人设明确判定（男性/女性/中性三选一），"
-    "用于生图时准确把握人物性别特征；"
+    "gender 必须依据角色名、人称用词与人设语境权威判定（男性/女性/中性三选一，"
+    "如女性名字/女主角/她 等一律判女性），用于生图时准确把握人物性别特征；"
     "appearance/outfit/style_note 是角色圣经的视觉三段：appearance 写清发型、"
     "五官、体型、肤色等形象特征；outfit 逐项拆解服装与配饰（上装/下装/鞋履/"
     "配饰/标志性物品，具体到颜色与材质）；style_note 写明该角色出图的画风、"
     "光线与画质关键词（须与项目视觉风格一致）；三段内容将直接用于跨镜头生图"
     "一致性锁定，务必具体可画；"
+    "voice_note 是配音选音色的依据，必须为该角色量身定制：开头的声音性别"
+    "与年龄感必须与 gender 严格一致（gender=女性 → 只能写女声，如青年女声/"
+    "少女音/成熟女声；gender=男性 → 只能写男声；严禁女性角色写成男声或反之），"
+    "随后结合该角色的职业、性格与年龄给出独特的音色质地（如清亮/低沉/沙哑/"
+    "慵懒/威严）与说话习惯（语速/口癖），禁止套用固定句式或与人物无关的"
+    "通用描述；"
     "relations 的 target 必须指向班底中的其他角色名；全部使用中文。"
 )
 
 # 角色定位合法取值白名单（与 characters.role_type 列 CHECK 约束一致）
 _ROLE_TYPES = frozenset({"lead", "support", "villain", "extra"})
+
+# 高置信女性名用字表（启发式性别兜底：这些字在中文男性名中极罕见，
+# 命中即强制 gender=女性，防止 LLM 对女性角色误判性别——如「林小汐」被判男性）
+_FEMALE_NAME_CHARS = frozenset(
+    "汐雪婷雅琳瑶娜静丽娟媛蕊薇雯霞玲菲怡彤萱琪悦欣月萌蕾璐瑾滢岚洁慧颖燕婉娴嫣妍姝婵"
+)
+
+
+def _infer_gender_from_name(name: str) -> Optional[str]:
+    """依据角色名启发式推断性别（女性名用字兜底，内部辅助）。
+
+    场景：LLM 对性别判定不可靠（上下文污染/名字误读），如女主角「林小汐」
+    被写成男性；此处用高置信女名用字表做代码级纠偏，仅对「女性」做强制
+    判定（男性名用字误判率高，不做反向强制）。
+
+    Args:
+        name: 角色名。
+
+    Returns:
+        Optional[str]: 命中女性名用字返回「女性」；否则返回 None（不干预）。
+
+    Raises:
+        无。
+    """
+    if any(ch in _FEMALE_NAME_CHARS for ch in name):
+        return "女性"
+    return None
+
+
+def _enforce_voice_gender(voice_note: Optional[str], gender: Optional[str]) -> Optional[str]:
+    """强制 voice_note 的声音性别与 gender 一致（文本级兜底，内部辅助）。
+
+    LLM 可能写出与 gender 矛盾的音色（gender=女性却写「青年男声」），
+    此处对声音性别关键词做定向替换，保留其余音色质地/说话习惯描述：
+    - 女性：男声→女声、男音→女音；
+    - 男性：少女音→少年音、女声→男声、女音→男音。
+
+    Args:
+        voice_note: 音色设定文本（可为 None）。
+        gender: 性别（男性/女性/中性，可为 None）。
+
+    Returns:
+        Optional[str]: 纠正后的音色设定（无矛盾时原样返回；入参为 None 返回 None）。
+
+    Raises:
+        无。
+    """
+    if not voice_note or not gender:
+        return voice_note
+    if gender == "女性":
+        return voice_note.replace("男声", "女声").replace("男音", "女音")
+    if gender == "男性":
+        return (
+            voice_note.replace("少女音", "少年音")
+            .replace("女声", "男声")
+            .replace("女音", "男音")
+        )
+    return voice_note
 
 # 重试温度序列：首次 0.8，重试 2 次（共 3 次尝试）温度递增至 1.0
 _TEMPERATURES = (0.8, 1.0, 1.0)
@@ -352,15 +417,25 @@ def _normalize_character_candidates(data: dict) -> List[dict]:
             text = str(value or "").strip()[:limit]
             return text or None
 
+        # 性别权威兜底：女性名用字启发式纠正 LLM 误判（如「林小汐」被判男性），
+        # voice_note 的声音性别再与纠正后的 gender 硬校验（_enforce_voice_gender）
+        gender = _clean_str(item.get("gender"), 10)
+        if gender != "女性":
+            inferred = _infer_gender_from_name(name)
+            if inferred:
+                gender = inferred
+        voice_note = _clean_str(item.get("voice_note"), 200)
+
         result.append({
             "name": name[:50],
             "role_type": role_type,
-            "gender": _clean_str(item.get("gender"), 10),
+            "gender": gender,
             "age": _clean_str(item.get("age"), 20),
             "personality": _clean_str(item.get("personality"), 500),
             "appearance": _clean_str(item.get("appearance"), 500),
             "outfit": _clean_str(item.get("outfit"), 500),
             "style_note": _clean_str(item.get("style_note"), 300),
+            "voice_note": _enforce_voice_gender(voice_note, gender),
             "motivation": _clean_str(item.get("motivation"), 500),
             "arc": _clean_str(item.get("arc"), 500),
             "relations": relations,

@@ -158,6 +158,26 @@ async def task_runner(test_engine: AsyncEngine) -> AsyncGenerator[None, None]:
 # ---------------------------------------------------------------------------
 # 函数级夹具：数据库会话 / HTTP 客户端 / 账号
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _enable_mock_fallback(monkeypatch):
+    """测试环境恒开启 mock 哨兵兜底（演示占位），保持占位语义用例行为。
+
+    生产默认关闭（settings.mock_fallback_enabled=False，渠道全失败任务落
+    failed 不出占位图）；测试库渠道多为不可达假 Key 渠道，依赖链尾 mock
+    哨兵产出占位产物以断言计费豁免 / placeholder 打标 / 余额不变等行为。
+
+    Args:
+        monkeypatch: pytest 打桩器（还原 settings 属性）。
+
+    Returns:
+        None。
+
+    Raises:
+        无。
+    """
+    monkeypatch.setattr(settings, "mock_fallback_enabled", True)
+
+
 @pytest_asyncio.fixture
 async def db(test_engine: AsyncEngine) -> AsyncGenerator[AsyncSession, None]:
     """函数级夹具：为单个用例提供独立 AsyncSession，用例结束后清空全部表。
@@ -348,6 +368,10 @@ async def create_project(
 async def insert_storyboard(db: AsyncSession, project_id: int, sequence: int = 1, **overrides: Any):
     """直接 ORM 插入一条分镜（合成/生成链路的前置数据，绕过 LLM 拆解）。
 
+    附带把项目状态推进到 producing（生成阶段门禁：create_keyframe_tasks
+    强校验项目状态，未确认分镜的项目 400）——与真实用户「确认分镜，进入
+    生成」后的状态等价，test_generation 等用例自身的 confirm 重复调用幂等。
+
     Args:
         db: 测试库会话。
         project_id: 归属项目 ID。
@@ -360,7 +384,7 @@ async def insert_storyboard(db: AsyncSession, project_id: int, sequence: int = 1
     Raises:
         Exception: 数据库写入异常向上抛出。
     """
-    from app.models import Storyboard
+    from app.models import Project, Storyboard
 
     sb = Storyboard(
         project_id=project_id,
@@ -377,6 +401,11 @@ async def insert_storyboard(db: AsyncSession, project_id: int, sequence: int = 1
     )
     db.add(sb)
     await db.commit()
+    # 推进生成阶段门禁：项目状态置 producing（与「确认分镜」终态等价）
+    proj = await db.get(Project, project_id)
+    if proj is not None and proj.status != "producing":
+        proj.status = "producing"
+        await db.commit()
     await db.refresh(sb)
     return sb
 

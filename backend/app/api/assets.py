@@ -339,6 +339,8 @@ async def update_character(
         character.outfit = req.outfit
     if req.style_note is not None:
         character.style_note = req.style_note
+    if req.voice_note is not None:
+        character.voice_note = req.voice_note
     if req.aliases is not None:
         character.aliases = req.aliases
     if req.reference_image_url is not None:

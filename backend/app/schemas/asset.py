@@ -107,6 +107,7 @@ class CharacterOut(BaseModel):
     tags: TagsOutField = Field(default_factory=list)
     outfit: Optional[str] = None
     style_note: Optional[str] = None
+    voice_note: Optional[str] = None
     # 角色性别（agent 角色设定生成：男性/女性/中性；生图提示词性别锚定）
     gender: Optional[str] = None
     created_at: Optional[datetime] = None
@@ -250,6 +251,7 @@ class CharacterUpdateRequest(BaseModel):
         tags: 资产标签数组（A-05；None 不修改，数组整体替换）。
         outfit: 服装配饰完整拆解（角色圣经视觉段，None 不修改）。
         style_note: 风格与画质特点（角色圣经视觉段，None 不修改）。
+        voice_note: 音色设定（配音选音色依据，None 不修改）。
     """
 
     name: Optional[str] = Field(default=None, min_length=1, max_length=50)
@@ -263,6 +265,8 @@ class CharacterUpdateRequest(BaseModel):
                                   description="服装配饰完整拆解（角色圣经视觉段）")
     style_note: Optional[str] = Field(default=None, max_length=1000,
                                       description="风格与画质特点（角色圣经视觉段）")
+    voice_note: Optional[str] = Field(default=None, max_length=500,
+                                      description="音色设定（配音选音色依据）")
 
 
 class SceneCreateRequest(BaseModel):

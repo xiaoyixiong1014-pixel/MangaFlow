@@ -87,7 +87,7 @@ async def _count_project_scripts(db, project_id: int) -> int:
 def _stub_llm_shots(monkeypatch):
     """打桩 _llm_shots：每场景固定返回 1 镜，不触达真实 LLM。"""
 
-    async def _fake_llm_shots(scene):
+    async def _fake_llm_shots(scene, character_profiles=None):
         return [{
             "shot_type": "中景",
             "camera_movement": "固定",

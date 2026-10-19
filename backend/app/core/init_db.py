@@ -126,10 +126,10 @@ async def seed_data() -> None:
             ))
             logger.info("种子模型渠道 id=1（DeepSeek）已创建")
 
-        # ---------- 2.1 平台渠道扩展（id=2~5 真实渠道 + id=6~8 本地 mock 渠道） ----------
-        # models 目录沿用渠道 1 的 {"能力键": [模型名]} 结构；真实渠道初始健康
-        # 状态为 unknown（等待探测），mock 渠道恒为 healthy；mock 渠道无 Key，
-        # api_key_encrypted 按 nullable 列约束置 NULL
+        # ---------- 2.1 平台渠道扩展（id=2~4：Agnes 文本/图像/视频真实渠道） ----------
+        # 2026-10-19 官方模型精简：mock 渠道（6~8）、百炼 TTS（5）、百炼 wan 视频（9）
+        # 全部移除——语音/视频由用户经「添加模型」以自有渠道接入；models 目录沿用
+        # 渠道 1 的 {"能力键": [模型名]} 结构；真实渠道初始健康状态为 unknown（等待探测）
         seed_channels = [
             (2, "openai", settings.agnes_llm_base_url, settings.agnes_llm_api_key,
              {"chat": ["agnes-3.0-flash"]}, "unknown"),
@@ -137,15 +137,6 @@ async def seed_data() -> None:
              {"image": ["agnes-image-2.5-flash"]}, "unknown"),
             (4, "openai", settings.agnes_video_base_url, settings.agnes_video_api_key,
              {"video": ["agnes-video-2.5-flash"]}, "unknown"),
-            (5, "openai", settings.bailian_tts_base_url, settings.bailian_tts_api_key,
-             {"tts": [settings.bailian_tts_model]}, "unknown"),
-            # id=9：百炼视频渠道（wan2.7-i2v 图生视频，DashScope 原生异步协议，
-            # base_url 为根域名 /api/v1/... 原生路径；Key 与 TTS 渠道共用）
-            (9, "dashscope", settings.bailian_wan_base_url, settings.bailian_tts_api_key,
-             {"video": [settings.bailian_wan_model]}, "unknown"),
-            (6, "mock", "local://mock", None, {"image": ["mock-image"]}, "healthy"),
-            (7, "mock", "local://mock", None, {"video": ["mock-video"]}, "healthy"),
-            (8, "mock", "local://mock", None, {"tts": ["mock-tts"]}, "healthy"),
         ]
         for cid, protocol, base_url, api_key, models, health in seed_channels:
             if await session.get(ModelChannel, cid):
@@ -165,28 +156,14 @@ async def seed_data() -> None:
             ))
             logger.info("种子模型渠道 id=%d（%s %s）已创建", cid, protocol, base_url)
 
-        # ---------- 3. 逻辑模型（基础四条；image/video/tts 的 mock 备选链指向 mock 渠道 6~8） ----------
+        # ---------- 3. 逻辑模型（官方精简后仅 llm deepseek-chat；图像/视频由
+        # 3.1 段种子 Agnes 默认模型；语音无官方模型——用户经「添加模型」接入） ----------
         seed_models = [
             ("llm", "deepseek-chat", True,
              {"input_per_1k": 1, "output_per_1k": 2},
              "通用文本创作，适用于剧本生成、拆解与对话",
              "https://api-docs.deepseek.com",
              [1]),
-            ("image", "mock-image", False,
-             {"per_image": 10},
-             "本地占位图像生成模型（Mock），用于开发联调与兜底",
-             None,
-             [6]),
-            ("video", "mock-video", False,
-             {"per_second": 20},
-             "本地占位视频生成模型（Mock），用于开发联调与兜底",
-             None,
-             [7]),
-            ("tts", "mock-tts", False,
-             {"per_100_chars": 5},
-             "本地占位配音模型（Mock），用于开发联调与兜底",
-             None,
-             [8]),
         ]
         for capability, name, is_default, price, scene_desc, doc_url, priority in seed_models:
             exists = await session.scalar(
@@ -206,7 +183,7 @@ async def seed_data() -> None:
             ))
             logger.info("种子逻辑模型 %s/%s 已创建", capability, name)
 
-        # ---------- 3.1 逻辑模型扩展（llm 降级链补 Agnes 兜底；image/video/tts 增设真实默认模型） ----------
+        # ---------- 3.1 逻辑模型扩展（llm 降级链补 Agnes 兜底；image/video 增设 Agnes 默认模型） ----------
         # llm 主模型 deepseek-chat 降级链：DeepSeek(1) → Agnes 文本(2)；
         # 兼容旧种子名 deepseek-flash（2026-10-10 实测该模型名网关空回复，现役为 deepseek-chat）
         lm = await session.scalar(
@@ -223,27 +200,21 @@ async def seed_data() -> None:
             lm.channel_priority = [1, 2]
             logger.info("逻辑模型 llm/deepseek-flash 降级链已更新为 [1, 2]")
 
-        # image/video/tts 新增真实模型为各能力默认（部分唯一索引 idx_lm_default
-        # 要求同能力仅一行默认，故先降级既有 mock 默认为备选再插入）
+        # image/video 官方默认：Agnes 渠道直连（2026-10-19 官方精简：去 wan 视频
+        # 与 mock 兜底，视频/语音由用户自有渠道接入；同能力互斥默认 idx_lm_default
+        # 要求仅一行默认，先降级既有默认再插入）
         seed_real_models = [
-            ("image", "agnes-image-2.5-flash", 6,
+            ("image", "agnes-image-2.5-flash", 3,
              {"per_image": 10},
              "Agnes 竖版图像生成，适用于角色定妆与分镜关键帧",
-             [3, 6], "https://apihub.agnes-ai.com"),
-            # video 默认：百炼 wan2.7-i2v 图生视频（首帧驱动，本地关键帧以
-            # base64 传入）；Agnes 渠道免费队列高峰常满载（video_queue_full），
-            # 保留为链中备选，mock 兜底
-            ("video", "wan2.7-i2v", 7,
+             [3], "https://apihub.agnes-ai.com"),
+            ("video", "agnes-video-2.5-flash", 4,
              {"per_second": 20},
-             "阿里云百炼通义万相图生视频，以分镜关键帧为首帧驱动动态化",
-             [9, 4, 7], None),
-            ("tts", "qwen-audio-3.1-tts-flash", 8,
-             {"per_100_chars": 5},
-             "阿里云百炼语音合成，适用于台词配音",
-             [5, 8], None),
+             "Agnes 竖版视频生成，适用于分镜动态化",
+             [4], "https://apihub.agnes-ai.com"),
         ]
-        for capability, name, mock_channel_id, price, scene_desc, priority, doc_url in seed_real_models:
-            # 同能力互斥默认：既有 mock 默认模型降为备选（仅指向本地 mock 渠道）
+        for capability, name, fallback_channel_id, price, scene_desc, priority, doc_url in seed_real_models:
+            # 同能力互斥默认：既有默认模型降为备选（指向本能力 Agnes 渠道）
             old_default = await session.scalar(
                 select(LogicalModel).where(
                     LogicalModel.capability == capability, LogicalModel.is_default.is_(True)
@@ -251,9 +222,9 @@ async def seed_data() -> None:
             )
             if old_default is not None and old_default.name != name:
                 old_default.is_default = False
-                old_default.channel_priority = [mock_channel_id]
+                old_default.channel_priority = [fallback_channel_id]
                 logger.info("逻辑模型 %s/%s 已降为备选（priority=[%d]）",
-                            capability, old_default.name, mock_channel_id)
+                            capability, old_default.name, fallback_channel_id)
             exists = await session.scalar(
                 select(LogicalModel).where(LogicalModel.capability == capability, LogicalModel.name == name)
             )
@@ -537,6 +508,12 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("characters",
      "COMMENT ON COLUMN characters.gender IS "
      "'角色性别（男性/女性/中性；角色设定 agent 生成）'"),
+    # ---------- 角色音色设定（2026-10-18：配音 agent 按角色选音色的依据） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS voice_note TEXT"),
+    ("characters",
+     "COMMENT ON COLUMN characters.voice_note IS "
+     "'音色设定（角色圣经：性别/年龄感/音色质地/说话习惯，配音路由依据）'"),
     ("characters",
      "COMMENT ON COLUMN characters.style_note IS "
      "'风格与画质特点（角色圣经：画风/光线/画质关键词）'"),
@@ -768,6 +745,13 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("storyboards",
      "COMMENT ON COLUMN storyboards.audio IS "
      "'声音结构化信息：{sfx: 音效列表, emotion: 情绪标签}'"),
+    # ---------- 模型配置优化（2026-10-18）：系统模型按用户启用/停用 ----------
+    # users.disabled_model_ids：用户停用的逻辑模型 ID 数组（JSONB；NULL/[]=全部
+    # 启用；停用后生成路由跳过该逻辑模型的平台渠道链，仅自有渠道 + mock 兜底）
+    ("users", "ALTER TABLE users ADD COLUMN IF NOT EXISTS disabled_model_ids JSONB DEFAULT '[]'::jsonb"),
+    ("users",
+     "COMMENT ON COLUMN users.disabled_model_ids IS "
+     "'用户停用的逻辑模型 ID 数组（JSONB；NULL/[]=全部启用）'"),
 ]
 
 

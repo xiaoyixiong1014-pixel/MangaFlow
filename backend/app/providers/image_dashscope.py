@@ -1,11 +1,14 @@
 """阿里云百炼文生图提供方模块（文件级说明）。
 
-通过 DashScope 原生多模态生成协议调用百炼文生图模型（qwen-image 系列）：
+通过 DashScope 原生多模态生成协议调用百炼图像模型（qwen-image 系列，
+文生图 + qwen-image-edit 图生图）：
 - 同步调用：POST {root}/api/v1/services/aigc/multimodal-generation/generation
   （2026-10-16 实测：该端点对 qwen-image 不支持 X-DashScope-Async 异步头，
   返回 403 "current user api does not support asynchronous calls"；text2image
   端点对 qwen-image 返回 400 url error——正确契约即本模块实现）；
 - 请求体契约：input.messages=[{role:"user", content:[{text: prompt}]}]；
+  携带参考图时 content 前部注入 {image: dataURI/URL} 项（qwen-image-3.0
+  输入模态为「文本+图片」，原生图生图，模型名不变）；
 - 响应契约：output.choices[0].message.content 数组中 type=="image" 项的
   image 字段为结果图 URL（实测输出 1792x2400 竖版，跟随提示词语义）；
 - 结果下载落盘（URL 为 OSS 临时签名地址，含 Expires 必须即时下载）。
@@ -27,14 +30,16 @@ from typing import Dict, Optional
 
 import httpx
 
+from app.providers.reference import resolve_reference_data_uri
 from app.services.model_router import ResolvedChannel
 
 logger = logging.getLogger("mangaflow.providers.image_dashscope")
 
 # 生成结果 URL 前缀：main.py 已将 storage 目录 mount 到 /storage
 _URL_PREFIX = "/storage/generated"
-# 生成请求超时（秒）：qwen-image 同步生成实测约 10~30 秒
-_HTTP_TIMEOUT = 180.0
+# 生成请求超时（秒）：qwen-image 单张实测约 10~30 秒；多参考图 I2I 模式
+# （3 张 data URI 输入）明显更慢，180s 实测会发生 ReadTimeout，放宽至 300s
+_HTTP_TIMEOUT = 300.0
 # 媒体下载超时（秒）
 _DOWNLOAD_TIMEOUT = 120.0
 
@@ -98,21 +103,33 @@ async def generate_image_dashscope(
     seed: int,
     channel: ResolvedChannel,
     reference_image_url: Optional[str] = None,
+    reference_image_urls: Optional[list] = None,
+    aspect_ratio: Optional[str] = None,
 ) -> Optional[Dict]:
-    """调用百炼 DashScope 原生多模态生成协议真实生成一张图像（文生图）。
+    """调用百炼 DashScope 原生多模态生成协议生成一张图像（文生图/图生图）。
+
+    携带参考图时 content 前部注入 image 项（角色定妆照/场景概念图/道具
+    标准图，排序即权重）、末尾 text 项为提示词；qwen-image-3.0 等新一代
+    模型输入模态为「文本+图片」，原生支持图生图，直接使用渠道配置的
+    模型名（不做 -edit 模型名切换，qwen-image-3.0-edit 不存在会 404
+    Model not exist）。无参考图时保持纯文生图结构。
 
     Args:
         prompt: 图像提示词。
         out_dir: 输出目录（storage/generated 的绝对路径）。
         seed: 随机种子（一般传任务 ID，保证文件名唯一）。
         channel: 已解析的候选渠道（protocol="dashscope"，base_url 为实例根域名）。
-        reference_image_url: 可选参考图 URL（当前文生图不使用，仅保留签名
-            对齐；后续接入 qwen-image-edit 图生图时可扩展 content 结构）。
+        reference_image_url: 可选单张参考图 URL（A-04 资产生成锚点）。
+        reference_image_urls: 可选多张参考图列表（关键帧绑定资产参考图组：
+            角色[变体优先]→场景→道具，排序即权重），与单图合并注入 content。
+        aspect_ratio: 可选输出画幅（9:16/16:9/1:1）。多模态生成端点不接受
+            size 参数，此处转为提示词尾部的构图比例软引导。
 
     Returns:
         Optional[Dict]: 成功返回
             {"url": "/storage/generated/xxx.png",
-             "meta": {"provider": "dashscope-image", "channel_id": 渠道ID}}；
+             "meta": {"provider": "dashscope-image", "channel_id": 渠道ID,
+                      "img2img": 是否图生图}}；
             任一失败返回 None（由调用方降级到下一渠道）。
 
     Raises:
@@ -124,16 +141,37 @@ async def generate_image_dashscope(
         root = root.split("://", 1)[0] + "://" + root.split("://", 1)[1].split("/", 1)[0]
     url = f"{root}/api/v1/services/aigc/multimodal-generation/generation"
     headers = {"Authorization": f"Bearer {channel.api_key}", "Content-Type": "application/json"}
+    # 合并单图与多图参考并解析为渠道载荷（本地 /storage 转 Base64 data URI）
+    ref_payloads = [
+        p for p in (
+            resolve_reference_data_uri(u)
+            for u in ([reference_image_url] if reference_image_url else [])
+            + list(reference_image_urls or [])
+        ) if p
+    ]
+    # 图生图直接使用渠道配置的模型名（qwen-image-3.0 输入模态为「文本+图片」，
+    # 原生消费 image 输入；qwen-image-3.0-edit 等变体模型名不存在，勿切换）
+    model = channel.model
+    # content 组装：image 项在前（权重高），text 项在后
+    content: list = [{"image": p} for p in ref_payloads]
+    # 画幅软引导：端点不接受 size 参数，转为提示词尾部构图比例描述
+    aspect_text = {
+        "9:16": "竖版 9:16 构图",
+        "16:9": "横版 16:9 构图",
+        "1:1": "方形 1:1 构图",
+    }.get((aspect_ratio or "").strip())
+    content.append({"text": f"{prompt}；画面比例：{aspect_text}" if aspect_text else prompt})
     payload = {
-        "model": channel.model,
-        "input": {"messages": [{"role": "user", "content": [{"text": prompt}]}]},
+        "model": model,
+        "input": {"messages": [{"role": "user", "content": content}]},
     }
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             resp = await client.post(url, headers=headers, json=payload)
             if resp.status_code >= 400:
                 logger.warning(
-                    "渠道 %s 文生图失败（HTTP %s）：%s", channel.name, resp.status_code, resp.text[:300])
+                    "渠道 %s 图像生成失败（HTTP %s，model=%s）：%s",
+                    channel.name, resp.status_code, model, resp.text[:300])
                 return None
             image_url = _extract_image_url(resp.json() or {})
             if not image_url:
@@ -153,5 +191,9 @@ async def generate_image_dashscope(
 
     return {
         "url": f"{_URL_PREFIX}/{filename}",
-        "meta": {"provider": "dashscope-image", "channel_id": channel.channel_id},
+        "meta": {
+            "provider": "dashscope-image",
+            "channel_id": channel.channel_id,
+            "img2img": bool(ref_payloads),
+        },
     }

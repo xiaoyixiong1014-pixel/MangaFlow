@@ -59,6 +59,8 @@ export interface CharacterProfile {
   outfit: string | null
   /** 风格与画质特点（角色圣经视觉段三：画风/光线/画质关键词） */
   style_note: string | null
+  /** 音色设定（配音选音色依据：性别/年龄感/音色质地/说话习惯） */
+  voice_note: string | null
   /** 行为动机 */
   motivation: string | null
   /** 人物弧光（角色成长线） */
@@ -91,6 +93,8 @@ export interface CharacterUpsertPayload {
   outfit?: string | null
   /** 风格与画质特点（不传=不修改） */
   style_note?: string | null
+  /** 音色设定（不传=不修改） */
+  voice_note?: string | null
   /** 行为动机（不传=不修改） */
   motivation?: string | null
   /** 人物弧光（不传=不修改） */
@@ -115,6 +119,8 @@ export interface CharacterConfirmItemPayload {
   outfit?: string | null
   /** 风格与画质特点（不传=沿用候选值） */
   style_note?: string | null
+  /** 音色设定（不传=沿用候选值） */
+  voice_note?: string | null
   /** 行为动机（不传=沿用候选值） */
   motivation?: string | null
   /** 人物弧光（不传=沿用候选值） */

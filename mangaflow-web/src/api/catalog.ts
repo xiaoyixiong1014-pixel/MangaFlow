@@ -16,6 +16,7 @@ import type {
   ComparePayload,
   CompareResult,
   HealthSummary,
+  LogicalModel,
   MessageResponse,
 } from '@/types'
 
@@ -25,6 +26,18 @@ import type {
  */
 export function modelsCatalog(): Promise<Catalog> {
   return client.get('/models/catalog').then((r) => r.data)
+}
+
+/**
+ * 切换当前用户对系统逻辑模型的启用/停用偏好。
+ * 停用后生成路由跳过该模型的平台渠道链（仅自有渠道 + mock 兜底）。
+ * @param modelId 逻辑模型 ID
+ * @param enabled 是否启用
+ * @returns 更新后的模型条目
+ * @throws 404 逻辑模型不存在
+ */
+export function setModelEnabled(modelId: number, enabled: boolean): Promise<LogicalModel> {
+  return client.put(`/models/catalog/${modelId}/enabled`, { enabled }).then((r) => r.data)
 }
 
 /**

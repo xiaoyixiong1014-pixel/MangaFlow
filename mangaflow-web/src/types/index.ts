@@ -248,6 +248,8 @@ export interface LogicalModel {
   doc_url?: string | null
   /** 健康状态：unknown/healthy/degraded/down */
   health: string
+  /** 当前用户是否启用该系统模型（false=生成仅走自有渠道 + mock 兜底） */
+  enabled: boolean
 }
 
 /** 按能力分组的逻辑模型组 */

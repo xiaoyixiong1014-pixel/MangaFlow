@@ -116,6 +116,8 @@ class Character(Base):
         Text, nullable=True, comment="服装配饰完整拆解（角色圣经：上装/下装/鞋履/配饰）")
     style_note: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="风格与画质特点（角色圣经：画风/光线/画质关键词）")
+    voice_note: Mapped[Optional[str]] = mapped_column(
+        Text, nullable=True, comment="音色设定（角色圣经：性别/年龄感/音色质地/说话习惯，配音选音色依据）")
     motivation: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="行为动机（P-1）")
     arc: Mapped[Optional[str]] = mapped_column(

@@ -26,6 +26,8 @@ class CatalogModelOut(BaseModel):
         scene_desc: 适用场景描述。
         doc_url: 官方文档链接。
         health: 降级链路中首选渠道的健康状态（unknown/healthy/degraded/down）。
+        enabled: 当前用户是否启用该系统模型（True=参与生成路由；False=生成
+            仅走自有渠道 + mock 兜底）。
     """
 
     id: int
@@ -35,6 +37,7 @@ class CatalogModelOut(BaseModel):
     scene_desc: Optional[str] = None
     doc_url: Optional[str] = None
     health: str = "unknown"
+    enabled: bool = True
 
 
 class CatalogGroupOut(BaseModel):
@@ -47,6 +50,17 @@ class CatalogGroupOut(BaseModel):
 
     capability: str
     models: List[CatalogModelOut]
+
+
+class LogicalModelEnabledRequest(BaseModel):
+    """系统模型启用/停用请求（PUT /api/models/catalog/{id}/enabled）。
+
+    Attributes:
+        enabled: True=启用（生成路由含该模型平台渠道链）；False=停用（生成
+            仅走自有渠道 + mock 兜底）。
+    """
+
+    enabled: bool
 
 
 class PlatformChannelOut(BaseModel):

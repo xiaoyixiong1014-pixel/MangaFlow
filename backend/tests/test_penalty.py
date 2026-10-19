@@ -15,7 +15,7 @@ import pytest
 from sqlalchemy import select
 
 from app.core.config import settings
-from app.models import Notification, OperationLog, Task, User
+from app.models import Notification, OperationLog, Project, Task, User
 from app.services.review_service import apply_violation_penalty
 from tests.conftest import (
     create_project,
@@ -44,7 +44,10 @@ def _enable_punishment(monkeypatch):
 
 
 async def _project_with_storyboard(client, auth, db, tag: str):
-    """辅助：建项目并直插一条分镜（内部函数）。
+    """辅助：建项目并直插一条分镜，推进至 producing 门禁通过（内部函数）。
+
+    项目状态先直改为 storyboard（模拟拆解完成），再走真实 confirm 链路
+    推进 producing——与生成阶段门禁（create_keyframe_tasks 强校验状态）对齐。
 
     Args:
         client: 内存 HTTP 客户端。
@@ -56,10 +59,19 @@ async def _project_with_storyboard(client, auth, db, tag: str):
         Tuple[int, Storyboard]: (项目 ID, 分镜对象)。
 
     Raises:
-        AssertionError: 项目创建返回非 200 时中断。
+        AssertionError: 项目创建或 confirm 返回非 200 时中断。
     """
     project = await create_project(client, auth["headers"], title=f"处罚项目_{tag}")
     sb = await insert_storyboard(db, project["id"], sequence=1)
+    proj = (
+        await db.execute(select(Project).where(Project.id == project["id"]))
+    ).scalar_one()
+    proj.status = "storyboard"
+    await db.commit()
+    confirm = await client.post(
+        f"/api/projects/{project['id']}/storyboards/confirm", headers=auth["headers"]
+    )
+    assert confirm.status_code == 200, confirm.text
     return project["id"], sb
 
 

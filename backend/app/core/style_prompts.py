@@ -5,7 +5,7 @@
 注入最终提示词最前面，专属负面提示词（negative）注入尾部——不论画什么内容，
 这组词都必须带上，确保画风不跑偏。
 
-键与 NewProjectDialog 的 STYLES 六选项完全一致（中文字符串直比）；
+键与 NewProjectDialog 的 STYLES 九选项完全一致（中文字符串直比）；
 projects.style 为空或不在表内时返回 None（不注入，行为回退）。
 """
 
@@ -78,6 +78,48 @@ STYLE_PROMPTS: Dict[str, Dict[str, str]] = {
         "negative": (
             "realistic, 3D, heavy shading, detailed textures, intricate patterns, "
             "complex lighting, noisy."
+        ),
+    },
+    # ---------- 真人写实系（三档）：实拍照片质感，与动漫系互斥 ----------
+    # 影视级写实（电影质感）：光影深邃、胶片颗粒，适合悬疑/复仇/高品质短剧；
+    # 画面控制词中普适的人像质感词（皮肤纹理/发丝/眼神聚焦）并入 prefix，
+    # 场景相关词（光影氛围/表情）留给分镜描述层
+    "影视级写实": {
+        "prefix": (
+            "Cinematic photography, photorealistic, ultra-realistic, shot on ARRI "
+            "Alexa 65, 35mm lens, cinematic lighting, dramatic chiaroscuro, raw photo, "
+            "8k resolution, film grain, depth of field, intricate details, detailed "
+            "skin texture, realistic hair strands, sharp focus on eyes."
+        ),
+        "negative": (
+            "cartoon, anime, 3d render, illustration, painting, plastic skin, "
+            "overly smooth, CGI, deformed, cross-eyed, blurry, overexposed."
+        ),
+    },
+    # 现代都市写实（高清短剧风）：干净明亮、高颜值微磨皮，适合霸总/甜宠/职场
+    "现代都市写实": {
+        "prefix": (
+            "Ultra-realistic modern portrait photography, natural soft lighting, "
+            "bright and clear, high fashion magazine style, professional makeup, "
+            "symmetrical face, highly detailed eyes, commercial photography, 8k, "
+            "sharp focus, flawless but realistic skin."
+        ),
+        "negative": (
+            "dark lighting, horror, distorted face, heavy makeup, unnatural skin "
+            "tone, oily skin, low resolution, anime, drawing, out of focus."
+        ),
+    },
+    # 复古/年代写实：胶片色调（柯达金/富士绿）、年代质感，适合民国/80 90 年代怀旧
+    "复古/年代写实": {
+        "prefix": (
+            "Vintage cinematic photography, retro film style, Kodak portra 400, "
+            "muted warm tones, nostalgic atmosphere, realistic texture, historical "
+            "setting, soft vintage lighting, authentic details, film grain, "
+            "authentic facial features."
+        ),
+        "negative": (
+            "modern, futuristic, neon lights, overly clean, plastic, HDR, "
+            "oversaturated, anime, digital art."
         ),
     },
 }

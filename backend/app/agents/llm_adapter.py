@@ -173,14 +173,16 @@ class AgentLLM:
         except Exception:  # noqa: BLE001 —— 日志上下文提取失败不影响调用
             thread_id = None
         _last_usage.set(None)  # 调用前置空，防止失败路径读到陈旧记录
-        # 自有渠道前置注入：用户配置的 openai 兼容渠道优先于平台默认链，
-        # 全部自有渠道失败仍降级到平台默认链（DeepSeek → Agnes）；
+        # 自有渠道前置注入：用户配置的 openai 兼容渠道优先于平台默认链；
+        # 用户停用 llm 系统模型时不追加平台默认链（仅自有渠道，失败走任务侧 mock 兜底）；
         # 无自有渠道时不传 channels（保持原调用签名，兼容测试替身）
-        user_channels = await get_user_llm_channel_tuples(_user_id_from_state(state_aware))
+        user_channels, append_default = await get_user_llm_channel_tuples(
+            _user_id_from_state(state_aware))
         if user_channels:
+            chain = user_channels + _default_channels() if append_default else user_channels
             content, meta = await chat_with_meta(
                 messages, temperature=temperature, json_mode=json_mode,
-                channels=user_channels + _default_channels(),
+                channels=chain,
             )
         else:
             content, meta = await chat_with_meta(
@@ -226,13 +228,15 @@ class AgentLLM:
         _last_usage.set(None)  # 调用前置空，防止失败路径读到陈旧记录
         recorded = False
         prompt_chars = self._prompt_chars(messages)
-        # 自有渠道前置注入：语义与非流式一致（自有失败降级平台默认链）；
-        # 无自有渠道时不传 channels（保持原调用签名，兼容测试替身）
-        user_channels = await get_user_llm_channel_tuples(_user_id_from_state(state_aware))
+        # 自有渠道前置注入：语义与非流式一致（自有失败降级平台默认链；
+        # 用户停用 llm 系统模型时不追加默认链）；无自有渠道时不传 channels
+        user_channels, append_default = await get_user_llm_channel_tuples(
+            _user_id_from_state(state_aware))
         if user_channels:
+            chain = user_channels + _default_channels() if append_default else user_channels
             stream_iter = chat_stream_with_meta(
                 messages, temperature=temperature, json_mode=json_mode,
-                channels=user_channels + _default_channels(),
+                channels=chain,
             )
         else:
             stream_iter = chat_stream_with_meta(

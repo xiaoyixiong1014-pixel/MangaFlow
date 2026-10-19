@@ -24,16 +24,68 @@ const capabilityTabs = [
   { value: 'tts', label: '语音' },
 ] as const
 
+/** 正在切换启用状态的逻辑模型 ID 集合 */
+const togglingIds = ref<Set<number>>(new Set())
+
+/**
+ * 切换系统模型的启用/停用（停用后生成仅走自有渠道 + mock 兜底）。
+ * @param m 逻辑模型条目
+ */
+async function toggleModelEnabled(m: LogicalModel): Promise<void> {
+  const next = !m.enabled
+  togglingIds.value = new Set(togglingIds.value).add(m.id)
+  try {
+    await catalogApi.setModelEnabled(m.id, next)
+    m.enabled = next
+    ElMessage.success(next
+      ? `已启用系统模型 ${m.name}（生成将优先自有渠道，失败回落系统渠道）`
+      : `已停用系统模型 ${m.name}（生成仅使用你的自有渠道）`)
+  } catch {
+    // 错误已由拦截器提示
+  } finally {
+    const nextIds = new Set(togglingIds.value)
+    nextIds.delete(m.id)
+    togglingIds.value = nextIds
+  }
+}
+
 /** 当前能力 Tab */
 const capability = ref<'llm' | 'image' | 'video' | 'tts'>('llm')
 
 /**
- * 当前能力下的模型列表。
+ * 当前能力下的官方模型列表。
  */
 const models = computed<LogicalModel[]>(() => {
   const group = catalog.value?.capabilities.find((g) => g.capability === capability.value)
   return group?.models ?? []
 })
+
+/** 用途键 → 中文标签 */
+const capabilityKeyLabels: Record<string, string> = {
+  chat: '文本对话',
+  image: '图像生成',
+  video: '视频生成',
+  tts: '语音合成',
+}
+
+/**
+ * 读取渠道登记的能力键（内部函数）：models 目录第一个非空键。
+ * @param ch 渠道对象
+ * @returns 能力键（chat/image/video/tts）；未登记返回空串
+ */
+function channelCapabilityKey(ch: Channel): string {
+  const models = ch.models ?? {}
+  return CAPABILITY_KEYS.find((k) => {
+    const v = models[k]
+    return Array.isArray(v) && v.length > 0
+  }) ?? ''
+}
+
+/**
+ * 当前能力 Tab 下的我的模型列表（随 Tab 联动过滤）。
+ */
+const filteredChannels = computed<Channel[]>(() =>
+  channels.value.filter((ch) => channelCapabilityKey(ch) === capability.value))
 
 /** 健康状态中文与颜色映射 */
 const healthLabels: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' }> = {
@@ -64,12 +116,66 @@ const channelForm = reactive({ name: '', base_url: '', api_key: '' })
 const channelModels = ref<string[]>([])
 /** 当前选择的 API 格式（与后端 protocol 字段一致） */
 const channelProtocol = ref<'openai' | 'openai_responses' | 'anthropic' | 'dashscope'>('openai')
-/** 模型用途（登记能力键）：chat 文本对话 / image 图像生成 */
-const channelCapability = ref<'chat' | 'image'>('chat')
+/** 模型用途（登记能力键）：chat 文本 / image 图像 / video 视频 / tts 语音 */
+const channelCapability = ref<'chat' | 'image' | 'video' | 'tts'>('chat')
 /** 渠道真实模型列表候选（点击「获取模型列表」后填充） */
 const modelOptions = ref<string[]>([])
 /** 拉取模型列表中 */
 const probingModels = ref(false)
+/** 手动输入框内容（支持逗号/换行分隔批量解析） */
+const modelInput = ref('')
+/** 模型列表是否已拉取展示（控制 chip 列表显隐） */
+const probedOptionsShown = ref(false)
+
+/**
+ * 解析手动输入并批量加入模型 ID（内部函数）。
+ * 支持中英文逗号 / 分号 / 换行 / 空格分隔，自动去重、去空白。
+ */
+function addModelsFromInput(): void {
+  const parts = modelInput.value
+    .split(/[，,;；\n\s]+/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+  if (!parts.length) {
+    ElMessage.warning('请输入至少一个模型 ID')
+    return
+  }
+  const existing = new Set(channelModels.value)
+  let added = 0
+  for (const p of parts) {
+    if (!existing.has(p)) {
+      channelModels.value.push(p)
+      existing.add(p)
+      added += 1
+    }
+  }
+  modelInput.value = ''
+  if (added > 0) {
+    ElMessage.success(`已添加 ${added} 个模型 ID`)
+  } else {
+    ElMessage.warning('输入的模型 ID 均已存在')
+  }
+}
+
+/**
+ * 移除已添加的模型 ID（内部函数）。
+ * @param m 模型 ID
+ */
+function removeModel(m: string): void {
+  channelModels.value = channelModels.value.filter((x) => x !== m)
+}
+
+/**
+ * 点击模型列表 chip 加入 / 再点移除（内部函数）。
+ * @param m 模型 ID
+ */
+function toggleModelOption(m: string): void {
+  if (channelModels.value.includes(m)) {
+    removeModel(m)
+  } else {
+    channelModels.value.push(m)
+  }
+}
 
 /** API 格式选项（与后端 SUPPORTED_CHANNEL_PROTOCOLS 一致） */
 const protocolOptions = [
@@ -97,24 +203,37 @@ function baseUrlTip(): string {
 }
 
 /**
- * 切换 API 格式（内部函数）：DashScope 原生仅支持图像生成用途，自动锁定。
+ * 切换 API 格式（内部函数）：DashScope 原生不支持文本对话与语音合成
+ * （百炼文本走兼容模式、语音走 WS 推理），自动切到图像生成。
  */
 function onProtocolChange(): void {
-  if (channelProtocol.value === 'dashscope') {
+  if (channelProtocol.value === 'dashscope' && (channelCapability.value === 'chat' || channelCapability.value === 'tts')) {
     channelCapability.value = 'image'
   }
 }
 
+/** 各模型用途的说明文案映射 */
+const capabilityTips: Record<string, string> = {
+  chat: '文本渠道将优先用于剧本创作等文本生成任务，使用自有 Key 免生成积分。',
+  image: '图像渠道将优先用于图像生成任务（角色定妆 / 分镜关键帧等），使用自有 Key 免生成积分。',
+  video: '视频渠道将优先用于视频生成任务（分镜动态化 / 图生视频等），使用自有 Key 免生成积分。',
+  tts: '语音渠道将优先用于台词配音任务（按百炼 WS 推理协议调用，建议登记百炼 TTS 模型），使用自有 Key 免生成积分。',
+}
+
 /**
- * 从渠道 models 目录提取模型 ID 列表（内部函数）：chat 优先，其次 image。
+ * 从渠道 models 目录提取模型 ID 列表（内部函数）：按 chat > image > video > tts
+ * 优先级取第一个非空能力键。
  * @param ch 渠道对象
  * @returns 模型 ID 字符串数组（结构异常时为空数组）
  */
 function channelModelList(ch: Channel): string[] {
   const models = ch.models ?? {}
-  const list = models['chat'] ?? models['image']
+  const list = models['chat'] ?? models['image'] ?? models['video'] ?? models['tts']
   return Array.isArray(list) ? list.map(String) : []
 }
+
+/** 能力键优先级（编辑回显用） */
+const CAPABILITY_KEYS = ['chat', 'image', 'video', 'tts'] as const
 
 /**
  * 打开新建渠道对话框（重置表单）。
@@ -129,6 +248,8 @@ function openCreate(): void {
   channelProtocol.value = 'openai'
   channelCapability.value = 'chat'
   modelOptions.value = []
+  modelInput.value = ''
+  probedOptionsShown.value = false
   channelDialogVisible.value = true
 }
 
@@ -145,10 +266,16 @@ function openEdit(ch: Channel): void {
   channelForm.api_key = ''
   channelModels.value = channelModelList(ch)
   channelProtocol.value = (ch.protocol as typeof channelProtocol.value) ?? 'openai'
-  // 模型用途回显：models 仅含 image 键时视为图像渠道
+  // 模型用途回显：按 models 目录第一个非空能力键还原
   const models = ch.models ?? {}
-  channelCapability.value = !models['chat'] && models['image'] ? 'image' : 'chat'
+  const cap = CAPABILITY_KEYS.find((k) => {
+    const v = models[k]
+    return Array.isArray(v) && v.length > 0
+  })
+  channelCapability.value = (cap as typeof channelCapability.value) ?? 'chat'
   modelOptions.value = []
+  modelInput.value = ''
+  probedOptionsShown.value = false
   channelDialogVisible.value = true
 }
 
@@ -176,9 +303,10 @@ async function fetchModelOptions(): Promise<void> {
     })
     if (resp.ok && resp.models.length) {
       modelOptions.value = resp.models
-      ElMessage.success(`已获取 ${resp.models.length} 个模型，可直接下拉勾选`)
+      probedOptionsShown.value = true
+      ElMessage.success(`已获取 ${resp.models.length} 个模型，点击即可加入`)
     } else {
-      ElMessage.warning(resp.error || '渠道未返回模型列表，可手动输入模型 ID 后回车添加')
+      ElMessage.warning(resp.error || '渠道未返回模型列表，可手动输入模型 ID 后点击「添加」')
     }
   } catch {
     // 错误已由拦截器提示
@@ -330,91 +458,58 @@ onMounted(async () => {
       <el-tab-pane v-for="t in capabilityTabs" :key="t.value" :label="t.label" :name="t.value" />
     </el-tabs>
 
-    <!-- 配置层级说明条 -->
+    <!-- 生效规则说明条 -->
     <el-alert type="info" :closable="false" class="layer-tip" show-icon>
       <template #title>
-        配置层级：任务级 &gt; 本项目覆盖 &gt; 全局默认。项目内可在创作工作区为当前项目单独覆盖模型；未覆盖时使用下方官方默认模型。
+        生成顺序：我的模型（优先，免生成积分）→ 官方模型（可停用）→ 本地兜底。下方开关控制各自是否参与生成。
       </template>
     </el-alert>
 
-    <!-- 目录骨架 -->
-    <div v-if="loading" class="model-list">
-      <div v-for="i in 3" :key="i" class="model-card">
-        <div style="padding: 16px">
-          <div class="mf-skeleton mf-skeleton--text" style="width: 40%; margin-bottom: 10px"></div>
-          <div class="mf-skeleton mf-skeleton--text" style="width: 80%"></div>
-        </div>
-      </div>
-    </div>
-
-    <!-- 模型卡列表 -->
-    <div v-else-if="models.length" class="model-list">
-      <div v-for="m in models" :key="m.id" class="model-card">
-        <div class="model-head">
-          <span class="model-name">{{ m.name }}</span>
-          <el-tag v-if="m.is_default" type="primary" effect="soft" size="small">官方默认</el-tag>
-          <el-tag
-            v-if="healthLabels[m.health]"
-            :type="healthLabels[m.health]?.type ?? 'info'"
-            effect="plain"
-            size="small"
-          >渠道{{ healthLabels[m.health]?.label ?? m.health }}</el-tag>
-        </div>
-      </div>
-    </div>
-    <el-empty v-else description="该能力下暂无可用模型" />
-
-    <!-- 自有 Key 管理 -->
-    <section class="channel-section">
+    <!-- 我的模型（自有 Key，随能力 Tab 过滤） -->
+    <section class="model-section">
       <div class="section-head">
-        <h3 class="section-title">自有 Key 管理</h3>
-        <el-button type="primary" @click="openCreate">添加渠道</el-button>
+        <div>
+          <h3 class="section-title">我的模型</h3>
+          <p class="section-sub">使用自己的 API Key，生成免扣积分，优先于官方模型</p>
+        </div>
+        <el-button type="primary" @click="openCreate">添加模型</el-button>
       </div>
-      <el-alert type="info" :closable="false" show-icon class="key-tip">
-        <template #title>
-          自有渠道的模型将优先用于生成任务，使用自有 Key 时免扣生成积分（存储 / 带宽 / 编排照常计费）；
-          Key 服务端加密保存，永不明文展示。
-        </template>
-      </el-alert>
 
       <el-empty
-        v-if="!channelsLoading && channels.length === 0"
-        description="暂无自有渠道，内置官方模型已可用"
+        v-if="!channelsLoading && filteredChannels.length === 0"
+        :description="channels.length === 0
+          ? '还没有添加模型，官方模型已可直接使用'
+          : `当前「${capabilityTabs.find((t) => t.value === capability)?.label}」分类下暂无自有模型`"
         :image-size="80"
       />
-      <el-table v-else :data="channels" v-loading="channelsLoading" class="channel-table">
-        <el-table-column label="渠道" min-width="150" show-overflow-tooltip>
+      <el-table v-else :data="filteredChannels" v-loading="channelsLoading" class="channel-table">
+        <el-table-column label="模型" min-width="230">
           <template #default="{ row }">
-            <span class="channel-name">{{ row.name || '未命名渠道' }}</span>
+            <div class="mine-name">{{ row.name || '未命名模型' }}</div>
+            <code class="model-ids">{{ channelModelList(row).join('、') }}</code>
           </template>
         </el-table-column>
-        <el-table-column prop="protocol" label="协议" width="90" />
-        <el-table-column prop="base_url" label="接口地址" min-width="200" show-overflow-tooltip />
-        <el-table-column label="模型" min-width="170" show-overflow-tooltip>
+        <el-table-column label="用途" width="110">
           <template #default="{ row }">
-            <code v-if="channelModelList(row).length" class="model-ids">{{ channelModelList(row).join('、') }}</code>
-            <span v-else class="model-ids model-ids--empty">未登记</span>
+            <el-tag size="small" effect="plain">{{ capabilityKeyLabels[channelCapabilityKey(row)] || '未设置' }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="api_key" label="API Key" width="150">
-          <template #default="{ row }">
-            <code class="masked-key">{{ row.api_key || '••••••' }}</code>
-          </template>
-        </el-table-column>
-        <el-table-column label="健康" width="90">
+        <el-table-column label="状态" width="180">
           <template #default="{ row }">
             <el-tag
               v-if="healthLabels[row.health_status]"
               :type="healthLabels[row.health_status]?.type ?? 'info'"
               size="small"
               effect="plain"
+              style="margin-right: 8px"
             >{{ healthLabels[row.health_status]?.label ?? row.health_status }}</el-tag>
-            <span v-else>{{ row.health_status }}</span>
-          </template>
-        </el-table-column>
-        <el-table-column label="启用" width="80">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled" @change="toggleEnabled(row)" />
+            <el-switch
+              :model-value="row.enabled"
+              inline-prompt
+              active-text="启用"
+              inactive-text="停用"
+              @change="toggleEnabled(row)"
+            />
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" fixed="right">
@@ -433,10 +528,52 @@ onMounted(async () => {
       </el-table>
     </section>
 
-    <!-- 添加 / 编辑渠道对话框 -->
+    <!-- 官方模型（随能力 Tab 过滤） -->
+    <section class="channel-section">
+      <div class="section-head">
+        <div>
+          <h3 class="section-title">官方模型</h3>
+          <p class="section-sub">平台提供、开箱即用；开关停用后生成仅使用我的模型</p>
+        </div>
+      </div>
+      <!-- 目录骨架 -->
+      <div v-if="loading" class="model-list">
+        <div v-for="i in 3" :key="i" class="model-card">
+          <div style="padding: 16px">
+            <div class="mf-skeleton mf-skeleton--text" style="width: 40%; margin-bottom: 10px"></div>
+            <div class="mf-skeleton mf-skeleton--text" style="width: 80%"></div>
+          </div>
+        </div>
+      </div>
+      <div v-else-if="models.length" class="model-list">
+        <div v-for="m in models" :key="m.id" class="model-card" :class="{ 'model-card--disabled': !m.enabled }">
+          <div class="model-head">
+            <span class="model-name">{{ m.name }}</span>
+            <el-tag v-if="m.is_default" type="primary" effect="soft" size="small">官方默认</el-tag>
+            <el-tag
+              v-if="healthLabels[m.health]"
+              :type="healthLabels[m.health]?.type ?? 'info'"
+              effect="plain"
+              size="small"
+            >渠道{{ healthLabels[m.health]?.label ?? m.health }}</el-tag>
+            <div class="model-enable">
+              <span class="model-enable-label">{{ m.enabled ? '已启用' : '已停用' }}</span>
+              <el-switch
+                :model-value="m.enabled"
+                :loading="togglingIds.has(m.id)"
+                @change="toggleModelEnabled(m)"
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+      <el-empty v-else description="该能力下暂无官方模型" />
+    </section>
+
+    <!-- 添加 / 编辑我的模型对话框 -->
     <el-dialog
       v-model="channelDialogVisible"
-      :title="dialogMode === 'create' ? '添加自有渠道' : '编辑自有渠道'"
+      :title="dialogMode === 'create' ? '添加我的模型' : '编辑我的模型'"
       width="520px"
     >
       <el-form label-width="100px" label-position="left">
@@ -451,7 +588,7 @@ onMounted(async () => {
           </el-select>
           <div class="field-tip">各格式均已真实接入：文本生成、图像生成、效果对比与连通性测试均按所选协议调用。</div>
         </el-form-item>
-        <el-form-item label="渠道名称">
+        <el-form-item label="模型名称">
           <el-input
             v-model="channelForm.name"
             maxlength="64"
@@ -472,44 +609,66 @@ onMounted(async () => {
           <div class="field-tip">{{ baseUrlTip() }}</div>
         </el-form-item>
         <el-form-item label="模型用途" required>
-          <el-radio-group v-model="channelCapability" :disabled="channelProtocol === 'dashscope'">
-            <el-radio value="chat">文本对话</el-radio>
+          <el-radio-group v-model="channelCapability">
+            <el-radio value="chat" :disabled="channelProtocol === 'dashscope'">文本对话</el-radio>
             <el-radio value="image">图像生成</el-radio>
+            <el-radio value="video">视频生成</el-radio>
+            <el-radio value="tts" :disabled="channelProtocol === 'dashscope'">语音合成</el-radio>
           </el-radio-group>
           <div class="field-tip">
-            {{ channelProtocol === 'dashscope'
-              ? 'DashScope 原生格式仅支持图像生成（百炼文生图任务协议）。'
-              : channelCapability === 'image'
-                ? '图像渠道将优先用于图像生成任务（角色定妆 / 分镜关键帧等），使用自有 Key 免生成积分。'
-                : '文本渠道将优先用于剧本创作等文本生成任务，使用自有 Key 免生成积分。' }}
+            {{ channelProtocol === 'dashscope' && (channelCapability === 'chat' || channelCapability === 'tts')
+              ? 'DashScope 原生格式不支持文本对话与语音合成，请选择图像或视频用途。'
+              : (capabilityTips[channelCapability] ?? '') }}
           </div>
         </el-form-item>
         <el-form-item label="模型 ID" required>
-          <div class="model-id-row">
-            <el-select
-              v-model="channelModels"
-              multiple
-              filterable
-              allow-create
-              default-first-option
-              :reserve-keyword="false"
-              :loading="probingModels"
-              placeholder="下拉选择或输入模型 ID 后回车，可添加多个"
-              style="flex: 1"
-            >
-              <el-option v-for="m in modelOptions" :key="m" :label="m" :value="m" />
-              <template #empty>
-                <div class="select-empty">输入模型 ID 后回车添加，或点击右侧「获取模型列表」</div>
-              </template>
-            </el-select>
-            <el-button
-              :loading="probingModels"
-              @click="fetchModelOptions"
-            >获取模型列表</el-button>
+          <div class="model-id-block">
+            <!-- 已添加的模型 ID（可删除） -->
+            <div v-if="channelModels.length" class="added-tags">
+              <el-tag
+                v-for="m in channelModels"
+                :key="m"
+                closable
+                size="large"
+                effect="plain"
+                @close="removeModel(m)"
+              >{{ m }}</el-tag>
+            </div>
+            <div v-else class="added-tags added-tags--empty">尚未添加模型 ID</div>
+            <!-- 手动输入：支持逗号 / 换行分隔批量添加 -->
+            <div class="model-id-row">
+              <el-input
+                v-model="modelInput"
+                placeholder="输入模型 ID，多个用逗号或换行分隔，可一次粘贴多个"
+                @keyup.enter="addModelsFromInput"
+              />
+              <el-button type="primary" plain @click="addModelsFromInput">添加</el-button>
+            </div>
+            <!-- 从渠道拉取的真实模型列表：点击加入 / 再点移除 -->
+            <div class="model-id-row">
+              <el-button
+                :loading="probingModels"
+                @click="fetchModelOptions"
+              >{{ probedOptionsShown ? '刷新模型列表' : '从渠道获取模型列表' }}</el-button>
+              <span v-if="probedOptionsShown" class="field-tip model-id-tip">点击下方模型加入 / 再点移除</span>
+            </div>
+            <div v-if="probedOptionsShown && modelOptions.length" class="model-chips">
+              <span
+                v-for="m in modelOptions"
+                :key="m"
+                class="model-chip"
+                :class="{ 'model-chip--added': channelModels.includes(m) }"
+                @click="toggleModelOption(m)"
+              >{{ m }}</span>
+            </div>
+            <div v-if="probedOptionsShown && !modelOptions.length" class="field-tip">
+              渠道未返回模型列表，请手动输入
+            </div>
           </div>
           <div class="field-tip">
-            须与渠道服务端模型名一致（如文本 deepseek-chat / gpt-5 / claude-sonnet-4-5，
-            图像 qwen-image-3.0）；获取列表需已填写接口地址与 API 密钥。
+            须与渠道服务端模型名一致（文本 deepseek-chat / gpt-5 / claude-sonnet-4-5，
+            图像 qwen-image-3.0，视频 wan2.7-i2v，语音 qwen-audio-tts-flash）；
+            获取列表需已填写接口地址与 API 密钥。
           </div>
         </el-form-item>
         <el-form-item label="API 密钥" :required="dialogMode === 'create'">
@@ -565,6 +724,19 @@ onMounted(async () => {
   align-items: center;
   gap: var(--mf-sp-2);
 }
+.model-enable {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+}
+.model-enable-label {
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
+}
+.model-card--disabled {
+  opacity: 0.55;
+}
 .model-name {
   font-weight: var(--mf-fw-semibold);
   font-size: var(--mf-fs-md);
@@ -583,34 +755,36 @@ onMounted(async () => {
   font-size: var(--mf-fs-lg);
   font-weight: var(--mf-fw-semibold);
 }
-.key-tip {
+.section-sub {
+  margin: 2px 0 0;
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
+}
+.model-section {
+  margin-bottom: var(--mf-sp-6);
+}
+.channel-section {
+  margin-top: var(--mf-sp-6);
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   margin-bottom: var(--mf-sp-3);
-  border-radius: var(--mf-r-ctl);
 }
 .channel-table {
   width: 100%;
   border-radius: var(--mf-r-ctl);
   overflow: hidden;
 }
-.masked-key {
-  font-family: var(--mf-mono);
-  font-size: var(--mf-fs-xs);
-  color: var(--mf-text-2);
-  background: var(--mf-surface-2);
-  padding: 2px 8px;
-  border-radius: 6px;
-}
-.channel-name {
+.mine-name {
   font-weight: var(--mf-fw-medium);
+  line-height: 1.4;
 }
 .model-ids {
   font-family: var(--mf-mono);
   font-size: var(--mf-fs-xs);
   color: var(--mf-text-2);
-}
-.model-ids--empty {
-  color: var(--mf-text-3);
-  font-style: italic;
 }
 .field-tip {
   width: 100%;
@@ -625,10 +799,55 @@ onMounted(async () => {
   width: 100%;
   align-items: flex-start;
 }
-.select-empty {
-  padding: 12px 0;
-  text-align: center;
+.model-id-block {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: var(--mf-sp-2);
+}
+.added-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mf-sp-2);
+}
+.added-tags--empty {
   font-size: var(--mf-fs-xs);
   color: var(--mf-text-3);
+}
+.model-id-tip {
+  width: auto;
+  margin-top: 0;
+  align-self: center;
+}
+.model-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mf-sp-2);
+  max-height: 168px;
+  overflow-y: auto;
+  padding: var(--mf-sp-2);
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-ctl);
+  background: var(--mf-surface-2);
+}
+.model-chip {
+  padding: 3px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--mf-border);
+  font-family: var(--mf-mono);
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-2);
+  cursor: pointer;
+  user-select: none;
+  transition: all var(--mf-dur) var(--mf-ease);
+}
+.model-chip:hover {
+  border-color: var(--mf-brand);
+  color: var(--mf-brand);
+}
+.model-chip--added {
+  background: var(--mf-brand);
+  border-color: var(--mf-brand);
+  color: #fff;
 }
 </style>

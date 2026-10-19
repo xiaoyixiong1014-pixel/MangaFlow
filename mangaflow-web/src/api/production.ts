@@ -104,7 +104,7 @@ export function replaceResult(taskId: number, file: File): Promise<GenTask> {
 export function tts(
   projectId: number,
   storyboardId: number,
-  payload: { voice?: 'male_01' | 'female_01'; speed?: number; pitch?: number },
+  payload: { voice?: 'male_01' | 'male_02' | 'female_01' | 'female_02'; speed?: number; pitch?: number },
 ): Promise<GenTask> {
   return client
     .post(`/projects/${projectId}/storyboards/${storyboardId}/tts`, payload)

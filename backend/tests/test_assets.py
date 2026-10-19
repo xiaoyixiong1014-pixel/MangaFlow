@@ -68,8 +68,8 @@ async def test_chuangjian_jiaose_moren_muban(client, auth):
     assert len(chars) == 1
     assert chars[0]["id"] == cid
     assert chars[0]["name"] == "林小满"
-    # 缺省模板：统一风格插画，{name}，{description}，全身立绘，纯色背景，高细节
-    assert "统一风格插画" in chars[0]["visual_prompt"]
+    # 缺省模板：统一视觉风格，{name}，{description}，全身立绘，纯色背景，高细节
+    assert "统一视觉风格" in chars[0]["visual_prompt"]
     assert chars[0]["face_locked"] is False
 
 

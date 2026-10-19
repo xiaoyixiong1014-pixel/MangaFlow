@@ -7,12 +7,28 @@
 - 违规词提示词：任务 failed + error_code=content_violation + 审核记录
   violate + 冻结退款
 - 取消 queued 任务：canceled + 冻结退款
+- A-04 扩展：关键帧任务 meta 透传绑定角色定妆照/造型变体图参考图
 """
+
+from datetime import datetime, timezone
+from typing import Optional
 
 import pytest
 from sqlalchemy import select
 
-from app.models import MediaAsset, Project, ReviewRecord, Storyboard
+from app.models import (
+    AssetVariant,
+    Character,
+    MediaAsset,
+    Project,
+    Prop,
+    ReviewRecord,
+    Scene,
+    Storyboard,
+    StoryboardCharacter,
+    StoryboardProp,
+    Task,
+)
 from tests.conftest import (
     create_project,
     get_wallet_model,
@@ -227,3 +243,174 @@ async def test_quxiao_renwu_tuikuan(client, auth, db):
     wallet = await get_wallet_model(db, auth["user_id"])
     assert wallet.frozen_points == 0
     assert wallet.points_balance == 5000
+
+
+async def _bind_character_with_image(client, auth, db, pid: int, sb, *, use_variant: bool):
+    """辅助：为项目建一个带定妆照的角色并绑定到分镜（内部函数）。
+
+    Args:
+        client: 内存 HTTP 客户端（保留参数与既有辅助签名一致）。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+        pid: 项目 ID。
+        sb: 分镜 ORM 对象。
+        use_variant: 为 True 时额外创建造型变体图并让绑定记录指向变体。
+
+    Returns:
+        Tuple[Character, Optional[AssetVariant]]: （角色，变体或 None）。
+
+    Raises:
+        Exception: 数据库写入异常向上抛出。
+    """
+    char = Character(
+        project_id=pid,
+        name=f"林小满_{unique_suffix()}",
+        visual_prompt="测试视觉提示词",
+        asset_url="/storage/generated/char_face_ref.png",
+        enabled_at=datetime.now(timezone.utc),
+    )
+    db.add(char)
+    await db.flush()
+    variant: Optional[AssetVariant] = None
+    variant_id: Optional[int] = None
+    if use_variant:
+        variant = AssetVariant(
+            owner_type="character",
+            owner_id=char.id,
+            variant_type="outfit",
+            name=f"战斗装_{unique_suffix()}",
+            inherit_mask={},
+            asset_url="/storage/generated/char_variant_ref.png",
+        )
+        db.add(variant)
+        await db.flush()
+        variant_id = variant.id
+    db.add(StoryboardCharacter(
+        storyboard_id=sb.id, character_id=char.id,
+        variant_id=variant_id, link_confidence=0.8,
+    ))
+    await db.commit()
+    return char, variant
+
+
+async def test_guanjianzhen_meta_tou_chuan_dingzhuangzhao(client, auth, db):
+    """A-04 扩展：关键帧任务 meta 透传绑定角色的定妆照参考图。
+
+    分镜绑定带定妆照的角色后发起 trial：任务 meta.reference_image_urls
+    应为 [该角色定妆照 URL]，并携带项目画幅与一致性生成指令
+    （TaskOut 不透出 meta，直接查库断言）。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    pid, sb = await _make_project_with_storyboard(client, auth, db, unique_suffix())
+    char, _ = await _bind_character_with_image(client, auth, db, pid, sb, use_variant=False)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/storyboards/{sb.id}/keyframes",
+        headers=auth["headers"],
+        json={"phase": "trial"},
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["tasks"][0]["id"]
+    row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
+    meta = row.meta or {}
+    assert meta.get("reference_image_urls") == [char.asset_url]
+    # 输出画幅跟随项目配置（新建项目时选择的输出比例）
+    assert meta.get("aspect_ratio")
+    # 一致性生成指令动态追加进正向提示词（存量分镜免重拆即生效）
+    assert "生成要求" in (meta.get("prompt") or "")
+
+    # 收尾：等任务终态，避免遗留排队任务
+    await wait_task_terminal(client, auth["headers"], task_id)
+
+
+async def test_guanjianzhen_cankao_youxian_bianzhitu(client, auth, db):
+    """A-04 扩展：绑定记录指向造型变体时优先取变体图作为参考图。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    pid, sb = await _make_project_with_storyboard(client, auth, db, unique_suffix())
+    await _bind_character_with_image(client, auth, db, pid, sb, use_variant=True)
+
+    resp = await client.post(
+        f"/api/projects/{pid}/storyboards/{sb.id}/keyframes",
+        headers=auth["headers"],
+        json={"phase": "trial"},
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["tasks"][0]["id"]
+    row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
+    assert (row.meta or {}).get("reference_image_urls") == ["/storage/generated/char_variant_ref.png"]
+
+    # 收尾：等任务终态，避免遗留排队任务
+    await wait_task_terminal(client, auth["headers"], task_id)
+
+
+async def test_guanjianzhen_cankao_shouji_changjing_daoju(client, auth, db):
+    """A-04 扩展：参考图组按「角色 → 场景 → 道具」顺序收集绑定资产图。
+
+    分镜同时绑定角色（含定妆照）、场景（概念图）与道具（标准图）时，
+    任务 meta.reference_image_urls 应为三者依序组成的列表。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    pid, sb = await _make_project_with_storyboard(client, auth, db, unique_suffix())
+    char, _ = await _bind_character_with_image(client, auth, db, pid, sb, use_variant=False)
+    # 直插场景与道具资产并绑定到分镜
+    scene = Scene(
+        project_id=pid, name=f"天台_{unique_suffix()}", visual_prompt="场景视觉提示词",
+        asset_url="/storage/generated/scene_ref.png",
+    )
+    prop = Prop(
+        project_id=pid, name=f"手机_{unique_suffix()}", visual_prompt="道具视觉提示词",
+        asset_url="/storage/generated/prop_ref.png",
+    )
+    db.add_all([scene, prop])
+    await db.flush()
+    sb.scene_id = scene.id
+    db.add(StoryboardProp(storyboard_id=sb.id, prop_id=prop.id, prop_version=1))
+    await db.commit()
+
+    resp = await client.post(
+        f"/api/projects/{pid}/storyboards/{sb.id}/keyframes",
+        headers=auth["headers"],
+        json={"phase": "trial"},
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["tasks"][0]["id"]
+    row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
+    assert (row.meta or {}).get("reference_image_urls") == [
+        char.asset_url,
+        "/storage/generated/scene_ref.png",
+        "/storage/generated/prop_ref.png",
+    ]
+
+    # 收尾：等任务终态，避免遗留排队任务
+    await wait_task_terminal(client, auth["headers"], task_id)
