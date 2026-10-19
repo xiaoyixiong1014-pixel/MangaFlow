@@ -118,6 +118,14 @@ class Character(Base):
         Text, nullable=True, comment="风格与画质特点（角色圣经：画风/光线/画质关键词）")
     voice_note: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="音色设定（角色圣经：性别/年龄感/音色质地/说话习惯，配音选音色依据）")
+    # 音色确认闭环（2026-10-19）：试音 → 用户确认 → 锁定，锁定后该镜配音才可发起
+    voice_selected: Mapped[Optional[str]] = mapped_column(
+        String(20), nullable=True, comment="确认音色标识（锁定时固化的 male_01/male_02/female_01/female_02）")
+    voice_locked: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false",
+        comment="音色已锁定（True 后该角色所在镜头配音才可发起）")
+    voice_sample_url: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True, comment="试音音频 URL（「我是XX，这是我的配音」试音产物）")
     motivation: Mapped[Optional[str]] = mapped_column(
         Text, nullable=True, comment="行为动机（P-1）")
     arc: Mapped[Optional[str]] = mapped_column(

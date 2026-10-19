@@ -690,6 +690,114 @@ async def _has_audio_stream(ffprobe: Optional[str], src: Path) -> bool:
     )
 
 
+async def _probe_duration(ffprobe: Optional[str], src: Path) -> Optional[float]:
+    """探测媒体文件时长（秒，内部函数，音画对齐补齐策略依据）。
+
+    Args:
+        ffprobe: ffprobe 可执行文件路径（None 时返回 None）。
+        src: 媒体文件路径（视频或音频）。
+
+    Returns:
+        Optional[float]: 时长（秒）；ffprobe 不可用/探测失败/解析异常返回 None。
+
+    Raises:
+        无：内部捕获全部异常返回 None。
+    """
+    if not ffprobe:
+        return None
+    cmd = [
+        ffprobe, "-v", "error", "-show_entries", "format=duration",
+        "-of", "csv=p=0", str(src),
+    ]
+    proc = await shutil_get_run(cmd, capture=True)
+    if proc is None or proc.returncode != 0 or not proc.stdout:
+        return None
+    try:
+        dur = float(proc.stdout.strip())
+    except (TypeError, ValueError):
+        return None
+    return dur if dur > 0 else None
+
+
+async def _merge_clip_audio(
+    ffmpeg: str,
+    ffprobe: Optional[str],
+    video_path: Path,
+    audio_path: Optional[Path],
+    out_path: Path,
+) -> Optional[Path]:
+    """把分镜配音合入视频片段（音频先行音画对齐，2026-10-19 流程确认）。
+
+    对齐策略（输出时长 = max(视频, 配音)）：
+    - 配音长于视频：视频末帧定格补齐（tpad stop_mode=clone）；
+    - 配音短于视频：视频保持完整，音频补静音至视频末（apad whole_dur）；
+    - 视频自带音轨（如 wan 输出含环境音）：环境音降音量 0.35 与配音 amix；
+    - 无配音片段：补静音音轨（anullsrc），统一「片段恒有 AAC 音轨 + 同参
+      编码」，保证 concat -c copy 拼接兼容与音轨连续。
+
+    任一失败返回 None（调用方回退原片段——音画对齐降级不阻断合成）。
+
+    Args:
+        ffmpeg: ffmpeg 可执行文件路径。
+        ffprobe: ffprobe 可执行文件路径（探测时长用，None 时无法对齐返回 None）。
+        video_path: 视频片段物理路径。
+        audio_path: 配音音频物理路径（None = 补静音轨仅做编码统一）。
+        out_path: 输出片段路径。
+
+    Returns:
+        Optional[Path]: 成功返回输出路径；失败返回 None。
+
+    Raises:
+        无：内部捕获全部异常返回 None。
+    """
+    if not ffprobe:
+        return None
+    try:
+        video_dur = await _probe_duration(ffprobe, video_path)
+        if video_dur is None:
+            return None
+        audio_dur = (
+            await _probe_duration(ffprobe, audio_path) if audio_path else None
+        )
+        total = max(video_dur, audio_dur or 0.0)
+        pad = max(0.0, total - video_dur)
+        cmd: List[str] = [ffmpeg, "-y", "-i", str(video_path)]
+        if audio_path:
+            cmd += ["-i", str(audio_path)]
+            audio_in = "[1:a]"
+        else:
+            # 静音源（与配音同采样率，保证 concat 音轨参数一致）
+            cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
+            audio_in = "[1:a]"
+        has_native_audio = await _has_audio_stream(ffprobe, video_path)
+        vf = f"[0:v]tpad=stop_mode=clone:stop_duration={pad:.3f}[v]"
+        if audio_path and has_native_audio:
+            # 片段自带音轨：环境音降量后与配音混音（配音优先）
+            af = (
+                f"[0:a]volume=0.35[env];{audio_in}volume=1.0[dub];"
+                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0,"
+                f"apad=whole_dur={total:.3f}[a]"
+            )
+        else:
+            af = f"{audio_in}apad=whole_dur={total:.3f}[a]"
+        cmd += [
+            "-filter_complex", f"{vf};{af}",
+            "-map", "[v]", "-map", "[a]",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+            "-t", f"{total:.3f}",
+            str(out_path),
+        ]
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
+        if proc is None or proc.returncode != 0 or not out_path.exists():
+            return None
+        return out_path
+    except Exception:
+        return None
+
+
 async def _postprocess_film(
     ffmpeg: str,
     ffprobe: Optional[str],
@@ -886,10 +994,27 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if ffmpeg and storyboards:
-        # 片段物理路径（按序）；仅拼接真实存在的本地文件
-        pairs = [(sb, _physical_path(sb.video_url)) for sb in storyboards]
-        pairs = [(sb, p) for sb, p in pairs if p.exists()]
+        # 音画对齐（音频先行）：每镜先把配音合入片段（配音长于视频时末帧定格
+        # 补齐，短于视频时补静音），无配音镜也统一重编码补静音轨——保证 concat
+        # -c copy 拼接编码参数与音轨连续性；对齐失败的镜回退原片段不阻断合成
+        pairs: List[Tuple[Storyboard, Path]] = []
+        for idx, sb in enumerate(storyboards):
+            vp = _physical_path(sb.video_url)
+            if not vp.exists():
+                continue
+            audio_phys = _physical_path(sb.audio_url) if sb.audio_url else None
+            has_audio = bool(audio_phys and audio_phys.is_file())
+            # 统一处理：有配音合入音轨（末帧定格/静音补齐），无配音补静音轨，
+            # 全部片段同参编码保证 concat -c copy 兼容；失败回退原片段
+            merged = await _merge_clip_audio(
+                ffmpeg, ffprobe, vp, audio_phys if has_audio else None,
+                out_dir / f"_av_{task.id}_{idx}.mp4",
+            )
+            pairs.append((sb, merged or vp))
         clip_paths = [p for _, p in pairs]
+        # 转场与配音互斥（v1）：xfade 链只处理视频轨会丢弃配音音轨，
+        # 存在任一配音片段时跳过转场回退 concat 直拼（保音画同步）
+        has_dub = any(sb.audio_url for sb, _ in pairs)
         if clip_paths:
             base_path = out_dir / f"{task.project_id}_v{version_no}.mp4"
             list_path = out_dir / f"_concat_{task.id}.txt"
@@ -898,8 +1023,9 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             )
             xfade_applied = False
             transition_duration = 0.0
-            # 转场（Task 5.3）：≥2 片段时以 xfade 链重编码替代直拼产物；失败回退直拼
-            if current and transition and len(clip_paths) >= 2:
+            # 转场（Task 5.3）：≥2 片段且全片无分镜配音时以 xfade 链重编码替代
+            # 直拼产物；失败回退直拼
+            if current and transition and len(clip_paths) >= 2 and not has_dub:
                 durations = [
                     float(sb.actual_duration or sb.duration or 5) for sb, _ in pairs
                 ]

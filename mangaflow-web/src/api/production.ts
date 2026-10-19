@@ -112,6 +112,23 @@ export function tts(
 }
 
 /**
+ * 创建角色音色试音任务（「我是XX，这是我的配音」一句试音，产物回写角色）。
+ * @param projectId 项目 ID
+ * @param characterId 角色 ID
+ * @param payload 音色（可空=按角色音色设定自动路由）
+ * @returns 新建任务
+ */
+export function voicePreview(
+  projectId: number,
+  characterId: number,
+  payload: { voice?: 'male_01' | 'male_02' | 'female_01' | 'female_02' },
+): Promise<GenTask> {
+  return client
+    .post(`/projects/${projectId}/characters/${characterId}/voice-preview`, payload)
+    .then((r) => r.data)
+}
+
+/**
  * 查询任务详情。
  * @param taskId 任务 ID
  * @returns 任务输出

@@ -514,6 +514,22 @@ MISSING_COLUMN_DDL_STATEMENTS: list = [
     ("characters",
      "COMMENT ON COLUMN characters.voice_note IS "
      "'音色设定（角色圣经：性别/年龄感/音色质地/说话习惯，配音路由依据）'"),
+    # ---------- 角色音色确认闭环（2026-10-19：试音 → 锁定 → 门禁配音） ----------
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS voice_selected VARCHAR(20)"),
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS voice_locked BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("characters",
+     "ALTER TABLE characters ADD COLUMN IF NOT EXISTS voice_sample_url VARCHAR(255)"),
+    ("characters",
+     "COMMENT ON COLUMN characters.voice_selected IS "
+     "'确认音色标识（锁定时固化的 male_01/male_02/female_01/female_02）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.voice_locked IS "
+     "'音色已锁定（True 后该角色所在镜头配音才可发起）'"),
+    ("characters",
+     "COMMENT ON COLUMN characters.voice_sample_url IS "
+     "'试音音频 URL（「我是XX，这是我的配音」试音产物）'"),
     ("characters",
      "COMMENT ON COLUMN characters.style_note IS "
      "'风格与画质特点（角色圣经：画风/光线/画质关键词）'"),

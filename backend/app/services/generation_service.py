@@ -11,6 +11,7 @@
 """
 
 import math
+import re
 from typing import Dict, List, Optional, Tuple
 from uuid import uuid4
 
@@ -34,7 +35,7 @@ from app.models import (
     Wallet,
 )
 from app.services.billing_service import freeze_points
-from app.services.voice_router import resolve_voice
+from app.services.voice_router import resolve_speech_params, resolve_voice
 
 # 关键帧单价（积分/张）
 IMAGE_COST_PER_FRAME = 10
@@ -497,6 +498,45 @@ async def create_keyframe_tasks(
     return tasks, total_cost
 
 
+async def get_storyboard_audio_duration(
+    db: AsyncSession, storyboard_id: int
+) -> Optional[float]:
+    """查询分镜已完成配音的实际时长（音频先行：视频时长跟随配音）。
+
+    取该镜最近一条已完成 TTS 任务的 meta.duration_sec（TTS 执行器回写，
+    RD-31 口径）；无配音或字段缺失返回 None（调用方回退分镜估算时长）。
+
+    Args:
+        db: 异步数据库会话。
+        storyboard_id: 分镜 ID。
+
+    Returns:
+        Optional[float]: 配音实际时长（秒）；无配音时 None。
+
+    Raises:
+        无：数据库查询异常向上抛出（由调用方事务回滚）。
+    """
+    row = (
+        await db.execute(
+            select(Task.meta)
+            .where(
+                Task.storyboard_id == storyboard_id,
+                Task.type == "tts",
+                Task.status == "done",
+            )
+            .order_by(Task.id.desc())
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if not row:
+        return None
+    try:
+        dur = float((row or {}).get("duration_sec") or 0)
+    except (TypeError, ValueError):
+        return None
+    return dur if dur > 0 else None
+
+
 async def create_video_task(
     db: AsyncSession,
     *,
@@ -508,6 +548,10 @@ async def create_video_task(
     motion_strength: str = "medium",
 ) -> Task:
     """创建视频片段生成任务（成本 = 每秒单价 × 分镜时长，P-12 视频参数）。
+
+    音频先行（2026-10-19 用户确认流程）：分镜已有配音时视频时长取配音实际
+    时长向上取整（wan 端仍钳 2~15s，配音超出部分由合成阶段末帧定格补齐），
+    保证口型/节奏与对白对齐；无配音回退分镜估算时长。
 
     use_end_frame=True 时校验分镜尾帧已生成（storyboards.end_frame_url 非空，
     为空 400 提示先生成尾帧）；三参数写入 meta.video_params，首尾帧地址写入
@@ -533,8 +577,11 @@ async def create_video_task(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="该分镜尚未生成尾帧，请先生成尾帧再开启尾帧控制",
         )
+    # 音频先行：配音时长优先，回退分镜估算时长（计费与生成时长同口径）
+    audio_duration = await get_storyboard_audio_duration(db, storyboard.id)
+    duration = max(1, math.ceil(audio_duration)) if audio_duration else (storyboard.duration or 5)
     per_second = await get_video_price(db)
-    cost = max(1, int(per_second * (storyboard.duration or 5)))
+    cost = max(1, int(per_second * duration))
     # 方案 B：负面排除段从锁定层剥离（视频正向提示词同样不混入负面）
     locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
     prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style)
@@ -549,7 +596,9 @@ async def create_video_task(
         meta={
             "prompt": prompt,
             "negative_prompt": locked_negative,
-            "duration": storyboard.duration or 5,
+            "duration": duration,
+            # 音频先行溯源：时长来源（audio=配音对齐 / storyboard=估算回退）
+            "duration_source": "audio" if audio_duration else "storyboard",
             "storyboard_id": storyboard.id,
             "use_end_frame": use_end_frame,
             # P-12 视频参数（执行器透传给 provider 请求体）
@@ -633,6 +682,94 @@ async def create_end_frame_task(
     )
 
 
+def _parse_dialogue_speakers(dialogue: Optional[str]) -> List[str]:
+    """解析分镜对白文本的说话人名列表（内部函数，音色确认门禁依据）。
+
+    「XXX：台词」逐行取冒号前缀（≤20 字符），去重保序；无法解析的行忽略。
+
+    Args:
+        dialogue: 分镜对白文本（多行「说话人：台词」格式，可空）。
+
+    Returns:
+        List[str]: 说话人名列表（去重保序，可能为空）。
+
+    Raises:
+        无：纯文本解析，不产生异常路径。
+    """
+    speakers: List[str] = []
+    for line in str(dialogue or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^([^：:]{1,20})[：:]", line)
+        if m:
+            name = m.group(1).strip()
+            if name and name not in speakers:
+                speakers.append(name)
+    return speakers
+
+
+def _strip_dialogue_speakers(dialogue: Optional[str]) -> str:
+    """剥离对白说话人前缀，拼接纯台词文本（内部函数，配音合成文本）。
+
+    「XXX：台词」逐行取冒号后台词，多行以空格连接——角色名不进语音
+    （TTS 不把说话人名念出来）；无法解析前缀的行原样保留。
+
+    Args:
+        dialogue: 分镜对白文本（多行「说话人：台词」格式，可空）。
+
+    Returns:
+        str: 纯台词文本（可能为空，调用方回退画面描述）。
+
+    Raises:
+        无：纯文本解析，不产生异常路径。
+    """
+    lines: List[str] = []
+    for line in str(dialogue or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^(?:[^：:]{1,20})[：:](.+)$", line)
+        lines.append((m.group(1) if m else line).strip())
+    return " ".join(x for x in lines if x)
+
+
+# 情绪标签 → 语音表现乘数（语速乘数, 音调乘数）：叠加在 voice_note 基调上
+_EMOTION_MODIFIERS: Dict[str, Tuple[float, float]] = {
+    "压抑": (0.92, 0.92), "低落": (0.9, 0.9), "悲伤": (0.85, 0.9), "沮丧": (0.9, 0.9),
+    "紧张": (1.1, 1.02), "急促": (1.15, 1.05),
+    "爽感": (1.1, 1.05), "激动": (1.12, 1.08), "爆发": (1.15, 1.1), "愤怒": (1.15, 1.1),
+    "温馨": (0.95, 1.02), "释然": (0.95, 1.0),
+    "恐惧": (1.05, 0.95), "惊讶": (1.1, 1.1),
+}
+
+
+def _apply_emotion(speed: float, pitch: float, emotion: str) -> Tuple[float, float]:
+    """按分镜情绪标签微调语速/音调（内部函数，情绪表现力叠加）。
+
+    在 voice_note 推导基调上乘以情绪乘数（乘法叠加），倍率钳制 0.5~2.0；
+    情绪词未命中任何修饰项时原样返回。
+
+    Args:
+        speed: 基础语速倍率。
+        pitch: 基础音调倍率。
+        emotion: 分镜情绪标签（如「压抑」「爽感」）。
+
+    Returns:
+        Tuple[float, float]: (speed, pitch)（各钳制 0.5~2.0）。
+
+    Raises:
+        无：纯数值计算，不产生异常路径。
+    """
+    for kw, (sm, pm) in _EMOTION_MODIFIERS.items():
+        if kw in emotion:
+            return (
+                min(2.0, max(0.5, speed * sm)),
+                min(2.0, max(0.5, pitch * pm)),
+            )
+    return (speed, pitch)
+
+
 async def create_tts_task(
     db: AsyncSession,
     *,
@@ -644,47 +781,105 @@ async def create_tts_task(
 ) -> Task:
     """创建配音（TTS）生成任务（成本 = ceil(字数/100)×5 积分）。
 
-    音色路由（角色圣经 voice_note）：voice 显式传入时直接使用（用户在前端
-    手动指定）；未指定（None/空）时按分镜第一个绑定角色的「音色设定 +
-    性别」经 voice_router.resolve_voice 自动路由（角色圣经 voice_note 由
-    角色设定 agent 生成，配音选音色的依据），无绑定角色/无音色设定时回退
-    female_01。
+    多说话人分段配音（2026-10-19）：对白逐行解析为「说话人 + 台词」段，
+    每段用该说话人角色的锁定音色（voice_selected/自动路由）与自身音色设定
+    推导的语速/音调独立合成，执行器拼接为单条音轨回写——一个角色一段对话
+    一行，角色名不进语音也不串音。
+
+    音色确认门禁：本镜对白说话人对应的绑定角色必须已完成音色锁定
+    （voice_locked），未锁定 400 拦截。
 
     Args:
         db: 异步数据库会话。
         project: 归属项目。
         storyboard: 目标分镜（文本取 dialogue，为空回退 visual_description）。
-        voice: 音色标识（male_01/male_02/female_01/female_02；None/空=按角色自动路由）。
-        speed: 语速倍率。
-        pitch: 音调倍率。
+        voice: 音色标识（无匹配说话人段的旁白回退音色；None=自动路由）。
+        speed: 语速倍率（旁白段基调）。
+        pitch: 音调倍率（旁白段基调）。
 
     Returns:
-        Task: 已落库的新配音任务。
+        Task: 已落库的新配音任务（meta.segments 携带分段参数）。
 
     Raises:
-        HTTPException: 400 —— 分镜无可配音文本；409 —— 积分余额不足。
+        HTTPException: 400 —— 分镜无可配音文本 / 说话人角色音色未锁定；
+            409 —— 积分余额不足。
     """
-    text = (storyboard.dialogue or "").strip() or (storyboard.visual_description or "").strip()
+    # 音频先行对白处理：剥离「说话人：」前缀只合成台词（角色名不进语音）；
+    # 对白为空/无前缀行时回退画面描述（与既有口径一致）
+    text = _strip_dialogue_speakers(storyboard.dialogue) or (storyboard.visual_description or "").strip()
     if not text:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该分镜无可配音文本（对白与画面描述均为空）")
+    # 绑定角色一次查询（音色门禁与段级音色共用）
+    bound_chars: List[Character] = (
+        await db.execute(
+            select(Character)
+            .join(StoryboardCharacter, StoryboardCharacter.character_id == Character.id)
+            .where(StoryboardCharacter.storyboard_id == storyboard.id)
+            .order_by(StoryboardCharacter.id.asc())
+        )
+    ).scalars().all()
+    bound_by_name = {ch.name: ch for ch in bound_chars}
+    # 音色确认门禁：对白说话人对应的绑定角色必须已锁定音色
+    speakers = _parse_dialogue_speakers(storyboard.dialogue)
+    unlocked = [n for n in speakers if n in bound_by_name and not bound_by_name[n].voice_locked]
+    if unlocked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"角色「{'、'.join(unlocked)}」音色未确认，请先在配音页完成试音并锁定音色后再生成分镜配音",
+        )
+    # 旁白基调（无匹配说话人的段回退）：显式 voice > 第一个绑定角色锁定/路由
     resolved_voice = (voice or "").strip()
     voice_note_used: Optional[str] = None
+    if not resolved_voice and bound_chars:
+        first_char = bound_chars[0]
+        voice_note_used = first_char.voice_note
+        resolved_voice = first_char.voice_selected or resolve_voice(
+            first_char.voice_note, first_char.gender)
     if not resolved_voice:
-        # 自动路由：分镜第一个绑定角色（拆解时按对白 speaker 关联）的音色设定
-        first_char = (
-            await db.execute(
-                select(Character)
-                .join(StoryboardCharacter, StoryboardCharacter.character_id == Character.id)
-                .where(StoryboardCharacter.storyboard_id == storyboard.id)
-                .order_by(StoryboardCharacter.id.asc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        if first_char is not None:
-            voice_note_used = first_char.voice_note
-            resolved_voice = resolve_voice(first_char.voice_note, first_char.gender)
+        resolved_voice = "female_01"
+    # 旁白段基调参数：请求显式调整（≠1.0）优先，否则按第一个绑定角色推导
+    base_speed, base_pitch = speed, pitch
+    if base_speed == 1.0 or base_pitch == 1.0:
+        derived_speed, derived_pitch = resolve_speech_params(voice_note_used, base_speed, base_pitch)
+        if base_speed == 1.0:
+            base_speed = derived_speed
+        if base_pitch == 1.0:
+            base_pitch = derived_pitch
+    # 情绪表现力：分镜 audio.emotion 情绪标签（段级同样叠加）
+    emotion = str((storyboard.audio or {}).get("emotion") or "").strip()
+    if emotion:
+        base_speed, base_pitch = _apply_emotion(base_speed, base_pitch, emotion)
+    # 段级构建：每个对白行独立音色/语速/音调（说话人角色锁定音色 +
+    # 自身 voice_note 推导 + 情绪叠加）；无匹配说话人行用旁白基调
+    segments: List[Dict] = []
+    for line in str(storyboard.dialogue or "").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^([^：:]{1,20})[：:](.+)$", line)
+        speaker = m.group(1).strip() if m else None
+        seg_text = (m.group(2) if m else line).strip()
+        if not seg_text:
+            continue
+        ch = bound_by_name.get(speaker or "") if speaker else None
+        if ch is not None:
+            seg_voice = ch.voice_selected or resolve_voice(ch.voice_note, ch.gender)
+            seg_speed, seg_pitch = resolve_speech_params(ch.voice_note)
         else:
-            resolved_voice = "female_01"
+            seg_voice = resolved_voice
+            seg_speed, seg_pitch = base_speed, base_pitch
+        if emotion:
+            seg_speed, seg_pitch = _apply_emotion(seg_speed, seg_pitch, emotion)
+        segments.append({
+            "speaker": speaker or "",
+            "text": seg_text,
+            "voice": seg_voice,
+            "speed": seg_speed,
+            "pitch": seg_pitch,
+        })
+    if not segments:
+        segments = [{"speaker": "", "text": text, "voice": resolved_voice,
+                     "speed": base_speed, "pitch": base_pitch}]
     cost = max(1, math.ceil(len(text) / 100) * TTS_COST_PER_100_CHARS)
     await _precheck_balance(db, project.user_id, cost)
     return await freeze_and_create_task(
@@ -695,14 +890,71 @@ async def create_tts_task(
         cost_points=cost,
         storyboard_id=storyboard.id,
         meta={
+            # text：全文（内容审核与溯源）；segments：分段合成参数（执行器逐段合成拼接）
+            "text": text,
+            "segments": segments,
+            "voice": segments[0]["voice"],
+            "speed": segments[0]["speed"],
+            "pitch": segments[0]["pitch"],
+            "storyboard_id": storyboard.id,
+            **({"emotion": emotion} if emotion else {}),
+            **({"voice_note": voice_note_used} if voice_note_used else {}),
+        },
+        idempotency_key=f"tts_{storyboard.id}_{uuid4().hex[:8]}",
+    )
+
+
+async def create_voice_preview_task(
+    db: AsyncSession,
+    *,
+    project: Project,
+    character: Character,
+    voice: Optional[str],
+) -> Task:
+    """创建角色音色试音任务（「我是XX，这是我的配音。」一句试音）。
+
+    音色：voice 显式传入（前端映射表下拉当前选择）优先，否则按角色
+    voice_note + gender 经 voice_router 自动路由。产物由执行器回写
+    characters.voice_sample_url（meta.target_type=character_voice 分流），
+    不回写分镜（storyboard_id=None）。成本按 TTS 最低档 5 积分。
+
+    Args:
+        db: 异步数据库会话。
+        project: 归属项目。
+        character: 试音角色（须归属该项目）。
+        voice: 音色标识（None/空=按角色音色设定自动路由）。
+
+    Returns:
+        Task: 已落库的新试音任务。
+
+    Raises:
+        HTTPException: 409 —— 积分余额不足；403/429 —— 分级处罚准入拦截。
+    """
+    text = f"我是{character.name}，这是我的配音。"
+    resolved_voice = (voice or "").strip() or resolve_voice(
+        character.voice_note, character.gender)
+    # 语速/音调表现力：从 voice_note 说话习惯/质地推导（试音即可闻差异）
+    speed, pitch = resolve_speech_params(character.voice_note)
+    cost = max(1, math.ceil(len(text) / 100) * TTS_COST_PER_100_CHARS)
+    await _precheck_balance(db, project.user_id, cost)
+    return await freeze_and_create_task(
+        db,
+        project=project,
+        task_type="tts",
+        phase="trial",
+        cost_points=cost,
+        storyboard_id=None,
+        meta={
             "text": text,
             "voice": resolved_voice,
             "speed": speed,
             "pitch": pitch,
-            "storyboard_id": storyboard.id,
-            **({"voice_note": voice_note_used} if voice_note_used else {}),
+            # 执行器按 target 分流回写 characters.voice_sample_url
+            "target_type": "character_voice",
+            "target_id": character.id,
+            "character_id": character.id,
         },
-        idempotency_key=f"tts_{storyboard.id}_{uuid4().hex[:8]}",
+        idempotency_key=f"voice_preview_{character.id}_{uuid4().hex[:8]}",
     )
 
 

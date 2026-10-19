@@ -4,7 +4,7 @@
   对应原型 S-07（内容生成）+ S-08（配音与合成），路由 /projects/:id/production。
   功能：
   - 顶部积分消耗条：billing.wallet 的可用 / 冻结积分；
-  - 三个 Tab（el-tabs）：
+  - 四个 Tab（el-tabs，音频先行流程顺序：关键帧 → 配音 → 视频 → 合成）：
     ① 关键帧：分镜网格卡（keyframe_url 图或占位 + 状态角标 + D3「演示占位」角标）；
       每张卡片提供「生成 / 重新生成」按钮 keyframes(phase=trial) 单镜生成
       （已有关键帧时先确认覆盖）；「全量生成」确认框（将生成 N 张、
@@ -225,6 +225,11 @@ function startTaskStream(): void {
             .listStoryboard(projectId.value, currentEpisodeId.value ?? undefined)
             .then((sb) => {
               boards.value = sb
+              // 清理已完成配音的「生成中」状态（批量/单镜提交统一在此收敛）
+              ttsGeneratingIds.value = ttsGeneratingIds.value.filter((id) => {
+                const b = sb.find((x) => x.id === id)
+                return b ? !b.audio_url : false
+              })
             })
           void refreshWallet()
         }
@@ -542,27 +547,25 @@ async function genEndFrame(b: Storyboard): Promise<void> {
 // 配音与合成 Tab（S-08）
 // ============================================================
 
-/** 角色音色映射（角色 ID → 音色；用户手动指定优先于后端自动路由） */
-const voiceMap = reactive<Record<number, 'male_01' | 'male_02' | 'female_01' | 'female_02'>>({})
-
 /**
- * 取某镜的显式音色：仅当用户为第一个绑定角色手动指定过音色时返回；
- * 未指定返回 undefined——后端按绑定角色的「音色设定」（角色圣经 voice_note）
- * 自动路由，不再全项目共用固定缺省音色。
+ * 取某镜的显式音色：第一个绑定角色的确认音色（voice_selected，锁定时固化、
+ * 映射表编辑暂存）；未设置返回 undefined——后端按绑定角色的「音色设定」
+ * （voice_note）自动路由，不再全项目共用固定缺省音色。
  * @param b 目标分镜
- * @returns 显式音色标识（未手动指定为 undefined）
+ * @returns 显式音色标识（未设置为 undefined）
  */
 function voiceOf(b: Storyboard): 'male_01' | 'male_02' | 'female_01' | 'female_02' | undefined {
   const first = b.characters[0]
-  if (first) return voiceMap[first.character_id]
+  if (first) return (characterById.value.get(first.character_id)?.voice_selected ?? undefined) as
+    | 'male_01' | 'male_02' | 'female_01' | 'female_02' | undefined
   return undefined
 }
 
 /** 配音任务提交中的分镜 ID 集合（防重复点击） */
 const ttsBusyIds = ref<number[]>([])
 
-/** 已完成配音的分镜列表（依据后端回写的 audio_url，刷新页面后依然准确） */
-const ttsDoneBoards = computed(() => boards.value.filter((x) => x.audio_url))
+/** 有对白的分镜列表（分镜配音表仅展示有角色对话的镜；无对白镜无需配音） */
+const dialogueBoards = computed(() => boards.value.filter((x) => (x.dialogue || '').trim()))
 
 // ---------- 行内配音试听（单例播放器：同时只播一条） ----------
 
@@ -597,13 +600,203 @@ function togglePlay(b: Storyboard): void {
     })
 }
 
-// 播放结束/异常时复位图标
+// 播放结束/异常时复位图标（分镜试听与角色试音共用单例播放器）
 audioEl.addEventListener('ended', () => {
   playingSbId.value = null
+  playingVoiceId.value = null
 })
 audioEl.addEventListener('error', () => {
   playingSbId.value = null
+  playingVoiceId.value = null
 })
+
+// ---------- 音色确认闭环（试音 → 锁定 → 门禁分镜配音） ----------
+
+/** 音色试音任务提交中的角色 ID 集合（防重复点击） */
+const voicePreviewBusyIds = ref<number[]>([])
+/** 音色锁定/解锁提交中的角色 ID 集合（防重复点击） */
+const voiceLockBusyIds = ref<number[]>([])
+/** 正在播放试音的角色 ID（null = 无播放，与分镜试听共用单例播放器） */
+const playingVoiceId = ref<number | null>(null)
+/** 角色 ID → 角色映射（门禁/锁定判断用） */
+const characterById = computed(() => new Map(characters.value.map((c) => [c.id, c])))
+
+/**
+ * 解析分镜对白说话人名列表（「XXX：台词」行前缀，与后端门禁同口径）。
+ * @param b 目标分镜
+ * @returns 说话人名数组（去重保序）
+ */
+function speakersOf(b: Storyboard): string[] {
+  const names: string[] = []
+  for (const line of String(b.dialogue || '').split('\n')) {
+    const m = line.trim().match(/^([^：:]{1,20})[：:]/)
+    const name = m?.[1]?.trim()
+    if (name && !names.includes(name)) names.push(name)
+  }
+  return names
+}
+
+/**
+ * 判断某镜配音是否被音色门禁拦截（任一对白说话人角色未锁定音色）。
+ * @param b 目标分镜
+ * @returns 未锁定的说话人角色名数组（空 = 放行）
+ */
+function unlockedSpeakersOf(b: Storyboard): string[] {
+  const lockedByName = new Map(characters.value.map((c) => [c.name, c.voice_locked]))
+  return speakersOf(b).filter((n) => lockedByName.get(n) === false)
+}
+
+interface DialogueSeg {
+  /** 说话人名（无「XXX：」前缀的行 为 null） */
+  speaker: string | null
+  /** 台词文本 */
+  text: string
+}
+
+/**
+ * 解析分镜对白为「说话人 + 台词」分段（对白列角色名高亮渲染用）。
+ * @param b 目标分镜
+ * @returns 分段列表（保持行序）
+ */
+function dialogueSegments(b: Storyboard): DialogueSeg[] {
+  const segs: DialogueSeg[] = []
+  for (const line of String(b.dialogue || '').split('\n')) {
+    const t = line.trim()
+    if (!t) continue
+    const m = t.match(/^([^：:]{1,20})[：:](.+)$/)
+    if (m && m[1] && m[2]) segs.push({ speaker: m[1].trim(), text: m[2].trim() })
+    else segs.push({ speaker: null, text: t })
+  }
+  return segs
+}
+
+/**
+ * 播放/暂停角色试音音频（复用单例播放器，与分镜试听互斥）。
+ * @param row 目标角色（voice_sample_url 为空时不处理）
+ * @returns 无
+ */
+function playVoiceSample(row: CharacterAsset): void {
+  if (!row.voice_sample_url) return
+  if (playingVoiceId.value === row.id) {
+    audioEl.pause()
+    playingVoiceId.value = null
+    return
+  }
+  audioEl.pause()
+  playingSbId.value = null
+  audioEl.src = row.voice_sample_url
+  playingVoiceId.value = row.id
+  audioEl
+    .play()
+    .catch(() => {
+      playingVoiceId.value = null
+      ElMessage.warning('试音播放失败，请重新生成试音')
+    })
+}
+
+/**
+ * 重新拉取资产列表（试音回写 voice_sample_url 后刷新行内状态）。
+ * @returns 无
+ */
+async function refreshCharacters(): Promise<void> {
+  try {
+    const assets = await studioApi.listAssets(projectId.value)
+    characters.value = assets.characters
+  } catch {
+    /* 静默失败：行内状态以下次刷新兜底 */
+  }
+}
+
+/**
+ * 生成角色试音（「我是XX，这是我的配音」）：提交任务并轮询至终态，
+ * 完成后刷新角色（取回 voice_sample_url）并自动播放。
+ * @param row 目标角色（音色取映射表当前选择，未选走自动路由）
+ * @returns 无
+ */
+async function previewVoice(row: CharacterAsset): Promise<void> {
+  if (voicePreviewBusyIds.value.includes(row.id)) return
+  voicePreviewBusyIds.value = [...voicePreviewBusyIds.value, row.id]
+  try {
+    const task = await productionApi.voicePreview(
+      projectId.value, row.id,
+      row.voice_selected ? { voice: row.voice_selected as 'male_01' | 'male_02' | 'female_01' | 'female_02' } : {},
+    )
+    startTaskStream()
+    void refreshTasks()
+    void refreshWallet()
+    const timer = setInterval(async () => {
+      try {
+        const t = await productionApi.taskDetail(task.id)
+        if (t.status === 'done') {
+          clearInterval(timer)
+          await refreshCharacters()
+          const fresh = characters.value.find((c) => c.id === row.id)
+          if (fresh?.voice_sample_url) playVoiceSample(fresh)
+        } else if (t.status === 'failed' || t.status === 'canceled') {
+          clearInterval(timer)
+        }
+      } catch {
+        /* 轮询失败下一轮重试 */
+      }
+    }, 2000)
+  } catch {
+    /* 错误已由拦截器提示（409 积分不足等） */
+  } finally {
+    voicePreviewBusyIds.value = voicePreviewBusyIds.value.filter((i) => i !== row.id)
+  }
+}
+
+/**
+ * 锁定角色音色（按角色音色设定自动路由固化，放行该角色所在镜头配音）。
+ * @param row 目标角色
+ * @returns 无
+ */
+async function lockVoice(row: CharacterAsset): Promise<void> {
+  if (voiceLockBusyIds.value.includes(row.id)) return
+  voiceLockBusyIds.value = [...voiceLockBusyIds.value, row.id]
+  try {
+    const updated = await studioApi.voiceLock(projectId.value, row.id)
+    const idx = characters.value.findIndex((c) => c.id === row.id)
+    if (idx >= 0) characters.value[idx] = updated
+    ElMessage.success(`角色「${row.name}」音色已锁定（${updated.voice_selected ?? '自动'}）`)
+  } catch {
+    /* 错误已由拦截器提示 */
+  } finally {
+    voiceLockBusyIds.value = voiceLockBusyIds.value.filter((i) => i !== row.id)
+  }
+}
+
+/**
+ * 解锁角色音色（误锁纠正；解锁后该角色所在镜头配音重新被门禁拦截）。
+ * @param row 目标角色
+ * @returns 无
+ */
+async function unlockVoice(row: CharacterAsset): Promise<void> {
+  if (voiceLockBusyIds.value.includes(row.id)) return
+  voiceLockBusyIds.value = [...voiceLockBusyIds.value, row.id]
+  try {
+    const updated = await studioApi.voiceUnlock(projectId.value, row.id)
+    const idx = characters.value.findIndex((c) => c.id === row.id)
+    if (idx >= 0) characters.value[idx] = updated
+    ElMessage.success(`角色「${row.name}」音色已解锁`)
+  } catch {
+    /* 错误已由拦截器提示 */
+  } finally {
+    voiceLockBusyIds.value = voiceLockBusyIds.value.filter((i) => i !== row.id)
+  }
+}
+
+/** 生成中的配音分镜 ID 集合（提交后到任务终态，驱动行内动态加载样式） */
+const ttsGeneratingIds = ref<number[]>([])
+
+/**
+ * 判断某镜配音是否在生成中（提交请求或任务轮询阶段）。
+ * @param b 目标分镜
+ * @returns 是否生成中
+ */
+function isTtsBusy(b: Storyboard): boolean {
+  return ttsBusyIds.value.includes(b.id) || ttsGeneratingIds.value.includes(b.id)
+}
 
 /**
  * 生成单镜配音（TTS）。
@@ -612,7 +805,13 @@ audioEl.addEventListener('error', () => {
  */
 async function genTts(b: Storyboard): Promise<void> {
   if (!ensureProductionReady()) return
-  if (ttsBusyIds.value.includes(b.id)) return
+  if (isTtsBusy(b)) return
+  // 音色确认门禁（与后端同口径）：对白说话人角色未锁定音色时拦截
+  const unlocked = unlockedSpeakersOf(b)
+  if (unlocked.length) {
+    ElMessage.warning(`角色「${unlocked.join('、')}」音色未确认，请先在音色映射中试音并锁定音色`)
+    return
+  }
   ttsBusyIds.value = [...ttsBusyIds.value, b.id]
   try {
     // voice 未手动指定时不传——后端按绑定角色的音色设定（voice_note）自动路由
@@ -622,6 +821,8 @@ async function genTts(b: Storyboard): Promise<void> {
       explicitVoice ? { voice: explicitVoice } : {},
     )
     ElMessage.success(`配音任务 #${task.id} 已提交`)
+    ttsBusyIds.value = ttsBusyIds.value.filter((i) => i !== b.id)
+    ttsGeneratingIds.value = [...ttsGeneratingIds.value, b.id]
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
@@ -639,9 +840,13 @@ async function genTts(b: Storyboard): Promise<void> {
           ElMessage.success(`#${b.sequence} 镜配音完成`)
         } else if (t.status === 'failed' || t.status === 'canceled') {
           clearInterval(timer)
+        } else {
+          return
         }
+        ttsGeneratingIds.value = ttsGeneratingIds.value.filter((i) => i !== b.id)
       } catch {
         clearInterval(timer)
+        ttsGeneratingIds.value = ttsGeneratingIds.value.filter((i) => i !== b.id)
       }
     }, 2000)
   } finally {
@@ -649,29 +854,61 @@ async function genTts(b: Storyboard): Promise<void> {
   }
 }
 
-/**
- * 时长差异处理（RD-31 演示范围说明）：
- * 后端 TTS 完成后会把实际时长回写分镜 actual_duration，但列表接口（StoryboardOut）
- * 未暴露该字段，前端无法读取真实差异；因此本区块以「预计时长」展示，三选一中
- * 仅「重新配音」做真实调用（重发 tts 任务），其余两项为前端演示提示。
- */
-const overHandle = ref<'shorten' | 'extend' | 'retts'>('retts')
-/** 正在应用时长处理的目标镜 */
-const overBoard = ref<Storyboard | null>(null)
+/** 批量生成全部配音进行中（防重复点击） */
+const batchTtsBusy = ref(false)
 
 /**
- * 应用时长差异处理方式。
+ * 批量生成全部配音：对所有「有对白且未配音」的镜逐个提交 TTS 任务
+ * （不等终态，任务在右侧任务面板跟踪；音色门禁按镜校验，未锁定音色的镜跳过并提示）。
  * @returns 无
  */
-async function applyOverHandle(): Promise<void> {
-  if (!overBoard.value) return
-  if (overHandle.value === 'retts') {
-    await genTts(overBoard.value)
-  } else if (overHandle.value === 'extend') {
-    // 演示范围：延长镜头需改分镜时长并重合成，此处仅前端提示
-    ElMessage.info('演示范围：延长镜头将在合成阶段按实际音频时长自动适配')
-  } else {
-    ElMessage.info('演示范围：缩短台词请到分镜页编辑对白后重新配音')
+async function batchGenTts(): Promise<void> {
+  if (!ensureProductionReady()) return
+  if (batchTtsBusy.value) return
+  const pending = dialogueBoards.value.filter((b) => !b.audio_url)
+  if (!pending.length) {
+    ElMessage.info('所有有对白的镜头均已配音')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为 ${pending.length} 个未配音镜头批量生成配音（每镜按字数计费，锁定音色 + 情绪自动适配），任务在右侧任务面板跟踪。是否继续？`,
+      '生成全部配音',
+      { type: 'info', confirmButtonText: '开始生成' },
+    )
+  } catch {
+    return
+  }
+  batchTtsBusy.value = true
+  try {
+    let submitted = 0
+    const skipped: string[] = []
+    for (const b of pending) {
+      const unlocked = unlockedSpeakersOf(b)
+      if (unlocked.length) {
+        skipped.push(`#${String(b.sequence).padStart(2, '0')}（${unlocked.join('、')}）`)
+        continue
+      }
+      try {
+        await productionApi.tts(projectId.value, b.id, {})
+        ttsGeneratingIds.value = [...ttsGeneratingIds.value, b.id]
+        submitted += 1
+      } catch {
+        /* 单镜失败（如 409 防重）不阻断其余镜头 */
+      }
+    }
+    if (submitted) {
+      ElMessage.success(`已提交 ${submitted} 个配音任务`)
+      panelVisible.value = true
+      startTaskStream()
+      void refreshTasks()
+      void refreshWallet()
+    }
+    if (skipped.length) {
+      ElMessage.warning(`以下镜头因音色未锁定跳过：${skipped.join('、')}`)
+    }
+  } finally {
+    batchTtsBusy.value = false
   }
 }
 
@@ -895,8 +1132,9 @@ onBeforeUnmount(() => {
     <div class="top-bar">
       <el-tabs v-model="activeTab" class="prod-tabs">
         <el-tab-pane label="关键帧" name="keyframes" />
+        <el-tab-pane label="配音" name="tts" />
         <el-tab-pane label="视频" name="videos" />
-        <el-tab-pane label="配音与合成" name="audio" />
+        <el-tab-pane label="合成" name="compose" />
       </el-tabs>
       <div class="top-right">
         <div class="wallet-line">
@@ -1059,6 +1297,12 @@ onBeforeUnmount(() => {
               <div class="video-side">
                 <div class="video-title">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
                 <div class="video-desc">{{ b.visual_description || '（无画面描述）' }}</div>
+                <!-- 音频先行引导：未配音提示先生成配音（视频时长将跟随配音实际时长） -->
+                <div class="dub-line">
+                  <el-tag v-if="b.audio_url" size="small" type="success" effect="plain">已配音</el-tag>
+                  <el-tag v-else size="small" type="warning" effect="plain">未配音</el-tag>
+                  <span v-if="!b.audio_url" class="dub-tip">建议先到「配音」Tab 生成配音，视频时长将自动对齐配音</span>
+                </div>
                 <!-- P-03/P-08 尾帧控制：仅尾帧已生成的分镜可开启 -->
                 <div class="endframe-line">
                   <el-switch
@@ -1098,30 +1342,75 @@ onBeforeUnmount(() => {
         </div>
       </template>
 
-      <!-- ============ 配音与合成 Tab（S-08） ============ -->
-      <template v-else>
-        <!-- 角色音色映射 -->
+      <!-- ============ 配音 Tab（S-08 前半：音色映射 + 分镜配音） ============ -->
+      <template v-else-if="activeTab === 'tts'">
+        <!-- 角色音色映射（试音 → 锁定 → 门禁分镜配音） -->
         <el-card shadow="never" class="block-card">
-          <template #header><span>角色音色映射</span></template>
+          <template #header>
+            <div class="voice-card-head">
+              <span>角色音色映射</span>
+              <span class="voice-card-tip">按角色设定试音 → 确认音色并锁定后，方可生成该角色的分镜配音</span>
+            </div>
+          </template>
           <el-empty
             v-if="!characters.length"
             description="暂无角色资产"
             :image-size="60"
           />
           <el-table v-else :data="characters" size="small">
-            <el-table-column prop="name" label="角色" width="160" />
-            <el-table-column label="音色" width="220">
+            <el-table-column prop="name" label="角色" width="120" />
+            <el-table-column label="音色设定" min-width="180">
               <template #default="{ row }">
-                <el-select v-model="voiceMap[row.id]" placeholder="female_01（默认）" style="width: 180px">
-                  <el-option label="男声 male_01" value="male_01" />
-                  <el-option label="女声 female_01" value="female_01" />
-                </el-select>
+                <span class="voice-note-text">{{ row.voice_note || '（角色设定未提供音色描述）' }}</span>
               </template>
             </el-table-column>
-            <el-table-column label="试听">
-              <template #default>
-                <!-- 试听占位：TTS 试听接口未提供 -->
-                <el-button size="small" disabled>试听 ▶（暂未开放）</el-button>
+            <el-table-column label="试音" width="200">
+              <template #default="{ row }">
+                <el-button
+                  size="small"
+                  :loading="voicePreviewBusyIds.includes(row.id)"
+                  :disabled="row.voice_locked"
+                  @click="previewVoice(row)"
+                >
+                  {{ row.voice_sample_url ? '重新试音' : '生成试音' }}
+                </el-button>
+                <el-button
+                  v-if="row.voice_sample_url"
+                  link
+                  type="primary"
+                  :title="playingVoiceId === row.id ? '暂停试音' : '播放试音'"
+                  @click="playVoiceSample(row)"
+                >
+                  <el-icon :size="18">
+                    <VideoPause v-if="playingVoiceId === row.id" />
+                    <VideoPlay v-else />
+                  </el-icon>
+                </el-button>
+              </template>
+            </el-table-column>
+            <el-table-column label="确认" width="150">
+              <template #default="{ row }">
+                <template v-if="row.voice_locked">
+                  <el-tag size="small" type="success" effect="plain">已锁定</el-tag>
+                  <el-button
+                    link
+                    size="small"
+                    :loading="voiceLockBusyIds.includes(row.id)"
+                    @click="unlockVoice(row)"
+                  >
+                    解锁
+                  </el-button>
+                </template>
+                <el-button
+                  v-else
+                  size="small"
+                  type="primary"
+                  plain
+                  :loading="voiceLockBusyIds.includes(row.id)"
+                  @click="lockVoice(row)"
+                >
+                  锁定音色
+                </el-button>
               </template>
             </el-table-column>
           </el-table>
@@ -1129,38 +1418,62 @@ onBeforeUnmount(() => {
 
         <!-- 每镜配音 -->
         <el-card shadow="never" class="block-card">
-          <template #header><span>分镜配音</span></template>
-          <el-table :data="boards" size="small">
+          <template #header>
+            <div class="voice-card-head">
+              <span>分镜配音</span>
+              <span class="voice-card-tip">仅展示有角色对话的分镜（{{ dialogueBoards.length }}/{{ boards.length }} 镜）；无对白的镜头无需配音</span>
+              <el-button
+                size="small"
+                type="primary"
+                class="batch-tts-btn"
+                :loading="batchTtsBusy"
+                :disabled="!dialogueBoards.some((b) => !b.audio_url)"
+                @click="batchGenTts"
+              >
+                生成全部配音
+              </el-button>
+            </div>
+          </template>
+          <el-table
+            :data="dialogueBoards"
+            size="small"
+            :row-class-name="(ctx: { row: Storyboard }) => (isTtsBusy(ctx.row) ? 'tts-row-generating' : '')"
+          >
             <el-table-column label="镜号" width="80">
               <template #default="{ row }">#{{ String(row.sequence).padStart(2, '0') }}</template>
             </el-table-column>
-            <el-table-column prop="dialogue" label="对白" show-overflow-tooltip />
+            <el-table-column label="对白" show-overflow-tooltip>
+              <template #default="{ row }">
+                <template v-for="(seg, i) in dialogueSegments(row)" :key="i">
+                  <span v-if="seg.speaker" class="dlg-speaker">{{ seg.speaker }}：</span><span>{{ seg.text }}</span><span v-if="i < dialogueSegments(row).length - 1">　</span>
+                </template>
+              </template>
+            </el-table-column>
             <el-table-column label="预计时长" width="90">
               <template #default="{ row }">{{ row.duration }}s</template>
             </el-table-column>
-            <el-table-column label="音色" width="110">
-              <template #default="{ row }">
-                {{
-                  voiceOf(row)
-                    ? (voiceOf(row)!.startsWith('male') ? '男声（手动）' : '女声（手动）')
-                    : '按角色音色自动'
-                }}
-              </template>
-            </el-table-column>
-            <el-table-column label="操作" width="190">
+            <el-table-column label="操作" width="230">
               <template #default="{ row }">
                 <el-button
                   size="small"
                   type="primary"
                   plain
-                  :loading="ttsBusyIds.includes(row.id)"
+                  :loading="isTtsBusy(row)"
+                  :disabled="unlockedSpeakersOf(row).length > 0 || isTtsBusy(row)"
+                  :title="unlockedSpeakersOf(row).length
+                    ? `角色「${unlockedSpeakersOf(row).join('、')}」音色未锁定，请先在上方映射中确认`
+                    : '生成该镜配音'"
                   @click="genTts(row)"
                 >
-                  {{ row.audio_url ? '重新配音' : '生成配音' }}
+                  {{ isTtsBusy(row) ? '生成中…' : (row.audio_url ? '重新配音' : '生成配音') }}
                 </el-button>
-                <!-- 已配音：行内播放/暂停试听图标（替代原"已配音"标签）；未配音：未生成占位 -->
+                <!-- 生成中：动态加载 tag；已配音：行内播放/暂停试听图标；未配音：未生成占位 -->
+                <el-tag v-if="isTtsBusy(row)" size="small" type="warning" effect="light" class="tts-none-tag">
+                  <el-icon :size="12" class="tts-spin"><LoadingIcon /></el-icon>
+                  合成中
+                </el-tag>
                 <el-button
-                  v-if="row.audio_url"
+                  v-else-if="row.audio_url"
                   link
                   type="primary"
                   class="tts-play-btn"
@@ -1178,37 +1491,11 @@ onBeforeUnmount(() => {
               </template>
             </el-table-column>
           </el-table>
-
-          <!-- 时长差异处理（三选一；演示范围见脚本注释） -->
-          <div v-if="ttsDoneBoards.length" class="over-box">
-            <div class="over-title">
-              时长差异处理（已完成配音 {{ ttsDoneBoards.length }} 镜；实际时长由后端在合成阶段自动对齐）
-            </div>
-            <el-select v-model="overBoard" value-key="id" placeholder="选择分镜" style="width: 200px" size="small">
-              <el-option
-                v-for="b in ttsDoneBoards"
-                :key="b.id"
-                :label="`#${String(b.sequence).padStart(2, '0')}（预计 ${b.duration}s）`"
-                :value="b"
-              />
-            </el-select>
-            <el-radio-group v-model="overHandle" class="over-radios">
-              <el-radio value="shorten">缩短台词</el-radio>
-              <el-radio value="extend">延长镜头</el-radio>
-              <el-radio value="retts">重新配音</el-radio>
-            </el-radio-group>
-            <el-button
-              size="small"
-              type="primary"
-              :disabled="!overBoard"
-              :loading="overBoard ? ttsBusyIds.includes(overBoard.id) : false"
-              @click="applyOverHandle"
-            >
-              应用
-            </el-button>
-          </div>
         </el-card>
+      </template>
 
+      <!-- ============ 合成 Tab（S-08 后半：BGM / 字幕 / 转场） ============ -->
+      <template v-else-if="activeTab === 'compose'">
         <!-- BGM / 字幕 / 转场（Task 10.4：配置并入 compose 请求体） -->
         <el-card shadow="never" class="block-card">
           <template #header><span>BGM / 字幕 / 转场</span></template>
@@ -1316,7 +1603,7 @@ onBeforeUnmount(() => {
           :percentage="composeProgress"
           class="compose-progress"
         />
-        <span v-else class="footer-tip">全部镜头关键帧 / 视频 / 配音完成后即可合成成片</span>
+        <span v-else class="footer-tip">全部镜头关键帧 / 配音 / 视频完成后即可合成成片</span>
         <el-button size="large" type="primary" class="confirm-btn" :loading="composing" @click="composeFilm">
           全部完成，进入合成
         </el-button>
@@ -1537,6 +1824,17 @@ onBeforeUnmount(() => {
 .ph-tag {
   flex-shrink: 0;
 }
+/* 音频先行引导行（视频 Tab 每镜配音状态） */
+.dub-line {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+  flex-wrap: wrap;
+}
+.dub-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
 /* P-12 视频参数配置区 */
 .video-config-card {
   margin-bottom: var(--mf-sp-3);
@@ -1622,6 +1920,56 @@ onBeforeUnmount(() => {
 .block-card {
   margin-bottom: 0;
 }
+/* 音色映射卡头部说明与音色设定文本 */
+.voice-card-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--mf-sp-3);
+  flex-wrap: wrap;
+}
+.batch-tts-btn {
+  margin-left: auto;
+}
+.voice-card-tip {
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+}
+.voice-note-text {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-xs);
+}
+/* 对白列角色名高亮（说话人前缀） */
+.dlg-speaker {
+  color: var(--mf-brand);
+  font-weight: 500;
+}
+/* 配音生成中：行背景呼吸脉冲 + 合成中 tag 旋转图标 */
+.el-table .tts-row-generating td {
+  animation: tts-row-pulse 1.6s ease-in-out infinite;
+}
+@keyframes tts-row-pulse {
+  0%, 100% {
+    background: transparent;
+  }
+  50% {
+    background: rgba(64, 158, 255, 0.09);
+  }
+}
+.tts-spin {
+  animation: tts-spin 1s linear infinite;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
+@keyframes tts-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .el-table .tts-row-generating td {
+    animation: none;
+  }
+}
 .tts-none-tag {
   margin-left: 8px;
 }
@@ -1629,24 +1977,6 @@ onBeforeUnmount(() => {
 .tts-play-btn {
   margin-left: 8px;
   vertical-align: middle;
-}
-.over-box {
-  margin-top: var(--mf-sp-4);
-  padding: var(--mf-sp-3);
-  border: 1px dashed var(--mf-border-strong);
-  border-radius: var(--mf-r-ctl);
-  display: flex;
-  align-items: center;
-  gap: var(--mf-sp-3);
-  flex-wrap: wrap;
-}
-.over-title {
-  width: 100%;
-  color: var(--mf-text-2);
-  font-size: var(--mf-fs-sm);
-}
-.over-radios {
-  margin: 0 var(--mf-sp-2);
 }
 .mix-form {
   max-width: 640px;

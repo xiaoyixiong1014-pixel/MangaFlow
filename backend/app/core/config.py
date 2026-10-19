@@ -179,6 +179,14 @@ class Settings(BaseSettings):
     # 测试套件经 conftest autouse fixture 强制开启）。
     mock_fallback_enabled: bool = False
 
+    # ---------- 口型同步（LatentSync，预留集成位） ----------
+    # 用户自部署的 LatentSync 口型对齐推理服务（视频 + 音频 → 口型同步视频）。
+    # 服务就绪后配置 LIP_SYNC_BASE_URL（如 http://127.0.0.1:8000）并置
+    # LIP_SYNC_ENABLED=true；调用契约（端点/请求体/轮询方式）待服务部署后
+    # 按实际 API 对齐，当前仅占位配置，不参与生成流程。
+    lip_sync_enabled: bool = False
+    lip_sync_base_url: str = ""
+
     # 启动钩子开关：lifespan 在 create_all 之前可选执行 Alembic 迁移（alembic upgrade
     # head，程序化 API）。默认 False 保持现状（仅 create_all + 幂等补列），生产部署
     # 可设 ALEMBIC_ON_STARTUP=true 或由部署流水线在启动前显式执行迁移

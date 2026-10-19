@@ -5,7 +5,7 @@
 """
 
 from datetime import datetime
-from typing import Annotated, Any, Dict, List, Optional
+from typing import Annotated, Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
@@ -110,6 +110,10 @@ class CharacterOut(BaseModel):
     voice_note: Optional[str] = None
     # 角色性别（agent 角色设定生成：男性/女性/中性；生图提示词性别锚定）
     gender: Optional[str] = None
+    # 音色确认闭环（2026-10-19：试音 → 锁定 → 门禁配音）
+    voice_selected: Optional[str] = None
+    voice_locked: bool = False
+    voice_sample_url: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
@@ -267,6 +271,19 @@ class CharacterUpdateRequest(BaseModel):
                                       description="风格与画质特点（角色圣经视觉段）")
     voice_note: Optional[str] = Field(default=None, max_length=500,
                                       description="音色设定（配音选音色依据）")
+
+
+class VoiceLockRequest(BaseModel):
+    """角色音色锁定请求（2026-10-19 音色确认闭环）。
+
+    Attributes:
+        voice: 确认音色标识（None/缺省 = 按角色 voice_note + gender 经
+            voice_router 自动路由后固化）。
+    """
+
+    voice: Optional[Literal["male_01", "male_02", "female_01", "female_02"]] = Field(
+        default=None,
+        description="确认音色标识（None=按角色音色设定自动路由）")
 
 
 class SceneCreateRequest(BaseModel):

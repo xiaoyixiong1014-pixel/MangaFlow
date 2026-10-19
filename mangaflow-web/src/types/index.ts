@@ -646,6 +646,14 @@ export interface CharacterAsset {
   tags?: string[]
   /** 角色性别（男性/女性/中性；角色设定 agent 生成，生图提示词性别锚定） */
   gender?: string | null
+  /** 音色设定（角色圣经：性别/年龄感/音色质地/说话习惯，配音选音色依据） */
+  voice_note?: string | null
+  /** 确认音色标识（锁定时固化的 male_01/male_02/female_01/female_02） */
+  voice_selected?: string | null
+  /** 音色已锁定（True 后该角色所在镜头配音才可发起） */
+  voice_locked: boolean
+  /** 试音音频 URL（「我是XX，这是我的配音」试音产物） */
+  voice_sample_url?: string | null
   /** 创建时间 */
   created_at?: string | null
   /** 更新时间 */

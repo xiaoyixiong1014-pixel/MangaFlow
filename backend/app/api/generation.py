@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.core.sse import sse_event, sse_stream
-from app.models import Project, Storyboard, Task, User, Wallet
+from app.models import Character, Project, Storyboard, Task, User, Wallet
 from app.schemas.common import PageResult
 from app.schemas.generation import (
     KeyframeCreateRequest,
@@ -38,6 +38,7 @@ from app.schemas.generation import (
     TaskProgressItem,
     TtsCreateRequest,
     VideoCreateRequest,
+    VoicePreviewCreateRequest,
 )
 from app.services import normalize_pagination
 from app.services.generation_service import (
@@ -46,6 +47,7 @@ from app.services.generation_service import (
     create_retry_task,
     create_tts_task,
     create_video_task,
+    create_voice_preview_task,
     get_owned_project,
     get_storyboard_of_project,
 )
@@ -226,6 +228,45 @@ async def create_storyboard_tts(
     storyboard = await get_storyboard_of_project(db, project_id, storyboard_id)
     task = await create_tts_task(
         db, project=project, storyboard=storyboard, voice=req.voice, speed=req.speed, pitch=req.pitch
+    )
+    return TaskOut.from_task(task)
+
+
+@router.post(
+    "/api/projects/{project_id}/characters/{character_id}/voice-preview",
+    response_model=TaskOut,
+)
+async def create_character_voice_preview(
+    project_id: int,
+    character_id: int,
+    req: VoicePreviewCreateRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> TaskOut:
+    """创建角色音色试音任务（「我是XX，这是我的配音。」一句试音，5 积分）。
+
+    音色：req.voice 显式传入（映射表下拉当前选择）优先，否则按角色
+    voice_note + gender 自动路由。产物回写 characters.voice_sample_url。
+
+    Args:
+        project_id: 项目 ID。
+        character_id: 角色 ID。
+        req: 请求体（voice 可空=自动路由）。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        TaskOut: 新建的试音任务。
+
+    Raises:
+        HTTPException: 403/404 —— 归属校验失败；409 —— 积分不足。
+    """
+    project = await get_owned_project(db, user.id, project_id)
+    character = await db.get(Character, character_id)
+    if character is None or character.project_id != project_id or character.deleted_at is not None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="角色不存在")
+    task = await create_voice_preview_task(
+        db, project=project, character=character, voice=req.voice
     )
     return TaskOut.from_task(task)
 

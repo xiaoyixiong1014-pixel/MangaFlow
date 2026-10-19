@@ -74,3 +74,45 @@ def resolve_voice(
             else "female_01"
         )
     return fallback
+
+
+# 语速推导关键词（voice_note 说话习惯段 → TTS speech_rate 倍率）
+_SLOW_WORDS = ("缓慢", "慢慢", "慢条斯理", "语速偏慢", "语速慢", "慢吞吞", "拖长", "有气无力")
+_FAST_WORDS = ("语速偏快", "语速快", "急促", "干脆", "雷厉风行", "快言快语", "利落")
+# 音调推导关键词（voice_note 音色质地段 → TTS pitch_rate 倍率）
+_DEEP_WORDS = ("低沉", "浑厚", "沧桑", "沙哑", "磁性", "沉稳", "厚重")
+_SHARP_WORDS = ("尖细", "清亮", "高亢", "清脆", "甜美", "明亮")
+
+
+def resolve_speech_params(
+    voice_note: Optional[str],
+    fallback_speed: float = 1.0,
+    fallback_pitch: float = 1.0,
+) -> "tuple[float, float]":
+    """从角色音色设定文本推导语速/音调倍率（TTS 表现力参数化）。
+
+    业务音色库仅 4 个枚举音色，voice_note 中的「语速缓慢/低沉磁性/清亮」等
+    质地描述由本函数转为 speech_rate/pitch_rate 参数（每类取首个命中关键
+    词，未命中回退调用方缺省）。
+
+    Args:
+        voice_note: 角色音色设定文本（可空）。
+        fallback_speed: 无命中时的语速回退值。
+        fallback_pitch: 无命中时的音调回退值。
+
+    Returns:
+        tuple[float, float]: (speech_rate, pitch_rate)（语速 0.5~2.0、音调 0.5~2.0）。
+
+    Raises:
+        无：纯关键词匹配，文本异常按缺省处理。
+    """
+    note = str(voice_note or "")
+    speed = next(
+        (v for w, v in ((w, 0.85) for w in _SLOW_WORDS) if w in note),
+        next((v for w, v in ((w, 1.15) for w in _FAST_WORDS) if w in note), fallback_speed),
+    )
+    pitch = next(
+        (v for w, v in ((w, 0.85) for w in _DEEP_WORDS) if w in note),
+        next((v for w, v in ((w, 1.15) for w in _SHARP_WORDS) if w in note), fallback_pitch),
+    )
+    return (speed, pitch)

@@ -50,7 +50,7 @@ import logging
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import HTTPException
 from sqlalchemy import func, or_, select, text, update
@@ -1366,6 +1366,99 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     await _succeed_task(db, task, user_id)
 
 
+def _normalize_wav_bytes(part: bytes) -> bytes:
+    """修正 WAV 头部占位 size 字段（内部函数，拼接前段规范化）。
+
+    dashscope 流式合成产出的 WAV 头部 data chunk size 为占位值
+    （0x7FFFFFFF，未回头改写），标准 wave 模块信任该值导致 getnframes
+    返回爆炸帧数（单段时长被算成 ~48695 秒），进而令拼接时长溢出
+    NUMERIC(6,2) 列并使任务回写崩溃（2026-10-19 任务 315/316 僵尸根因）。
+    此函数解析 RIFF chunk 链：data size 大于实际剩余字节时按实际长度
+    修正 data 与 RIFF 两处 size 字段后返回新 bytes，其余情况原样返回。
+
+    Args:
+        part: 单段 WAV 文件字节。
+
+    Returns:
+        bytes: 修正后的 WAV 字节（头部可信或非 RIFF/WAVE 时为原值）。
+
+    Raises:
+        无：解析异常统一按原样返回（由 wave 模块按原行为处理）。
+    """
+    try:
+        if len(part) < 12 or part[:4] != b"RIFF" or part[8:12] != b"WAVE":
+            return part
+        body = bytearray(part)
+        pos = 12
+        data_size_pos: Optional[int] = None
+        data_body_start: Optional[int] = None
+        while pos + 8 <= len(body):
+            cid = bytes(body[pos:pos + 4])
+            size = int.from_bytes(body[pos + 4:pos + 8], "little")
+            if cid == b"data":
+                data_size_pos = pos + 4
+                data_body_start = pos + 8
+                break
+            if pos + 8 + size > len(body):
+                break  # size 异常（占位/损坏）停止遍历，交由下方 data 检查兜底
+            pos = pos + 8 + size + (size & 1)
+        if data_size_pos is None or data_body_start is None:
+            return part
+        actual = len(body) - data_body_start
+        declared = int.from_bytes(body[data_size_pos:data_size_pos + 4], "little")
+        if declared <= actual:
+            return part  # 头部可信（size 未超出实际长度）
+        body[data_size_pos:data_size_pos + 4] = actual.to_bytes(4, "little")
+        body[4:8] = (len(body) - 8).to_bytes(4, "little")
+        return bytes(body)
+    except Exception:  # noqa: BLE001 —— 修正失败按原样返回
+        return part
+
+
+def _concat_wav_segments(wav_parts: List[bytes], gap_sec: float = 0.35) -> "tuple[bytes, float]":
+    """拼接多段 WAV 音频字节（多说话人分段配音，标准库 wave 实现）。
+
+    段间插入 gap_sec 秒静音（对话节奏）；以第一段的采样率/位宽/声道为输出
+    参数（百炼与 mock 产物均为 22050Hz mono 16bit，格式一致）。拼接前对每段
+    执行 _normalize_wav_bytes 修正占位头部（见其 docstring），段格式不一致
+    时可能抛出异常，由调用方回退单段产物。
+
+    Args:
+        wav_parts: 各段 WAV 文件字节列表（≥1）。
+        gap_sec: 段间静音时长（秒）。
+
+    Returns:
+        tuple[bytes, float]: (拼接后 WAV 字节, 总时长秒)。
+
+    Raises:
+        Exception: WAV 解析/写入异常向上抛出（由调用方捕获降级）。
+    """
+    import io
+    import wave
+
+    out = io.BytesIO()
+    total = 0.0
+    with wave.open(out, "wb") as w:
+        first_params: Any = None
+        for i, raw_part in enumerate(wav_parts):
+            part = _normalize_wav_bytes(raw_part)
+            with wave.open(io.BytesIO(part), "rb") as r:
+                p = r.getparams()
+                if first_params is None:
+                    first_params = p
+                    w.setparams(p)
+                frames = r.readframes(r.getnframes())
+                total += r.getnframes() / p.framerate
+            w.writeframes(frames)
+            if gap_sec and i < len(wav_parts) - 1:
+                silence = b"\x00" * int(
+                    first_params.framerate * first_params.sampwidth * first_params.nchannels * gap_sec
+                )
+                w.writeframes(silence)
+                total += gap_sec
+    return out.getvalue(), round(total, 2)
+
+
 async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
     """执行配音任务：按渠道降级链合成 → 回写分镜 audio_url 与实际时长（RD-31）→ 插入音频素材。
 
@@ -1383,6 +1476,11 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
     """
     text = meta.get("text", "")
     voice = meta.get("voice", "female_01")
+    # 语速/音调倍率（创建时由 voice_note 推导或请求显式传入）
+    speed = float(meta.get("speed", 1.0) or 1.0)
+    pitch = float(meta.get("pitch", 1.0) or 1.0)
+    # 多说话人分段（音频先行）：每段独立音色/参数，合成后拼接为单条音轨
+    segments = [s for s in (meta.get("segments") or []) if isinstance(s, dict) and s.get("text")]
     # 机审闸门一：配音文本违规直接拦截
     if await _check_violation(db, task, user_id, text, "tts"):
         return
@@ -1390,7 +1488,7 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
 
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
         """单渠道语音合成回调：链尾哨兵/用户自建 mock 协议渠道行走本地 mock，
-        其余走百炼真实渠道。
+        其余走百炼真实渠道（单段/全文一次性合成路径，segments 任务不走此路径）。
 
         Args:
             channel: 当前候选渠道。
@@ -1403,8 +1501,117 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         """
         if channel.channel_id == 0 or channel.protocol == "mock":
             return await generate_tts(text, voice, out_dir)
-        return await generate_tts_real(text, voice, out_dir, channel)
+        return await generate_tts_real(text, voice, out_dir, channel, speed, pitch)
 
+    if segments:
+        # 多说话人分段合成：每段独立降级链合成 → WAV 字节拼接（段间静音）
+        # → 单条音轨回写。任一段失败整体失败（fallback 记录段级错误）。
+        wav_parts: List[bytes] = []
+        fallback: list = []
+        used_channel: Optional[ResolvedChannel] = None
+        first_url: Optional[str] = None
+        placeholder_any = False
+        await _set_progress(db, task, 10)
+        for seg_idx, seg in enumerate(segments):
+            seg_speed = float(seg.get("speed", 1.0) or 1.0)
+            seg_pitch = float(seg.get("pitch", 1.0) or 1.0)
+
+            async def _seg_generate(
+                channel: ResolvedChannel,
+                _text: str = str(seg["text"]),
+                _voice: str = str(seg.get("voice") or voice),
+                _s: float = seg_speed,
+                _p: float = seg_pitch,
+            ) -> Optional[Dict]:
+                if channel.channel_id == 0 or channel.protocol == "mock":
+                    return await generate_tts(_text, _voice, out_dir)
+                return await generate_tts_real(_text, _voice, out_dir, channel, _s, _p)
+
+            seg_result, seg_channel, seg_fallback = await _generate_with_fallback(
+                db, "tts", _seg_generate, user_id=user_id)
+            if seg_result is None or not seg_result.get("url"):
+                speaker_label = str(seg.get("speaker") or "旁白")
+                fallback.append({
+                    "speaker": speaker_label,
+                    "errors": seg_fallback,
+                })
+                task.meta = {**meta, "fallback_chain": fallback}
+                await _fail_task(
+                    db, task, user_id, "platform_error",
+                    f"分段配音合成失败（说话人：{speaker_label}），已尝试全部渠道")
+                return
+            placeholder_any = placeholder_any or _is_placeholder_result(seg_result, seg_channel)
+            fallback.extend(seg_fallback)
+            if used_channel is None:
+                used_channel = seg_channel
+            if first_url is None:
+                first_url = seg_result["url"]
+            try:
+                wav_parts.append(
+                    (settings.storage_path() / str(seg_result["url"]).removeprefix("/storage/")).read_bytes()
+                )
+            except OSError:
+                wav_parts.append(b"")
+            # 段级进度回写（10~80 区间按完成段数推进，SSE 可观察）
+            await _set_progress(db, task, 10 + int(70 * (seg_idx + 1) / len(segments)))
+        combined: Optional[bytes] = None
+        duration: Optional[float] = None
+        if wav_parts and all(wav_parts):
+            try:
+                await _set_progress(db, task, 85)
+                combined, duration = await asyncio.to_thread(_concat_wav_segments, wav_parts)
+            except Exception as exc:  # noqa: BLE001 —— 拼接失败回退第一段产物
+                logger.warning("任务 %s 分段 WAV 拼接失败，回退第一段：%s", task.id, exc)
+                combined = None
+        if combined is not None:
+            filename = f"tts_{task.id}_multi_{abs(hash(tuple(wav_parts))) % 100000}.wav"
+            (out_dir / filename).write_bytes(combined)
+            # 命名用 segment_count：避免覆盖 meta.segments 原始分段列表（溯源用）
+            provider_meta = {"provider": "multi-speaker", "segment_count": len(wav_parts)}
+            if placeholder_any:
+                provider_meta["placeholder"] = True
+            result: Optional[Dict] = {
+                "url": f"/storage/generated/{filename}",
+                "duration_sec": duration,
+                "meta": provider_meta,
+            }
+        else:
+            # 拼接失败/段产物不可读：回退第一段产物 URL（保底单段音频）
+            if not first_url:
+                await _fail_task(db, task, user_id, "platform_error", "分段配音产物缺失")
+                return
+            result = {"url": first_url, "duration_sec": None, "meta": {"provider": "multi-speaker-fallback"}}
+        task.result_url = result["url"]
+        provider = (result.get("meta") or {}).get("provider") or "mock"
+        task.meta = {
+            **meta,
+            **(result.get("meta") or {}),
+            "fallback_chain": fallback,
+            "placeholder": _is_placeholder_result(result, used_channel) or bool((result.get("meta") or {}).get("placeholder")),
+            "own_channel_exempt": bool(
+                used_channel and used_channel.owner_user_id == user_id
+            ),
+        }
+        sb = await db.get(Storyboard, int(meta.get("storyboard_id"))) if meta.get("storyboard_id") else None
+        if sb:
+            sb.audio_url = result["url"]
+            # RD-31：TTS 回写分镜实际时长（钳制到 NUMERIC(6,2) 列上限，防异常值溢出）
+            _dur = result.get("duration_sec")
+            sb.actual_duration = None if _dur is None else min(float(_dur), 9999.99)
+        db.add(MediaAsset(
+            user_id=user_id,
+            project_id=task.project_id,
+            media_type="audio",
+            source="studio",
+            url=result["url"],
+            meta={"task_id": task.id, "storyboard_id": meta.get("storyboard_id"),
+                  "segments": len(wav_parts)},
+        ))
+        await db.commit()
+        await _succeed_task(db, task, user_id)
+        return
+
+    await _set_progress(db, task, 30)
     result, used_channel, fallback = await _generate_with_fallback(
         db, "tts", _generate, user_id=user_id)
     if result is None:
@@ -1412,6 +1619,7 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         task.meta = {**meta, "fallback_chain": fallback}
         await _fail_task(db, task, user_id, "platform_error", "语音供应商返回空结果（已尝试全部渠道）")
         return
+    await _set_progress(db, task, 90)
     task.result_url = result["url"]
     # provider meta 合并进任务 meta，duration_sec 置于其后防覆盖（RD-31 依据），
     # 追加降级链 fallback_chain 与实际 provider 溯源（不覆盖既有键）；
@@ -1429,13 +1637,20 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
             used_channel and used_channel.owner_user_id == user_id
         ),
     }
+    # 按 target 分流回写：试音任务（character_voice）回写角色试音音频；
+    # 分镜配音回写 storyboards.audio_url 与实际时长（RD-31）
+    if meta.get("target_type") == "character_voice" and meta.get("target_id"):
+        preview_char = await db.get(Character, int(meta["target_id"]))
+        if preview_char:
+            preview_char.voice_sample_url = result["url"]
     storyboard_id = meta.get("storyboard_id")
     if storyboard_id:
         sb = await db.get(Storyboard, int(storyboard_id))
         if sb:
             sb.audio_url = result["url"]
-            # RD-31：TTS 回写分镜实际时长
-            sb.actual_duration = result.get("duration_sec")
+            # RD-31：TTS 回写分镜实际时长（钳制到 NUMERIC(6,2) 列上限，防异常值溢出）
+            _dur = result.get("duration_sec")
+            sb.actual_duration = None if _dur is None else min(float(_dur), 9999.99)
     # 音频素材入库
     db.add(MediaAsset(
         user_id=user_id,
@@ -1526,8 +1741,15 @@ async def _execute_task(db, task: Task) -> None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:
+        # 先取出任务 ID（rollback 会使 ORM 对象过期，此后不可再访问其属性）
+        task_id = task.id
         try:
             await db.rollback()
-            await _fail_task(db, task, user_id, "platform_error", f"任务执行异常：{exc}")
+            # rollback 后原 task 对象已过期：访问属性会触发 greenlet 外同步 IO
+            # （MissingGreenlet）令失败落库二次崩溃、任务永久卡 running——
+            # 重新加载任务对象后再落失败终态
+            fresh = await db.get(Task, task_id)
+            if fresh is not None:
+                await _fail_task(db, fresh, user_id, "platform_error", f"任务执行异常：{exc}")
         except Exception:
-            logger.exception("任务 %s 失败落库时再次异常", task.id)
+            logger.exception("任务 %s 失败落库时再次异常", task_id)

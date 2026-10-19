@@ -715,6 +715,35 @@ export function deleteCharacter(projectId: number, characterId: number): Promise
 }
 
 /**
+ * 锁定角色音色（音色确认闭环：固化音色，放行该角色所在镜头配音）。
+ * @param projectId 项目 ID
+ * @param characterId 角色 ID
+ * @param voice 确认音色标识（可空=按角色音色设定自动路由后固化）
+ * @returns 更新后的角色
+ */
+export function voiceLock(
+  projectId: number,
+  characterId: number,
+  voice?: 'male_01' | 'male_02' | 'female_01' | 'female_02',
+): Promise<CharacterAsset> {
+  return client
+    .put(`/projects/${projectId}/assets/characters/${characterId}/voice-lock`, { voice })
+    .then((r) => r.data)
+}
+
+/**
+ * 解锁角色音色（误锁纠正；解锁后该角色所在镜头配音重新被门禁拦截）。
+ * @param projectId 项目 ID
+ * @param characterId 角色 ID
+ * @returns 更新后的角色
+ */
+export function voiceUnlock(projectId: number, characterId: number): Promise<CharacterAsset> {
+  return client
+    .put(`/projects/${projectId}/assets/characters/${characterId}/voice-unlock`)
+    .then((r) => r.data)
+}
+
+/**
  * 软删除场景（分镜强绑引用不受影响，scene_id 外键 SET NULL）。
  * @param projectId 项目 ID
  * @param sceneId 场景 ID

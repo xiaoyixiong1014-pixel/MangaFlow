@@ -45,6 +45,7 @@ from app.schemas.asset import (
     PropCreateRequest,
     PropOut,
     PropUpdateRequest,
+    VoiceLockRequest,
     SceneCreateRequest,
     SceneOut,
     SceneUpdateRequest,
@@ -72,6 +73,7 @@ from app.services.asset_service import (
     upsert_asset_embedding,
 )
 from app.services.script_service import DEFAULT_VISUAL_TEMPLATE
+from app.services.voice_router import resolve_voice
 
 router = APIRouter(tags=["assets"])
 
@@ -299,6 +301,72 @@ async def create_character(
         db, "character", character.id,
         " ".join(x for x in (character.name, character.description, character.visual_prompt) if x),
     )
+    return CharacterOut.model_validate(character)
+
+
+@router.put("/api/projects/{project_id}/assets/characters/{character_id}/voice-lock", response_model=CharacterOut)
+async def lock_character_voice(
+    project_id: int,
+    character_id: int,
+    req: VoiceLockRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CharacterOut:
+    """锁定角色音色（音色确认闭环：试音确认后固化音色标识）。
+
+    锁定后 characters.voice_selected 固化（req.voice 显式传入优先，缺省按
+    角色 voice_note + gender 经 voice_router 自动路由）、voice_locked=True，
+    该角色所在镜头的分镜配音门禁放行（create_tts_task 校验）。
+
+    Args:
+        project_id: 项目 ID。
+        character_id: 角色 ID。
+        req: 请求体（voice 可空=自动路由）。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CharacterOut: 更新后的角色信息。
+
+    Raises:
+        HTTPException: 404 —— 项目/角色不存在。
+    """
+    project = await get_owned_project(db, project_id, user.id)
+    character = await get_asset_or_404(db, project.id, "character", character_id)
+    character.voice_selected = req.voice or resolve_voice(
+        character.voice_note, character.gender)
+    character.voice_locked = True
+    await db.commit()
+    await db.refresh(character)
+    return CharacterOut.model_validate(character)
+
+
+@router.put("/api/projects/{project_id}/assets/characters/{character_id}/voice-unlock", response_model=CharacterOut)
+async def unlock_character_voice(
+    project_id: int,
+    character_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> CharacterOut:
+    """解锁角色音色（误锁纠正；解锁后该角色所在镜头配音重新被门禁拦截）。
+
+    Args:
+        project_id: 项目 ID。
+        character_id: 角色 ID。
+        user: 当前用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        CharacterOut: 更新后的角色信息（voice_locked=False，voice_selected 保留）。
+
+    Raises:
+        HTTPException: 404 —— 项目/角色不存在。
+    """
+    project = await get_owned_project(db, project_id, user.id)
+    character = await get_asset_or_404(db, project.id, "character", character_id)
+    character.voice_locked = False
+    await db.commit()
+    await db.refresh(character)
     return CharacterOut.model_validate(character)
 
 
