@@ -227,7 +227,8 @@ async def create_storyboard_tts(
     project = await get_owned_project(db, user.id, project_id)
     storyboard = await get_storyboard_of_project(db, project_id, storyboard_id)
     task = await create_tts_task(
-        db, project=project, storyboard=storyboard, voice=req.voice, speed=req.speed, pitch=req.pitch
+        db, project=project, storyboard=storyboard, voice=req.voice, speed=req.speed,
+        pitch=req.pitch, segment_index=req.segment_index,
     )
     return TaskOut.from_task(task)
 

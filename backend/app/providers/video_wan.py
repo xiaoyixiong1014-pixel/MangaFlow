@@ -111,6 +111,12 @@ async def generate_video_wan(
                                channel.name, end_frame_path)
 
         root = channel.base_url.rstrip("/")
+        # 根域名规范化（与 image_dashscope 同口径，截到 netloc 为止）：
+        # 用户可能把渠道 base_url 配成 OpenAI 兼容模式地址（…/compatible-mode/v1），
+        # 直接拼接会产生 /compatible-mode/v1/api/v1/... 的 404——DashScope
+        # 原生 video-synthesis 端点必须挂在实例根域名下
+        if "://" in root:
+            root = root.split("://", 1)[0] + "://" + root.split("://", 1)[1].split("/", 1)[0]
         # 创建与轮询请求头分离：X-DashScope-Async 仅用于创建（轮询 GET 携带会 403）
         headers = {
             "Authorization": f"Bearer {channel.api_key}",

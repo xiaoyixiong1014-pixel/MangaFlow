@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from app.core.config import settings
+from app.providers.reference import resolve_reference_data_uri
 from app.services.model_router import ResolvedChannel
 
 logger = logging.getLogger("mangaflow.providers.video_agnes")
@@ -148,9 +149,9 @@ async def generate_video_real(
         first_frame_url: 首帧图片 URL（可选）；传入时自动切换 keyframe 模式
             实现图生视频，未传走 settings.agnes_video_mode（默认 text 文生视频）。
         video_params: 视频参数（P-12，可空）：resolution 映射请求体 size（官方
-            Flash 契约仅承诺 720P，其他档位按字段透传由渠道裁决）；fps 与
-            motion_strength 为扩展字段（官方文档未列明，渠道约定待验证，
-            透传供渠道兼容时生效）。
+            契约仅承诺 720P，其他档位按字段透传由渠道裁决）；fps 与
+            motion_strength 官方契约未列明，实测 400 forbidden，不透传
+            （仅在任务 meta 溯源）。
         last_frame_url: 尾帧图片 URL（P-08，可选）；请求体字段 last_frame
             （渠道约定待验证），与 first_frame 同时传入实现首尾帧控制。
 
@@ -179,22 +180,25 @@ async def generate_video_real(
             "aspect_ratio": _ASPECT_RATIO_PORTRAIT,
         }
         if first_frame_url:
-            payload["first_frame"] = first_frame_url
+            # 首帧载荷解析：本地 /storage 相对路径转 Base64 data URI（渠道
+            # 明确拒绝本地文件路径，仅接受公网 URL 或 base64 data），
+            # 外部 http(s)/data URL 原样透传
+            payload["first_frame"] = (
+                resolve_reference_data_uri(first_frame_url) or first_frame_url
+            )
         if last_frame_url:
-            # P-08 尾帧控制：请求体字段 last_frame（渠道约定待验证）
-            payload["last_frame"] = last_frame_url
-        # P-12 视频参数透传：resolution 覆盖默认 size（大写档位），fps/motion
-        # 为扩展字段（官方契约未列明，渠道约定待验证）
+            # P-08 尾帧控制：请求体字段 last_frame（渠道约定待验证），
+            # 载荷解析与首帧同口径
+            payload["last_frame"] = (
+                resolve_reference_data_uri(last_frame_url) or last_frame_url
+            )
+        # P-12 视频参数透传：仅 resolution 覆盖默认 size（大写档位，官方字段）；
+        # fps/motion_strength 为扩展字段，2026-10-20 实测渠道 400 拒绝
+        #（"fps is a forbidden field"，官方契约未列明的字段一律不透传）
         if video_params:
             resolution = str(video_params.get("resolution") or "").upper()
             if resolution:
                 payload["size"] = resolution
-            fps = video_params.get("fps")
-            if fps:
-                payload["fps"] = int(fps)
-            motion = video_params.get("motion_strength")
-            if motion:
-                payload["motion"] = str(motion)
 
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:
             # 提交任务：503 队列满（官方提示稍后重试）做有限次退避重试

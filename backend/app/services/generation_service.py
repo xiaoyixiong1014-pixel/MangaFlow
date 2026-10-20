@@ -157,6 +157,20 @@ CONSISTENCY_DIRECTIVE = (
     "禁止改动参考图中的形象设定；不得新增画面描述与参考图之外的角色、场景元素与物体"
 )
 
+# 视频生成专项一致性指令（2026-10-20 用户反馈视频不按分镜内容生成：
+# 旧视频提示词仅拼锁定层快照+可编辑层+风格，未直接携带分镜画面描述；
+# 新构造以 visual_description 为核心并追加本指令约束内容一致与对白说话表现；
+# 同日追加音频约束——wan 系模型会按对白自行合成角色语音与平台 TTS 配音冲突，
+# 精细控制为「禁人声、允许环境音」（用户确认：保留人声外的声音接入配音）
+VIDEO_DIRECTIVE = (
+    "生成要求：严格按照上述分镜画面描述与首帧参考图生成视频内容，"
+    "角色外貌服装、场景环境与道具样式必须与首帧严格一致，"
+    "有对白时说话角色口部自然开合、表情动作与台词情绪匹配，"
+    "镜头运动平稳自然，不得新增画面描述与首帧之外的角色、场景元素与物体；"
+    "音频要求：严禁生成任何人物说话的人声、语音与对白，"
+    "仅可保留与画面环境匹配的自然环境音效（如雨声、风声、脚步声）"
+)
+
 
 async def _resolve_keyframe_references(
     db: AsyncSession, storyboard_ids: List[int]
@@ -584,7 +598,26 @@ async def create_video_task(
     cost = max(1, int(per_second * duration))
     # 方案 B：负面排除段从锁定层剥离（视频正向提示词同样不混入负面）
     locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
-    prompt = build_prompt(locked_positive, storyboard.prompt_editable, project.style)
+    # 视频专项提示词（2026-10-20 强化）：以分镜画面描述为核心（用户在分镜页
+    # 编辑后即时生效，不依赖拆解快照），叠加机位角度/环境光影/情绪要素与
+    # 对白说话提示（视频 agent 据此表现角色说话时刻）；锁定层八要素快照与
+    # 可编辑层、风格锚点作为补充，末尾追加视频一致性指令
+    sb_audio = storyboard.audio or {}
+    video_parts: List[str] = []
+    if (storyboard.visual_description or "").strip():
+        video_parts.append(f"分镜画面描述：{storyboard.visual_description.strip()}")
+    if storyboard.camera_angle:
+        video_parts.append(f"机位角度：{storyboard.camera_angle}")
+    if (storyboard.lighting or "").strip():
+        video_parts.append(f"环境光影：{storyboard.lighting}")
+    emotion = str(sb_audio.get("emotion") or "").strip()
+    if emotion:
+        video_parts.append(f"镜头情绪：{emotion}")
+    if (storyboard.dialogue or "").strip():
+        video_parts.append(f"角色对白（说话角色口部自然开合）：{storyboard.dialogue.strip()}")
+    prompt = build_prompt(
+        *video_parts, locked_positive, storyboard.prompt_editable, project.style, VIDEO_DIRECTIVE,
+    )
     await _precheck_balance(db, project.user_id, cost)
     return await freeze_and_create_task(
         db,
@@ -682,33 +715,6 @@ async def create_end_frame_task(
     )
 
 
-def _parse_dialogue_speakers(dialogue: Optional[str]) -> List[str]:
-    """解析分镜对白文本的说话人名列表（内部函数，音色确认门禁依据）。
-
-    「XXX：台词」逐行取冒号前缀（≤20 字符），去重保序；无法解析的行忽略。
-
-    Args:
-        dialogue: 分镜对白文本（多行「说话人：台词」格式，可空）。
-
-    Returns:
-        List[str]: 说话人名列表（去重保序，可能为空）。
-
-    Raises:
-        无：纯文本解析，不产生异常路径。
-    """
-    speakers: List[str] = []
-    for line in str(dialogue or "").splitlines():
-        line = line.strip()
-        if not line:
-            continue
-        m = re.match(r"^([^：:]{1,20})[：:]", line)
-        if m:
-            name = m.group(1).strip()
-            if name and name not in speakers:
-                speakers.append(name)
-    return speakers
-
-
 def _strip_dialogue_speakers(dialogue: Optional[str]) -> str:
     """剥离对白说话人前缀，拼接纯台词文本（内部函数，配音合成文本）。
 
@@ -778,6 +784,7 @@ async def create_tts_task(
     voice: Optional[str],
     speed: float,
     pitch: float,
+    segment_index: Optional[int] = None,
 ) -> Task:
     """创建配音（TTS）生成任务（成本 = ceil(字数/100)×5 积分）。
 
@@ -786,29 +793,35 @@ async def create_tts_task(
     推导的语速/音调独立合成，执行器拼接为单条音轨回写——一个角色一段对话
     一行，角色名不进语音也不串音。
 
-    音色确认门禁：本镜对白说话人对应的绑定角色必须已完成音色锁定
-    （voice_locked），未锁定 400 拦截。
+    段级配音（2026-10-20）：segment_index 指定时仅合成该下标对白段并独立
+    落产物（storyboard.audio.dialogue[idx]），全部段完成后执行器自动拼接
+    整镜音轨——一句一行独立生成，便于视频按角色对齐配音。计费按该段字数。
+
+    音色确认门禁：对白说话人对应的绑定角色必须已完成音色锁定
+    （voice_locked），未锁定 400 拦截（段级模式仅校验目标段说话人）。
 
     Args:
         db: 异步数据库会话。
         project: 归属项目。
-        storyboard: 目标分镜（文本取 dialogue，为空回退 visual_description）。
+        storyboard: 目标分镜（台词取 dialogue，无对白 400 拦截——画面描述不作台词）。
         voice: 音色标识（无匹配说话人段的旁白回退音色；None=自动路由）。
         speed: 语速倍率（旁白段基调）。
         pitch: 音调倍率（旁白段基调）。
+        segment_index: 段级配音下标（None=整镜全段合成拼接）。
 
     Returns:
         Task: 已落库的新配音任务（meta.segments 携带分段参数）。
 
     Raises:
-        HTTPException: 400 —— 分镜无可配音文本 / 说话人角色音色未锁定；
-            409 —— 积分余额不足。
+        HTTPException: 400 —— 分镜无可配音文本 / 说话人角色音色未锁定 /
+            段下标越界；409 —— 积分不足 / 同镜同段配音任务进行中。
     """
-    # 音频先行对白处理：剥离「说话人：」前缀只合成台词（角色名不进语音）；
-    # 对白为空/无前缀行时回退画面描述（与既有口径一致）
-    text = _strip_dialogue_speakers(storyboard.dialogue) or (storyboard.visual_description or "").strip()
+    # 音频先行对白处理：剥离「说话人：」前缀只合成台词（角色名不进语音）。
+    # 无对白分镜直接 400 拦截（2026-10-20 用户确认：画面描述不得被念成配音——
+    # 旧逻辑对白为空时回退 visual_description 作台词，导致空镜出现描述旁白）
+    text = _strip_dialogue_speakers(storyboard.dialogue)
     if not text:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该分镜无可配音文本（对白与画面描述均为空）")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="该分镜无对白，不生成配音（画面描述不作为台词）")
     # 绑定角色一次查询（音色门禁与段级音色共用）
     bound_chars: List[Character] = (
         await db.execute(
@@ -819,14 +832,6 @@ async def create_tts_task(
         )
     ).scalars().all()
     bound_by_name = {ch.name: ch for ch in bound_chars}
-    # 音色确认门禁：对白说话人对应的绑定角色必须已锁定音色
-    speakers = _parse_dialogue_speakers(storyboard.dialogue)
-    unlocked = [n for n in speakers if n in bound_by_name and not bound_by_name[n].voice_locked]
-    if unlocked:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"角色「{'、'.join(unlocked)}」音色未确认，请先在配音页完成试音并锁定音色后再生成分镜配音",
-        )
     # 旁白基调（无匹配说话人的段回退）：显式 voice > 第一个绑定角色锁定/路由
     resolved_voice = (voice or "").strip()
     voice_note_used: Optional[str] = None
@@ -880,7 +885,47 @@ async def create_tts_task(
     if not segments:
         segments = [{"speaker": "", "text": text, "voice": resolved_voice,
                      "speed": base_speed, "pitch": base_pitch}]
-    cost = max(1, math.ceil(len(text) / 100) * TTS_COST_PER_100_CHARS)
+    # 段级配音校验：下标越界拦截 + 同镜同段进行中任务防重（409，
+    # meta.segment_index JSONB 文本比对；避免并发写同段产物）
+    if segment_index is not None:
+        if segment_index >= len(segments):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"段下标 {segment_index} 超出该镜对白段数（{len(segments)}），请刷新后重试",
+            )
+        dup = (
+            await db.execute(
+                select(func.count())
+                .select_from(Task)
+                .where(
+                    Task.storyboard_id == storyboard.id,
+                    Task.type == "tts",
+                    Task.status.in_(_ACTIVE_STATUS),
+                    Task.meta["segment_index"].as_string() == str(segment_index),
+                )
+            )
+        ).scalar_one()
+        if dup:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该镜此段配音正在生成中，请等待完成后再试",
+            )
+    # 音色确认门禁：全镜模式校验全部对白说话人；段级模式仅校验目标段说话人
+    if segment_index is not None:
+        check_speakers = [segments[segment_index]["speaker"]] if segments[segment_index]["speaker"] else []
+    else:
+        check_speakers = [s["speaker"] for s in segments if s["speaker"]]
+    unlocked = [n for n in check_speakers if n in bound_by_name and not bound_by_name[n].voice_locked]
+    if unlocked:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"角色「{'、'.join(unlocked)}」音色未确认，请先在配音页完成试音并锁定音色后再生成分镜配音",
+        )
+    # 计费：段级模式按该段字数，整镜模式按全文（ceil(字数/100)×5）
+    if segment_index is not None:
+        cost = max(1, math.ceil(len(str(segments[segment_index]["text"])) / 100) * TTS_COST_PER_100_CHARS)
+    else:
+        cost = max(1, math.ceil(len(text) / 100) * TTS_COST_PER_100_CHARS)
     await _precheck_balance(db, project.user_id, cost)
     return await freeze_and_create_task(
         db,
@@ -890,13 +935,15 @@ async def create_tts_task(
         cost_points=cost,
         storyboard_id=storyboard.id,
         meta={
-            # text：全文（内容审核与溯源）；segments：分段合成参数（执行器逐段合成拼接）
+            # text：全文（内容审核与溯源）；segments：分段合成参数（执行器
+            # 逐段合成拼接；segment_index 指定时仅合成该段并独立落产物）
             "text": text,
             "segments": segments,
             "voice": segments[0]["voice"],
             "speed": segments[0]["speed"],
             "pitch": segments[0]["pitch"],
             "storyboard_id": storyboard.id,
+            **({"segment_index": segment_index} if segment_index is not None else {}),
             **({"emotion": emotion} if emotion else {}),
             **({"voice_note": voice_note_used} if voice_note_used else {}),
         },

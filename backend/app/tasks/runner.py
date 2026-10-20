@@ -47,6 +47,7 @@ suspect 写审核记录待人工复核；pass 写通过记录（review_records�
 import asyncio
 import base64
 import logging
+import shutil
 import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -80,8 +81,9 @@ from app.providers.video_agnes import generate_video_real
 from app.providers.video_mock import generate_video
 from app.providers.video_wan import generate_video_wan
 from app.services import model_router, notification_service
+from app.services.audio_separation import extract_no_vocals
 from app.services.billing_service import consume_frozen, refund_frozen
-from app.services.compose_service import compose_film
+from app.services.compose_service import _merge_clip_audio, compose_film
 from app.services.generation_service import freeze_and_create_task
 from app.services.model_router import ResolvedChannel
 from app.services.review_service import (
@@ -1337,6 +1339,54 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         await _fail_task(db, task, user_id, "platform_error", "视频供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
+    # 音轨策略（2026-10-20 音源分离方案）：wan 系模型会按对白自行合成角色
+    # 人声，与环境音混在原生音轨中无法用 ffmpeg 选择性剔除——产物侧先用
+    # demucs 分离出无人声环境音轨，再剥除原生音轨（人声绝不进最终产物）；
+    # 有配音时以「环境音 0.35 + 配音 1.0」混流（时长按 max(视频,配音) 对齐，
+    # 配音从镜首 0s 起，与既有 compose 同款口径）产出完整带声分镜视频；
+    # 无配音 / 分离失败降级时保持纯无声（配音后补，由合成阶段拼轨）。
+    # 约定：video 自带音轨 ⟺ 已含当前配音（compose 据此跳过 audio_url
+    # 重复混音防双声；重新配音时剥除内嵌旧配音）
+    video_path = settings.storage_path() / str(result["url"]).removeprefix("/storage/")
+    audio_dubbed = False
+    audio_env_separated = False
+    sb_for_dub = await db.get(Storyboard, int(storyboard_id)) if storyboard_id else None
+    dub_path: Optional[Path] = None
+    if sb_for_dub and sb_for_dub.audio_url:
+        cand = settings.storage_path() / str(sb_for_dub.audio_url).removeprefix("/storage/")
+        if cand.is_file():
+            dub_path = cand
+    ffmpeg_bin = shutil.which("ffmpeg")
+    ffprobe_bin = shutil.which("ffprobe")
+    # 音轨治理（2026-10-20 音源分离方案）：wan 原生音轨 = 模型按提示词对白
+    # 自行合成的角色人声 + 环境音的混合体，ffmpeg 无法选择性去人声——先用
+    # demucs 分离出无人声环境音轨，再剥除原生音轨（人声绝不进最终产物）；
+    # 分离失败降级为纯剥轨（无声/纯配音），不阻断任务
+    env_audio_path: Optional[Path] = None
+    if ffmpeg_bin and ffprobe_bin:
+        env_audio_path = await extract_no_vocals(video_path)
+        audio_env_separated = env_audio_path is not None
+        await _strip_video_audio(video_path)
+        if dub_path is not None:
+            merged = await _merge_clip_audio(
+                ffmpeg_bin, ffprobe_bin, video_path, dub_path,
+                video_path.with_name(f"{video_path.stem}_dub{video_path.suffix}"),
+                env_audio_path=env_audio_path,
+            )
+            if merged is not None:
+                merged.replace(video_path)
+                audio_dubbed = True
+            else:
+                # 混流失败：已剥原生音轨保持纯无声，配音由合成阶段补拼
+                logger.warning("任务 %s 配音混流失败，视频保持无声：%s", task.id, video_path.name)
+    else:
+        await _strip_video_audio(video_path)
+    # 环境音临时产物用完即弃（混流已完成或未发生）
+    if env_audio_path is not None:
+        env_audio_path.unlink(missing_ok=True)
+        env_audio_path = None
+    if audio_dubbed:
+        result.setdefault("meta", {})["audio_dubbed"] = True
     # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）；
     # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
     # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
@@ -1350,6 +1400,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         "own_channel_exempt": bool(
             used_channel and used_channel.owner_user_id == user_id
         ),
+        # 音源分离溯源：wan 原生音轨是否成功分离出无人声环境音（False=降级剥轨）
+        "audio_env_separated": audio_env_separated,
     }
 
     # 视频首帧视觉机审（Task 7 / R-08）：violate 时任务置 failed 退款并触发分级处罚；
@@ -1362,8 +1414,65 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         sb = await db.get(Storyboard, int(storyboard_id))
         if sb:
             sb.video_url = result["url"]
+            # 配音已混流入视频：audio JSONB 打标（前端据此跳过同步叠加防双声，
+            # compose 据此跳过 audio_url 混音）
+            if audio_dubbed:
+                sb.audio = {**dict(sb.audio or {}), "video_dubbed": True}
     await db.commit()
     await _succeed_task(db, task, user_id)
+
+
+async def _strip_video_audio(path: Path) -> bool:
+    """剥除视频产物音轨（wan 系模型自带的角色语音/环境音与平台 TTS 配音冲突）。
+
+    wan3.0 系列图生视频会依据提示词中的对白自行合成角色语音，与平台 TTS
+    配音轨冲突（2026-10-20 用户反馈）；配音统一由 TTS 音轨独家提供（视频
+    Tab 同步播放 / 合成阶段拼轨），故产物回写前统一剥离原生音轨：ffprobe
+    检测到音轨时以 ffmpeg -c:v copy -an 无损剥离（无重编码开销）后原地
+    替换；本就无音轨/工具不可用/处理失败时保留原样返回 False。
+
+    Args:
+        path: 视频文件绝对路径。
+
+    Returns:
+        bool: 是否实际执行了剥除。
+
+    Raises:
+        无：内部捕获全部异常，失败不阻断任务主流程。
+    """
+    import shutil as _shutil
+    import subprocess as _sp
+
+    ffprobe = _shutil.which("ffprobe")
+    ffmpeg = _shutil.which("ffmpeg")
+    if not ffprobe or not ffmpeg or not path.is_file():
+        return False
+    try:
+        probe = await asyncio.to_thread(
+            _sp.run,
+            [ffprobe, "-v", "error", "-select_streams", "a",
+             "-show_entries", "stream=index", "-of", "csv=p=0", str(path)],
+            capture_output=True, timeout=30,
+        )
+        if not (probe.stdout or b"").strip():
+            return False  # 产物本就无音轨
+        tmp = path.with_name(f"{path.stem}_noaud{path.suffix}")
+        conv = await asyncio.to_thread(
+            _sp.run,
+            [ffmpeg, "-y", "-v", "error", "-i", str(path),
+             "-c:v", "copy", "-an", str(tmp)],
+            capture_output=True, timeout=300,
+        )
+        if conv.returncode != 0 or not tmp.is_file():
+            logger.warning("视频 %s 剥离音轨失败：%s", path.name,
+                           (conv.stderr or b"")[-300:])
+            tmp.unlink(missing_ok=True)
+            return False
+        tmp.replace(path)
+        return True
+    except Exception as exc:  # noqa: BLE001 —— 剥离失败不阻断任务主流程
+        logger.warning("视频 %s 剥离音轨异常：%s", path.name, exc)
+        return False
 
 
 def _normalize_wav_bytes(part: bytes) -> bytes:
@@ -1459,6 +1568,154 @@ def _concat_wav_segments(wav_parts: List[bytes], gap_sec: float = 0.35) -> "tupl
     return out.getvalue(), round(total, 2)
 
 
+async def _invalidate_video_dub(sb: Storyboard) -> None:
+    """新配音使视频内嵌配音过期（内部函数，TTS 成功回写时调用）。
+
+    产物约定「video 自带音轨 ⟺ 已含当前配音」：任一新的 TTS 配音成功后，
+    视频（若已混流配音）内嵌的旧配音即过期——剥除 video 音轨恢复纯无声
+    （合成阶段将拼入新配音）并清 video_dubbed 标记（前端恢复同步叠加逻辑）。
+
+    Args:
+        sb: 目标分镜 ORM 对象（audio JSONB 整体重赋值触发变更检测）。
+
+    Returns:
+        None。
+
+    Raises:
+        无：剥轨失败静默（标记仍清除，保证 compose 混新配音不双声）。
+    """
+    audio = dict(sb.audio or {})
+    if not audio.get("video_dubbed"):
+        return  # 本就无内嵌配音（未混流过或已清）
+    if sb.video_url:
+        vp = settings.storage_path() / str(sb.video_url).removeprefix("/storage/")
+        await _strip_video_audio(vp)
+    audio["video_dubbed"] = False
+    sb.audio = audio
+
+
+async def _run_tts_segment(
+    db, task: Task, user_id: int, meta: dict,
+    segments: List[Dict], seg_index: int, out_dir: Path,
+) -> None:
+    """执行段级配音任务（一句一行）：仅合成 segments[seg_index] 并独立落产物。
+
+    产物回写 storyboard.audio JSONB 的 dialogue[idx]（{speaker, text,
+    audio_url, duration_sec}），供前端逐段试听与视频按角色对齐配音；
+    全部段完成后自动按段序拼接整镜音轨回写 audio_url（合成阶段消费，
+    缺段时保留旧音轨不更新）。
+
+    Args:
+        db: 异步数据库会话。
+        task: 任务对象（meta 携带 segments/segment_index/storyboard_id）。
+        user_id: 用户 ID。
+        meta: 任务附加信息。
+        segments: 分段参数列表（创建时已按锁定音色/情绪推导）。
+        seg_index: 目标段下标。
+        out_dir: 产物输出目录。
+
+    Returns:
+        None（失败通过 _fail_task 落库；成功通过 _succeed_task 落库）。
+
+    Raises:
+        无：渠道异常由降级链收敛，回写异常由 _execute_task 兜底。
+    """
+    seg = segments[seg_index]
+    seg_text = str(seg["text"])
+    seg_voice = str(seg.get("voice") or meta.get("voice") or "female_01")
+    seg_speed = float(seg.get("speed", 1.0) or 1.0)
+    seg_pitch = float(seg.get("pitch", 1.0) or 1.0)
+    speaker_label = str(seg.get("speaker") or "旁白")
+
+    async def _seg_generate(channel: ResolvedChannel) -> Optional[Dict]:
+        """单渠道段级合成回调：mock 分派/百炼真实渠道（与全镜段循环同口径）。
+
+        Args:
+            channel: 当前候选渠道。
+
+        Returns:
+            Optional[Dict]: 合成结果；失败返回 None。
+
+        Raises:
+            无（provider 内部已收敛异常）。
+        """
+        if channel.channel_id == 0 or channel.protocol == "mock":
+            return await generate_tts(seg_text, seg_voice, out_dir)
+        return await generate_tts_real(seg_text, seg_voice, out_dir, channel, seg_speed, seg_pitch)
+
+    await _set_progress(db, task, 30)
+    seg_result, seg_channel, seg_fallback = await _generate_with_fallback(
+        db, "tts", _seg_generate, user_id=user_id)
+    if seg_result is None or not seg_result.get("url"):
+        task.meta = {
+            **meta,
+            "fallback_chain": [{"speaker": speaker_label, "errors": seg_fallback}],
+        }
+        await _fail_task(
+            db, task, user_id, "platform_error",
+            f"分段配音合成失败（说话人：{speaker_label}），已尝试全部渠道")
+        return
+    await _set_progress(db, task, 80)
+    seg_entry: Dict = {
+        "speaker": str(seg.get("speaker") or ""),
+        "text": seg_text,
+        "audio_url": seg_result["url"],
+        "duration_sec": seg_result.get("duration_sec"),
+    }
+    # 回写 storyboard.audio.dialogue[idx]；全段齐后自动拼接整镜音轨
+    sb = await db.get(Storyboard, int(meta.get("storyboard_id"))) if meta.get("storyboard_id") else None
+    if sb is not None:
+        # 新段配音使视频内嵌配音过期（若已混流）：剥轨 + 清标记
+        await _invalidate_video_dub(sb)
+        audio = dict(sb.audio or {})
+        dlg: list = list(audio.get("dialogue") or [])
+        if len(dlg) < len(segments):
+            dlg += [None] * (len(segments) - len(dlg))
+        dlg[seg_index] = seg_entry
+        audio["dialogue"] = dlg
+        sb.audio = audio  # JSONB 整体重赋值触发变更检测
+        if all(d is not None for d in dlg):
+            parts: List[bytes] = []
+            for d in dlg:
+                try:
+                    parts.append(
+                        (settings.storage_path() / str(d["audio_url"]).removeprefix("/storage/")).read_bytes()
+                    )
+                except OSError:
+                    parts.append(b"")
+            if parts and all(parts):
+                try:
+                    combined, total = await asyncio.to_thread(_concat_wav_segments, parts)
+                    filename = f"tts_{task.storyboard_id or sb.id}_segfull_{abs(hash(tuple(parts))) % 100000}.wav"
+                    (out_dir / filename).write_bytes(combined)
+                    sb.audio_url = f"/storage/generated/{filename}"
+                    sb.actual_duration = min(float(total), 9999.99)
+                except Exception as exc:  # noqa: BLE001 —— 拼接失败保留旧音轨，段产物不丢
+                    logger.warning("任务 %s 段级拼接整镜音轨失败：%s", task.id, exc)
+    await db.commit()
+    task.result_url = seg_result["url"]
+    task.meta = {
+        **meta,
+        **(seg_result.get("meta") or {}),
+        "duration_sec": seg_result.get("duration_sec"),
+        "fallback_chain": seg_fallback,
+        "provider": (seg_result.get("meta") or {}).get("provider") or "mock",
+        "placeholder": _is_placeholder_result(seg_result, seg_channel),
+        "own_channel_exempt": bool(seg_channel and seg_channel.owner_user_id == user_id),
+    }
+    db.add(MediaAsset(
+        user_id=user_id,
+        project_id=task.project_id,
+        media_type="audio",
+        source="studio",
+        url=seg_result["url"],
+        meta={"task_id": task.id, "storyboard_id": meta.get("storyboard_id"),
+              "segment_index": seg_index, "speaker": str(seg.get("speaker") or "")},
+    ))
+    await db.commit()
+    await _succeed_task(db, task, user_id)
+
+
 async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
     """执行配音任务：按渠道降级链合成 → 回写分镜 audio_url 与实际时长（RD-31）→ 插入音频素材。
 
@@ -1486,6 +1743,20 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         return
     out_dir = settings.storage_path() / "generated"
 
+    # 段级配音分流（一句一行）：仅合成指定段并独立落产物
+    seg_index_raw = meta.get("segment_index")
+    if seg_index_raw is not None and segments:
+        try:
+            seg_index = int(seg_index_raw)
+        except (TypeError, ValueError):
+            seg_index = -1
+        if 0 <= seg_index < len(segments):
+            await _run_tts_segment(db, task, user_id, meta, segments, seg_index, out_dir)
+            return
+        await _fail_task(db, task, user_id, "platform_error",
+                         f"段下标 {seg_index_raw} 越界（该镜 {len(segments)} 段）")
+        return
+
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
         """单渠道语音合成回调：链尾哨兵/用户自建 mock 协议渠道行走本地 mock，
         其余走百炼真实渠道（单段/全文一次性合成路径，segments 任务不走此路径）。
@@ -1511,6 +1782,7 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         used_channel: Optional[ResolvedChannel] = None
         first_url: Optional[str] = None
         placeholder_any = False
+        seg_entries: List[Dict] = []  # 段产物登记（回写 audio.dialogue，与段级配音口径统一）
         await _set_progress(db, task, 10)
         for seg_idx, seg in enumerate(segments):
             seg_speed = float(seg.get("speed", 1.0) or 1.0)
@@ -1546,6 +1818,12 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
                 used_channel = seg_channel
             if first_url is None:
                 first_url = seg_result["url"]
+            seg_entries.append({
+                "speaker": str(seg.get("speaker") or ""),
+                "text": str(seg["text"]),
+                "audio_url": seg_result["url"],
+                "duration_sec": seg_result.get("duration_sec"),
+            })
             try:
                 wav_parts.append(
                     (settings.storage_path() / str(seg_result["url"]).removeprefix("/storage/")).read_bytes()
@@ -1594,10 +1872,16 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
         }
         sb = await db.get(Storyboard, int(meta.get("storyboard_id"))) if meta.get("storyboard_id") else None
         if sb:
+            # 整镜新配音使视频内嵌配音过期（若已混流）：剥轨 + 清标记
+            await _invalidate_video_dub(sb)
             sb.audio_url = result["url"]
             # RD-31：TTS 回写分镜实际时长（钳制到 NUMERIC(6,2) 列上限，防异常值溢出）
             _dur = result.get("duration_sec")
             sb.actual_duration = None if _dur is None else min(float(_dur), 9999.99)
+            # 段产物同步落 audio.dialogue（与段级配音模式数据口径统一，
+            # 供前端逐段试听与视频按角色对齐）
+            if seg_entries:
+                sb.audio = {**dict(sb.audio or {}), "dialogue": seg_entries}
         db.add(MediaAsset(
             user_id=user_id,
             project_id=task.project_id,
@@ -1647,6 +1931,8 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
     if storyboard_id:
         sb = await db.get(Storyboard, int(storyboard_id))
         if sb:
+            # 单段/全文新配音使视频内嵌配音过期（若已混流）：剥轨 + 清标记
+            await _invalidate_video_dub(sb)
             sb.audio_url = result["url"]
             # RD-31：TTS 回写分镜实际时长（钳制到 NUMERIC(6,2) 列上限，防异常值溢出）
             _dur = result.get("duration_sec")

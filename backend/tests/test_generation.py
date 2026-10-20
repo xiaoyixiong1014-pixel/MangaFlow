@@ -414,3 +414,150 @@ async def test_guanjianzhen_cankao_shouji_changjing_daoju(client, auth, db):
 
     # 收尾：等任务终态，避免遗留排队任务
     await wait_task_terminal(client, auth["headers"], task_id)
+
+
+async def _bind_locked_speaker(db, pid: int, sb, name: str) -> Character:
+    """辅助：建一个音色已锁定的角色并绑定到分镜（段级配音门禁前置数据）。
+
+    Args:
+        db: 测试库会话。
+        pid: 项目 ID。
+        sb: 分镜 ORM 对象。
+        name: 角色名（与对白行「名字：」前缀精确匹配）。
+
+    Returns:
+        Character: 已落库并绑定的角色 ORM 对象。
+
+    Raises:
+        Exception: 数据库写入异常向上抛出。
+    """
+    char = Character(
+        project_id=pid,
+        name=name,
+        visual_prompt="测试角色视觉提示词",
+        gender="female",
+        voice_note="温柔清亮的女声，语速平缓",
+        voice_selected="female_01",
+        voice_locked=True,
+        enabled_at=datetime.now(timezone.utc),
+    )
+    db.add(char)
+    await db.flush()
+    db.add(StoryboardCharacter(storyboard_id=sb.id, character_id=char.id))
+    await db.commit()
+    return char
+
+
+async def test_duanji_peiyin_yiju_yisheng(client, auth, db):
+    """段级配音（一句一行）：segment_index 提交仅合成该段并独立落产物。
+
+    - meta 携带 segment_index 与全量 segments，计费按该段字数；
+    - 段下标越界 400；同镜同段 active 任务 409 防重；
+    - 任务 done 后 storyboard.audio.dialogue[idx] 回写段产物，
+      未全段完成时 audio_url 保持空；
+    - 补齐另一段后全段齐 → 后端自动拼接整镜音轨回写 audio_url。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    pid, sb = await _make_project_with_storyboard(client, auth, db, unique_suffix())
+    sb.dialogue = "陈默：测试第一句台词。\n周姨：测试第二句台词。"
+    await db.commit()
+    await _bind_locked_speaker(db, pid, sb, "陈默")
+    await _bind_locked_speaker(db, pid, sb, "周姨")
+    tts_url = f"/api/projects/{pid}/storyboards/{sb.id}/tts"
+
+    # 段下标越界 400
+    bad = await client.post(tts_url, headers=auth["headers"], json={"segment_index": 5})
+    assert bad.status_code == 400, bad.text
+
+    # 提交段 1（周姨）：meta 携带 segment_index 与全量 segments，按段计费
+    resp = await client.post(tts_url, headers=auth["headers"], json={"segment_index": 1})
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+    row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
+    assert (row.meta or {}).get("segment_index") == 1
+    assert len((row.meta or {}).get("segments") or []) == 2
+    assert row.cost_points == 5  # 段文本 9 字 → ceil(9/100)×5
+
+    # 同镜同段防重：直插一条 running 段任务再提交 → 409
+    db.add(Task(
+        project_id=pid, type="tts", status="running", cost_points=5,
+        storyboard_id=sb.id, idempotency_key=f"test-dup-guard-{unique_suffix()}",
+        meta={"segment_index": 1, "segments": [], "text": "占位"},
+    ))
+    await db.commit()
+    dup = await client.post(tts_url, headers=auth["headers"], json={"segment_index": 1})
+    assert dup.status_code == 409, dup.text
+
+    # 段 1 完成：audio.dialogue[1] 有产物、dialogue[0] 为占位 None，audio_url 保持空
+    await wait_task_terminal(client, auth["headers"], task_id)
+    await db.refresh(sb)
+    dlg = (sb.audio or {}).get("dialogue") or []
+    assert len(dlg) == 2 and dlg[1] and dlg[1]["audio_url"]
+    assert dlg[1]["speaker"] == "周姨" and dlg[0] is None
+    assert not sb.audio_url
+
+    # 提交段 0（陈默）：全段齐 → 自动拼接整镜音轨
+    resp0 = await client.post(tts_url, headers=auth["headers"], json={"segment_index": 0})
+    assert resp0.status_code == 200, resp0.text
+    await wait_task_terminal(client, auth["headers"], resp0.json()["id"])
+    await db.refresh(sb)
+    assert sb.audio_url and sb.audio_url.startswith("/storage/generated/tts_")
+    assert (sb.actual_duration or 0) > 0
+    assert len((sb.audio or {}).get("dialogue") or []) == 2
+
+
+async def test_shipin_tishi_cidan_cijingshuiping(client, auth, db):
+    """视频提示词强化：meta.prompt 以分镜画面描述为核心并携带镜头要素。
+
+    2026-10-20 用户反馈视频不按分镜内容生成——新构造应直接携带
+    visual_description/机位角度/环境光影/镜头情绪/角色对白与一致性指令，
+    不再仅依赖拆解锁定层快照。
+
+    Args:
+        client: 内存 HTTP 客户端。
+        auth: 随机注册用户上下文。
+        db: 测试库会话。
+
+    Returns:
+        None。
+
+    Raises:
+        AssertionError: 任一断言失败时中断。
+    """
+    pid, sb = await _make_project_with_storyboard(client, auth, db, unique_suffix())
+    sb.visual_description = "雨夜巷口，陈默撑伞回头看向追来的周姨"
+    sb.camera_angle = "平视"
+    sb.lighting = "冷色路灯，湿地面反光"
+    sb.audio = {"sfx": [], "emotion": "压抑"}
+    sb.dialogue = "周姨：这么晚你去哪？\n陈默：找人。"
+    await db.commit()
+
+    resp = await client.post(
+        f"/api/projects/{pid}/storyboards/{sb.id}/video",
+        headers=auth["headers"],
+        json={"resolution": "720p", "fps": 24, "motion_strength": "medium", "use_end_frame": False},
+    )
+    assert resp.status_code == 200, resp.text
+    task_id = resp.json()["id"]
+    row = (await db.execute(select(Task).where(Task.id == task_id))).scalar_one()
+    prompt = (row.meta or {}).get("prompt") or ""
+    assert "分镜画面描述：雨夜巷口" in prompt
+    assert "机位角度：平视" in prompt
+    assert "环境光影：冷色路灯" in prompt
+    assert "镜头情绪：压抑" in prompt
+    assert "角色对白（说话角色口部自然开合）" in prompt
+    assert "周姨：这么晚你去哪？" in prompt
+    assert "必须与首帧严格一致" in prompt
+
+    # 收尾：等任务终态，避免遗留排队任务
+    await wait_task_terminal(client, auth["headers"], task_id)

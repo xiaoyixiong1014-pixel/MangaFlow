@@ -725,6 +725,7 @@ async def _merge_clip_audio(
     video_path: Path,
     audio_path: Optional[Path],
     out_path: Path,
+    env_audio_path: Optional[Path] = None,
 ) -> Optional[Path]:
     """把分镜配音合入视频片段（音频先行音画对齐，2026-10-19 流程确认）。
 
@@ -732,6 +733,9 @@ async def _merge_clip_audio(
     - 配音长于视频：视频末帧定格补齐（tpad stop_mode=clone）；
     - 配音短于视频：视频保持完整，音频补静音至视频末（apad whole_dur）；
     - 视频自带音轨（如 wan 输出含环境音）：环境音降音量 0.35 与配音 amix；
+    - 显式环境音源（env_audio_path 非空，2026-10-20 音源分离方案）：调用方
+      已剥除视频原生音轨（人声+环境音混合体），以分离出的无人声环境音轨
+      0.35 与配音 1.0 amix——人声不进最终产物；
     - 无配音片段：补静音音轨（anullsrc），统一「片段恒有 AAC 音轨 + 同参
       编码」，保证 concat -c copy 拼接兼容与音轨连续。
 
@@ -743,6 +747,8 @@ async def _merge_clip_audio(
         video_path: 视频片段物理路径。
         audio_path: 配音音频物理路径（None = 补静音轨仅做编码统一）。
         out_path: 输出片段路径。
+        env_audio_path: 显式环境音源 WAV 路径（音源分离产物，可空）。非空时
+            优先于视频原生音轨作为环境音源（要求配音 audio_path 同时存在）。
 
     Returns:
         Optional[Path]: 成功返回输出路径；失败返回 None。
@@ -761,8 +767,17 @@ async def _merge_clip_audio(
         )
         total = max(video_dur, audio_dur or 0.0)
         pad = max(0.0, total - video_dur)
+        # 输入装配：[0]=视频；显式环境音源时 [1]=环境音 [2]=配音（调用方
+        # 已剥除原生音轨）；否则 [1]=配音；无配音补静音源（保证 concat
+        # 音轨参数一致）
         cmd: List[str] = [ffmpeg, "-y", "-i", str(video_path)]
-        if audio_path:
+        use_explicit_env = bool(
+            env_audio_path and audio_path and Path(env_audio_path).is_file()
+        )
+        if use_explicit_env:
+            cmd += ["-i", str(env_audio_path), "-i", str(audio_path)]
+            env_in, audio_in = "[1:a]", "[2:a]"
+        elif audio_path:
             cmd += ["-i", str(audio_path)]
             audio_in = "[1:a]"
         else:
@@ -771,7 +786,15 @@ async def _merge_clip_audio(
             audio_in = "[1:a]"
         has_native_audio = await _has_audio_stream(ffprobe, video_path)
         vf = f"[0:v]tpad=stop_mode=clone:stop_duration={pad:.3f}[v]"
-        if audio_path and has_native_audio:
+        if use_explicit_env:
+            # 显式环境音源（音源分离产物）：环境音 0.35 + 配音 1.0 amix
+            # （视频原生音轨已被调用方剥除，人声不进最终产物）
+            af = (
+                f"{env_in}volume=0.35[env];{audio_in}volume=1.0[dub];"
+                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0,"
+                f"apad=whole_dur={total:.3f}[a]"
+            )
+        elif audio_path and has_native_audio:
             # 片段自带音轨：环境音降量后与配音混音（配音优先）
             af = (
                 f"[0:a]volume=0.35[env];{audio_in}volume=1.0[dub];"
@@ -1003,6 +1026,10 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             if not vp.exists():
                 continue
             audio_phys = _physical_path(sb.audio_url) if sb.audio_url else None
+            # 视频自带音轨 ⟺ 已含当前配音（视频任务阶段完成「环境音+配音」
+            # 混流，2026-10-20 口径）：不再叠加 audio_url，避免配音双重混入
+            if audio_phys and await _has_audio_stream(ffprobe, vp):
+                audio_phys = None
             has_audio = bool(audio_phys and audio_phys.is_file())
             # 统一处理：有配音合入音轨（末帧定格/静音补齐），无配音补静音轨，
             # 全部片段同参编码保证 concat -c copy 兼容；失败回退原片段

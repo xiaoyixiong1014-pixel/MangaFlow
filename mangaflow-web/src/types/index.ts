@@ -892,8 +892,20 @@ export interface Storyboard {
   lighting?: string | null
   /** 负面提示词（方案 B，分层提示词「负面排除层」） */
   negative_prompt?: string | null
-  /** 声音结构化信息（方案 B：{sfx: 音效列表, emotion: 情绪标签}） */
-  audio?: { sfx?: string[]; emotion?: string | null } | null
+  /** 声音结构化信息（方案 B：{sfx: 音效列表, emotion: 情绪标签, dialogue: 逐段配音产物}） */
+  audio?: {
+    sfx?: string[]
+    emotion?: string | null
+    /** 段级配音产物（按对白行序：一段一个独立音频，全段齐后自动拼接整镜音轨） */
+    dialogue?: Array<{
+      speaker: string
+      text: string
+      audio_url: string
+      duration_sec?: number | null
+    } | null> | null
+    /** 视频已内嵌当前配音（视频任务阶段混流，true 时前端不再同步叠加配音轨） */
+    video_dubbed?: boolean
+  } | null
   /** 关键帧 URL */
   keyframe_url?: string | null
   /** 尾帧 URL（尾帧任务完成后由后端回写，视频尾帧控制依赖） */
@@ -902,6 +914,8 @@ export interface Storyboard {
   video_url?: string | null
   /** 配音 URL（TTS 任务完成后由后端回写，可用于行内试听） */
   audio_url?: string | null
+  /** 配音实际时长（秒，TTS 任务完成后由后端回写，RD-31） */
+  actual_duration?: number | null
   /** 状态：pending/generating/done/failed */
   status: string
   /** 重生成次数 */

@@ -49,11 +49,14 @@ class TtsCreateRequest(BaseModel):
             分镜绑定角色的音色设定自动路由）。
         speed: 语速倍率（0.5 ~ 2.0）。
         pitch: 音调倍率（0.5 ~ 2.0）。
+        segment_index: 段级配音下标（None/缺省=整镜全段合成拼接；指定时仅
+            合成该下标对白段并独立落产物，供前端「一句一行」逐段生成）。
     """
 
     voice: Optional[Literal["male_01", "male_02", "female_01", "female_02"]] = None
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
     pitch: float = Field(default=1.0, ge=0.5, le=2.0)
+    segment_index: Optional[int] = Field(default=None, ge=0)
 
 
 class VoicePreviewCreateRequest(BaseModel):

@@ -117,7 +117,10 @@ class Settings(BaseSettings):
     # 调用均 HTTP 200 并返回准确图片描述（usage.prompt_tokens_details.image_tokens
     # =943 证明图片真实入模），即 Agnes 旗舰文本模型即多模态视觉模型。默认取
     # 3.0 代旗舰；视觉调用失败时 runner 自动降级 llm-text → keyword 文本机审。
-    agnes_vision_model: str = "agnes-3.0-flash-max"
+    # 2026-10-20：agnes-3.0-flash-max 已从平台下线（default 分组 503
+    # model_not_found），实测换代为 agnes-3.0-flash（图文探测 200 且正确
+    # 识别测试图颜色）。
+    agnes_vision_model: str = "agnes-3.0-flash"
 
     # ---------- P0-4 面部视觉一致性（Agnes 面部档案 + 余弦比对闸门） ----------
     # 一致性阈值：新图面部档案与主形象档案余弦低于该值判定偏差过大。

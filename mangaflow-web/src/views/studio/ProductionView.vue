@@ -225,10 +225,17 @@ function startTaskStream(): void {
             .listStoryboard(projectId.value, currentEpisodeId.value ?? undefined)
             .then((sb) => {
               boards.value = sb
-              // 清理已完成配音的「生成中」状态（批量/单镜提交统一在此收敛）
-              ttsGeneratingIds.value = ttsGeneratingIds.value.filter((id) => {
+              // 清理已完成段配音的「生成中」状态（批量/单段提交统一在此收敛；
+              // ttsRows 依赖 boards 自动重算，按行 key 判定该段是否已有产物）
+              const rowsByKey = new Map(ttsRows.value.map((r) => [r.key, r]))
+              ttsSegGenerating.value = ttsSegGenerating.value.filter((k) => {
+                const r = rowsByKey.get(k)
+                return r ? !r.audioUrl : false
+              })
+              // 视频生成中状态收敛：已回写 video_url 的镜恢复正常展示
+              videoGeneratingIds.value = videoGeneratingIds.value.filter((id) => {
                 const b = sb.find((x) => x.id === id)
-                return b ? !b.audio_url : false
+                return b ? !b.video_url : false
               })
             })
           void refreshWallet()
@@ -470,8 +477,112 @@ const useEndFrameMap = reactive<Record<number, boolean>>({})
 /** 视频任务提交中的分镜 ID 集合（防重复点击） */
 const videoBusyIds = ref<number[]>([])
 
+/** 视频任务执行中的分镜 ID 集合（提交后到任务终态，驱动行内动态加载样式） */
+const videoGeneratingIds = ref<number[]>([])
+
+/**
+ * 判断某镜视频是否在生成中（提交请求或任务轮询阶段）。
+ * @param b 目标分镜
+ * @returns 是否生成中
+ */
+function isVideoBusy(b: Storyboard): boolean {
+  return videoBusyIds.value.includes(b.id) || videoGeneratingIds.value.includes(b.id)
+}
+
 /** 尾帧任务生成中的分镜 ID 集合（防重复点击 + 按钮 loading） */
 const endFrameBusyIds = ref<number[]>([])
+
+// ---------- 视频 Tab 行内配音同步播放（视频 agent 产物无声，配音按时刻对齐驱动） ----------
+
+/**
+ * 配音同步开关（默认关闭 = 配音与视频隔离，纯视频预览验证画面内容；
+ * 打开后播放视频时按时刻同步接入该镜 TTS 配音轨）。
+ */
+const dubSyncEnabled = ref(false)
+
+/** 分镜 ID → 行内 video 元素引用（模板 ref 回调登记） */
+const sbVideoRefs = new Map<number, HTMLVideoElement>()
+
+/** 分镜 ID → 配音 Audio 实例（懒建缓存，随 video 播放/暂停/seek 联动） */
+const sbAudioEls = new Map<number, HTMLAudioElement>()
+
+/**
+ * 模板 ref 回调：登记/注销行内 video 元素引用。
+ * @param sbId 分镜 ID
+ * @param el video 元素（v-if 卸载时为 null）
+ * @returns 无
+ */
+function setVideoRef(sbId: number, el: unknown): void {
+  if (el instanceof HTMLVideoElement) sbVideoRefs.set(sbId, el)
+  else sbVideoRefs.delete(sbId)
+}
+
+/**
+ * 取（或懒建）该镜配音 Audio 实例（src 变化时重建）。
+ * 无对白分镜不参与配音同步（防存量「画面描述旁白」类脏数据被播出）。
+ * @param b 目标分镜（须有对白与 audio_url）
+ * @returns Audio 实例（无对白/无配音返回 null）
+ */
+function getDubAudio(b: Storyboard): HTMLAudioElement | null {
+  if (!b.audio_url || !(b.dialogue || '').trim()) return null
+  let el = sbAudioEls.get(b.id)
+  if (!el || el.src !== new URL(b.audio_url, window.location.href).href) {
+    el?.pause()
+    el = new Audio(b.audio_url)
+    el.preload = 'auto'
+    sbAudioEls.set(b.id, el)
+  }
+  return el
+}
+
+/**
+ * video 播放联动：配音从视频当前时刻同步播放（音画对齐——视频时长与
+ * 配音时长在任务创建时已按 ceil 对齐）。
+ * @param b 目标分镜
+ * @returns 无
+ */
+function onVideoPlay(b: Storyboard): void {
+  const v = sbVideoRefs.get(b.id)
+  // 配音隔离开关关闭时纯视频预览（不叠加 TTS 音轨）
+  if (!dubSyncEnabled.value) return
+  // 视频已内嵌当前配音（混流产物）：播放器自带音轨，再叠加会双声
+  if (b.audio?.video_dubbed) return
+  const a = getDubAudio(b)
+  if (!v || !a) return
+  try {
+    a.currentTime = Math.min(v.currentTime, a.duration || v.currentTime)
+  } catch {
+    /* 元数据未就绪时由浏览器按 0 起播 */
+  }
+  void a.play().catch(() => {
+    /* 自动播放策略拦截时静默：用户再点播放可恢复 */
+  })
+}
+
+/**
+ * video 暂停/结束联动：配音同步暂停。
+ * @param b 目标分镜
+ * @returns 无
+ */
+function onVideoPause(b: Storyboard): void {
+  sbAudioEls.get(b.id)?.pause()
+}
+
+/**
+ * video 进度条 seek 联动：配音跳转到同一时刻。
+ * @param b 目标分镜
+ * @returns 无
+ */
+function onVideoSeek(b: Storyboard): void {
+  const v = sbVideoRefs.get(b.id)
+  const a = sbAudioEls.get(b.id)
+  if (!v || !a) return
+  try {
+    a.currentTime = Math.min(v.currentTime, a.duration || v.currentTime)
+  } catch {
+    /* seek 目标超出音频时长时忽略 */
+  }
+}
 
 /**
  * 生成单镜视频片段（P-12：携带分辨率/帧率/运动幅度；P-03：按开关携带尾帧控制）。
@@ -480,7 +591,7 @@ const endFrameBusyIds = ref<number[]>([])
  */
 async function genVideo(b: Storyboard): Promise<void> {
   if (!ensureProductionReady()) return
-  if (videoBusyIds.value.includes(b.id)) return
+  if (isVideoBusy(b)) return
   videoBusyIds.value = [...videoBusyIds.value, b.id]
   try {
     const task = await productionApi.video(projectId.value, b.id, {
@@ -490,9 +601,33 @@ async function genVideo(b: Storyboard): Promise<void> {
       use_end_frame: !!useEndFrameMap[b.id],
     })
     ElMessage.success(`视频任务 #${task.id} 已提交`)
+    videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
+    videoGeneratingIds.value = [...videoGeneratingIds.value, b.id]
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
+    // 轮询任务终态（视频生成 1~5 分钟，5s 间隔）；完成后刷新分镜取回 video_url
+    const timer = setInterval(async () => {
+      try {
+        const t = await productionApi.taskDetail(task.id)
+        if (t.status === 'done') {
+          clearInterval(timer)
+          boards.value = await studioApi.listStoryboard(
+            projectId.value,
+            currentEpisodeId.value ?? undefined,
+          )
+          ElMessage.success(`#${String(b.sequence).padStart(2, '0')} 镜视频生成完成`)
+        } else if (t.status === 'failed' || t.status === 'canceled') {
+          clearInterval(timer)
+        } else {
+          return
+        }
+        videoGeneratingIds.value = videoGeneratingIds.value.filter((i) => i !== b.id)
+      } catch {
+        clearInterval(timer)
+        videoGeneratingIds.value = videoGeneratingIds.value.filter((i) => i !== b.id)
+      }
+    }, 5000)
   } finally {
     videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
   }
@@ -547,66 +682,50 @@ async function genEndFrame(b: Storyboard): Promise<void> {
 // 配音与合成 Tab（S-08）
 // ============================================================
 
-/**
- * 取某镜的显式音色：第一个绑定角色的确认音色（voice_selected，锁定时固化、
- * 映射表编辑暂存）；未设置返回 undefined——后端按绑定角色的「音色设定」
- * （voice_note）自动路由，不再全项目共用固定缺省音色。
- * @param b 目标分镜
- * @returns 显式音色标识（未设置为 undefined）
- */
-function voiceOf(b: Storyboard): 'male_01' | 'male_02' | 'female_01' | 'female_02' | undefined {
-  const first = b.characters[0]
-  if (first) return (characterById.value.get(first.character_id)?.voice_selected ?? undefined) as
-    | 'male_01' | 'male_02' | 'female_01' | 'female_02' | undefined
-  return undefined
-}
-
-/** 配音任务提交中的分镜 ID 集合（防重复点击） */
-const ttsBusyIds = ref<number[]>([])
-
 /** 有对白的分镜列表（分镜配音表仅展示有角色对话的镜；无对白镜无需配音） */
 const dialogueBoards = computed(() => boards.value.filter((x) => (x.dialogue || '').trim()))
 
 // ---------- 行内配音试听（单例播放器：同时只播一条） ----------
 
-/** 正在播放配音的分镜 ID（null = 无播放） */
-const playingSbId = ref<number | null>(null)
+/** 正在播放的音频行 key（配音表行唯一标识，null = 无播放） */
+const playingAudioKey = ref<string | null>(null)
 /** 单例音频播放器（模块级复用，避免每行各建一份） */
 const audioEl = new Audio()
 
 /**
- * 切换某行配音的播放/暂停：播放新行前先停止当前行。
- * @param b 目标分镜（audio_url 为空时不处理）
+ * 播放/暂停指定音频 URL（行 key 驱动图标切换；播放新行前先停止当前行）。
+ * @param url 音频地址（空不处理）
+ * @param key 行唯一 key
  * @returns 无
  */
-function togglePlay(b: Storyboard): void {
-  if (!b.audio_url) return
-  if (playingSbId.value === b.id) {
+function togglePlayUrl(url: string | null | undefined, key: string): void {
+  if (!url) return
+  if (playingAudioKey.value === key) {
     audioEl.pause()
-    playingSbId.value = null
+    playingAudioKey.value = null
     return
   }
   audioEl.pause()
-  audioEl.src = b.audio_url
-  playingSbId.value = b.id
+  audioEl.src = url
+  playingAudioKey.value = key
   audioEl
     .play()
     .then(() => {
-      /* 播放成功，图标由 playingSbId 驱动 */
+      /* 播放成功，图标由 playingAudioKey 驱动 */
     })
     .catch(() => {
-      playingSbId.value = null
+      playingAudioKey.value = null
       ElMessage.warning('音频播放失败，可能该试听资源不可用')
     })
 }
 
 // 播放结束/异常时复位图标（分镜试听与角色试音共用单例播放器）
 audioEl.addEventListener('ended', () => {
-  playingSbId.value = null
+  playingAudioKey.value = null
   playingVoiceId.value = null
 })
 audioEl.addEventListener('error', () => {
-  playingSbId.value = null
+  playingAudioKey.value = null
   playingVoiceId.value = null
 })
 
@@ -618,33 +737,6 @@ const voicePreviewBusyIds = ref<number[]>([])
 const voiceLockBusyIds = ref<number[]>([])
 /** 正在播放试音的角色 ID（null = 无播放，与分镜试听共用单例播放器） */
 const playingVoiceId = ref<number | null>(null)
-/** 角色 ID → 角色映射（门禁/锁定判断用） */
-const characterById = computed(() => new Map(characters.value.map((c) => [c.id, c])))
-
-/**
- * 解析分镜对白说话人名列表（「XXX：台词」行前缀，与后端门禁同口径）。
- * @param b 目标分镜
- * @returns 说话人名数组（去重保序）
- */
-function speakersOf(b: Storyboard): string[] {
-  const names: string[] = []
-  for (const line of String(b.dialogue || '').split('\n')) {
-    const m = line.trim().match(/^([^：:]{1,20})[：:]/)
-    const name = m?.[1]?.trim()
-    if (name && !names.includes(name)) names.push(name)
-  }
-  return names
-}
-
-/**
- * 判断某镜配音是否被音色门禁拦截（任一对白说话人角色未锁定音色）。
- * @param b 目标分镜
- * @returns 未锁定的说话人角色名数组（空 = 放行）
- */
-function unlockedSpeakersOf(b: Storyboard): string[] {
-  const lockedByName = new Map(characters.value.map((c) => [c.name, c.voice_locked]))
-  return speakersOf(b).filter((n) => lockedByName.get(n) === false)
-}
 
 interface DialogueSeg {
   /** 说话人名（无「XXX：」前缀的行 为 null） */
@@ -683,7 +775,7 @@ function playVoiceSample(row: CharacterAsset): void {
     return
   }
   audioEl.pause()
-  playingSbId.value = null
+  playingAudioKey.value = null
   audioEl.src = row.voice_sample_url
   playingVoiceId.value = row.id
   audioEl
@@ -786,71 +878,129 @@ async function unlockVoice(row: CharacterAsset): Promise<void> {
   }
 }
 
-/** 生成中的配音分镜 ID 集合（提交后到任务终态，驱动行内动态加载样式） */
-const ttsGeneratingIds = ref<number[]>([])
+/** 配音表行（一段对白一行独立生成；整镜预览行 segIdx=null） */
+interface TtsRow {
+  /** 行唯一 key（段：`${sb.id}:${segIdx}`；整镜预览：`${sb.id}:full`） */
+  key: string
+  /** 所属分镜 */
+  sb: Storyboard
+  /** 对白段下标（null = 整镜预览行，仅试听拼接产物） */
+  segIdx: number | null
+  /** 说话人名（null = 旁白/整镜行） */
+  speaker: string | null
+  /** 台词/说明文本 */
+  text: string
+  /** 该行音频产物（段产物缺失或对白已变更时为 null） */
+  audioUrl: string | null
+  /** 实际时长（秒，段产物回写值） */
+  durationSec: number | null
+}
+
+/** 配音表数据：有对白分镜逐段拆行（一个角色一句话一行）+ 每镜末尾整镜预览行 */
+const ttsRows = computed<TtsRow[]>(() => {
+  const rows: TtsRow[] = []
+  for (const b of dialogueBoards.value) {
+    const products = b.audio?.dialogue ?? []
+    dialogueSegments(b).forEach((seg, i) => {
+      const p = products[i]
+      // 产物需与当前对白行文本匹配才展示（对白编辑后旧段产物作废）
+      const matched = !!p && p.text === seg.text
+      rows.push({
+        key: `${b.id}:${i}`,
+        sb: b,
+        segIdx: i,
+        speaker: seg.speaker,
+        text: seg.text,
+        audioUrl: matched ? p!.audio_url : null,
+        durationSec: matched ? (p!.duration_sec ?? null) : null,
+      })
+    })
+    rows.push({
+      key: `${b.id}:full`,
+      sb: b,
+      segIdx: null,
+      speaker: null,
+      text: '整镜配音（全部台词段生成后自动拼接，供视频/合成阶段使用）',
+      audioUrl: b.audio_url ?? null,
+      durationSec: b.actual_duration ?? null,
+    })
+  }
+  return rows
+})
+
+/** 段级配音提交请求中的行 key 集合（防重复点击） */
+const ttsSegBusy = ref<string[]>([])
+/** 段级配音任务执行中的行 key 集合（提交后到任务终态，驱动行内动态加载样式） */
+const ttsSegGenerating = ref<string[]>([])
 
 /**
- * 判断某镜配音是否在生成中（提交请求或任务轮询阶段）。
- * @param b 目标分镜
+ * 判断某配音表行是否在生成中（提交请求或任务轮询阶段）。
+ * @param r 目标行
  * @returns 是否生成中
  */
-function isTtsBusy(b: Storyboard): boolean {
-  return ttsBusyIds.value.includes(b.id) || ttsGeneratingIds.value.includes(b.id)
+function isRowBusy(r: TtsRow): boolean {
+  return r.segIdx !== null
+    && (ttsSegBusy.value.includes(r.key) || ttsSegGenerating.value.includes(r.key))
 }
 
 /**
- * 生成单镜配音（TTS）。
- * @param b 目标分镜
+ * 判断某段说话人音色是否未锁定（行级门禁，与后端段级门禁同口径）。
+ * @param speaker 说话人名（null = 旁白段，走回退音色不拦截）
+ * @returns 是否未锁定
+ */
+function isSpeakerUnlocked(speaker: string | null): boolean {
+  if (!speaker) return false
+  const lockedByName = new Map(characters.value.map((c) => [c.name, c.voice_locked]))
+  return lockedByName.get(speaker) === false
+}
+
+/**
+ * 生成单段配音（一句一行）：仅提交该对白段（segment_index），任务完成后
+ * 刷新分镜（取回后端回写的段产物；全段齐时后端自动拼接整镜音轨）。
+ * @param r 目标配音表行（段行）
  * @returns 无
  */
-async function genTts(b: Storyboard): Promise<void> {
+async function genTtsSeg(r: TtsRow): Promise<void> {
   if (!ensureProductionReady()) return
-  if (isTtsBusy(b)) return
-  // 音色确认门禁（与后端同口径）：对白说话人角色未锁定音色时拦截
-  const unlocked = unlockedSpeakersOf(b)
-  if (unlocked.length) {
-    ElMessage.warning(`角色「${unlocked.join('、')}」音色未确认，请先在音色映射中试音并锁定音色`)
+  if (r.segIdx === null || isRowBusy(r)) return
+  if (isSpeakerUnlocked(r.speaker)) {
+    ElMessage.warning(`角色「${r.speaker}」音色未确认，请先在音色映射中试音并锁定音色`)
     return
   }
-  ttsBusyIds.value = [...ttsBusyIds.value, b.id]
+  ttsSegBusy.value = [...ttsSegBusy.value, r.key]
   try {
-    // voice 未手动指定时不传——后端按绑定角色的音色设定（voice_note）自动路由
-    const explicitVoice = voiceOf(b)
-    const task = await productionApi.tts(
-      projectId.value, b.id,
-      explicitVoice ? { voice: explicitVoice } : {},
-    )
+    // 音色不显式指定——后端按该段说话人角色的锁定音色自动路由
+    const task = await productionApi.tts(projectId.value, r.sb.id, { segment_index: r.segIdx })
     ElMessage.success(`配音任务 #${task.id} 已提交`)
-    ttsBusyIds.value = ttsBusyIds.value.filter((i) => i !== b.id)
-    ttsGeneratingIds.value = [...ttsGeneratingIds.value, b.id]
+    ttsSegBusy.value = ttsSegBusy.value.filter((k) => k !== r.key)
+    ttsSegGenerating.value = [...ttsSegGenerating.value, r.key]
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
-    // 轮询该任务直到终态；完成后刷新分镜列表以取回后端回写的 audio_url
+    // 轮询该任务直到终态；完成后刷新分镜列表以取回段级产物
     const timer = setInterval(async () => {
       try {
         const t = await productionApi.taskDetail(task.id)
         if (t.status === 'done') {
           clearInterval(timer)
-          const sb = await studioApi.listStoryboard(
+          boards.value = await studioApi.listStoryboard(
             projectId.value,
             currentEpisodeId.value ?? undefined,
           )
-          boards.value = sb
-          ElMessage.success(`#${b.sequence} 镜配音完成`)
+          ElMessage.success(`#${String(r.sb.sequence).padStart(2, '0')} 镜「${r.speaker || '旁白'}」配音完成`)
         } else if (t.status === 'failed' || t.status === 'canceled') {
           clearInterval(timer)
         } else {
           return
         }
-        ttsGeneratingIds.value = ttsGeneratingIds.value.filter((i) => i !== b.id)
+        ttsSegGenerating.value = ttsSegGenerating.value.filter((k) => k !== r.key)
       } catch {
         clearInterval(timer)
-        ttsGeneratingIds.value = ttsGeneratingIds.value.filter((i) => i !== b.id)
+        ttsSegGenerating.value = ttsSegGenerating.value.filter((k) => k !== r.key)
       }
     }, 2000)
   } finally {
-    ttsBusyIds.value = ttsBusyIds.value.filter((i) => i !== b.id)
+    ttsSegBusy.value = ttsSegBusy.value.filter((k) => k !== r.key)
   }
 }
 
@@ -858,21 +1008,21 @@ async function genTts(b: Storyboard): Promise<void> {
 const batchTtsBusy = ref(false)
 
 /**
- * 批量生成全部配音：对所有「有对白且未配音」的镜逐个提交 TTS 任务
- * （不等终态，任务在右侧任务面板跟踪；音色门禁按镜校验，未锁定音色的镜跳过并提示）。
+ * 批量生成全部配音：对所有「未生成音频」的对白段逐段提交 TTS 任务
+ * （不等终态，任务在右侧任务面板跟踪；说话人音色未锁定的段跳过并提示）。
  * @returns 无
  */
 async function batchGenTts(): Promise<void> {
   if (!ensureProductionReady()) return
   if (batchTtsBusy.value) return
-  const pending = dialogueBoards.value.filter((b) => !b.audio_url)
+  const pending = ttsRows.value.filter((r) => r.segIdx !== null && !r.audioUrl)
   if (!pending.length) {
-    ElMessage.info('所有有对白的镜头均已配音')
+    ElMessage.info('所有对白段均已配音')
     return
   }
   try {
     await ElMessageBox.confirm(
-      `将为 ${pending.length} 个未配音镜头批量生成配音（每镜按字数计费，锁定音色 + 情绪自动适配），任务在右侧任务面板跟踪。是否继续？`,
+      `将为 ${pending.length} 个未配音台词段逐段生成配音（每段独立音色，按字数计费），全部段完成后自动拼接整镜音轨。是否继续？`,
       '生成全部配音',
       { type: 'info', confirmButtonText: '开始生成' },
     )
@@ -883,29 +1033,28 @@ async function batchGenTts(): Promise<void> {
   try {
     let submitted = 0
     const skipped: string[] = []
-    for (const b of pending) {
-      const unlocked = unlockedSpeakersOf(b)
-      if (unlocked.length) {
-        skipped.push(`#${String(b.sequence).padStart(2, '0')}（${unlocked.join('、')}）`)
+    for (const r of pending) {
+      if (isSpeakerUnlocked(r.speaker)) {
+        skipped.push(`#${String(r.sb.sequence).padStart(2, '0')}（${r.speaker || '旁白'}）`)
         continue
       }
       try {
-        await productionApi.tts(projectId.value, b.id, {})
-        ttsGeneratingIds.value = [...ttsGeneratingIds.value, b.id]
+        await productionApi.tts(projectId.value, r.sb.id, { segment_index: r.segIdx! })
+        ttsSegGenerating.value = [...ttsSegGenerating.value, r.key]
         submitted += 1
       } catch {
-        /* 单镜失败（如 409 防重）不阻断其余镜头 */
+        /* 单段失败（如 409 防重）不阻断其余段 */
       }
     }
     if (submitted) {
-      ElMessage.success(`已提交 ${submitted} 个配音任务`)
+      ElMessage.success(`已提交 ${submitted} 个段级配音任务`)
       panelVisible.value = true
       startTaskStream()
       void refreshTasks()
       void refreshWallet()
     }
     if (skipped.length) {
-      ElMessage.warning(`以下镜头因音色未锁定跳过：${skipped.join('、')}`)
+      ElMessage.warning(`以下台词段因音色未锁定跳过：${skipped.join('、')}`)
     }
   } finally {
     batchTtsBusy.value = false
@@ -1110,9 +1259,12 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopTaskStream()
-  // 离开页面时停止行内试听
+  // 离开页面时停止行内试听与视频联动配音
   audioEl.pause()
-  playingSbId.value = null
+  playingAudioKey.value = null
+  sbAudioEls.forEach((a) => a.pause())
+  sbAudioEls.clear()
+  sbVideoRefs.clear()
 })
 </script>
 
@@ -1268,11 +1420,20 @@ onBeforeUnmount(() => {
               <el-option label="中" value="medium" />
               <el-option label="高" value="high" />
             </el-select>
+            <!-- 配音隔离开关：关闭时纯视频预览（不叠加配音轨，验证视频内容用） -->
+            <span class="vc-label">播放时同步配音</span>
+            <el-switch v-model="dubSyncEnabled" size="small" />
             <span class="vc-tip">以上参数随每次「生成视频片段」提交生效</span>
           </div>
         </el-card>
         <div class="video-rows">
-          <el-card v-for="b in boards" :key="b.id" shadow="never" class="video-row">
+          <el-card
+            v-for="b in boards"
+            :key="b.id"
+            shadow="never"
+            class="video-row"
+            :class="{ 'video-row-generating': isVideoBusy(b) }"
+          >
             <div class="video-row-body">
               <el-image
                 v-if="b.keyframe_url"
@@ -1286,9 +1447,14 @@ onBeforeUnmount(() => {
               <div class="video-play">
                 <video
                   v-if="b.video_url && !b.video_url.endsWith('.svg')"
+                  :ref="(el) => setVideoRef(b.id, el)"
                   :src="b.video_url"
                   controls
                   class="video-player"
+                  @play="onVideoPlay(b)"
+                  @pause="onVideoPause(b)"
+                  @ended="onVideoPause(b)"
+                  @seeked="onVideoSeek(b)"
                 />
                 <div v-else class="video-player video-player--empty">
                   <span>视频片段{{ b.video_url ? '为占位图（合成后可播）' : '待生成' }}</span>
@@ -1297,11 +1463,24 @@ onBeforeUnmount(() => {
               <div class="video-side">
                 <div class="video-title">#{{ String(b.sequence).padStart(2, '0') }} {{ b.shot_type || '' }} · {{ b.duration }}s</div>
                 <div class="video-desc">{{ b.visual_description || '（无画面描述）' }}</div>
-                <!-- 音频先行引导：未配音提示先生成配音（视频时长将跟随配音实际时长） -->
+                <!-- 音频先行引导：视频内嵌配音 / 未配音提示（视频时长将跟随配音实际时长） -->
                 <div class="dub-line">
-                  <el-tag v-if="b.audio_url" size="small" type="success" effect="plain">已配音</el-tag>
+                  <!-- 视频已内嵌当前配音（混流产物）：播放器直接出声 -->
+                  <el-tag v-if="b.video_url && b.audio?.video_dubbed" size="small" type="success" effect="plain">
+                    视频已接入配音（环境音+配音）
+                  </el-tag>
+                  <!-- 有配音但视频未接入 / 内嵌配音已过期：提示重新生成视频 -->
+                  <el-tag
+                    v-else-if="b.audio_url && (b.dialogue || '').trim() && b.video_url"
+                    size="small" type="warning" effect="plain"
+                  >
+                    配音已更新 · 重新生成视频可接入
+                  </el-tag>
+                  <el-tag v-else-if="b.audio_url && (b.dialogue || '').trim()" size="small" :type="dubSyncEnabled ? 'success' : 'info'" effect="plain">
+                    已配音{{ dubSyncEnabled ? ' · 播放时同步接入' : ' · 纯视频预览（同步配音已关）' }}
+                  </el-tag>
                   <el-tag v-else size="small" type="warning" effect="plain">未配音</el-tag>
-                  <span v-if="!b.audio_url" class="dub-tip">建议先到「配音」Tab 生成配音，视频时长将自动对齐配音</span>
+                  <span v-if="!(b.audio_url && (b.dialogue || '').trim())" class="dub-tip">建议先到「配音」Tab 生成配音，视频时长将自动对齐配音</span>
                 </div>
                 <!-- P-03/P-08 尾帧控制：仅尾帧已生成的分镜可开启 -->
                 <div class="endframe-line">
@@ -1327,15 +1506,23 @@ onBeforeUnmount(() => {
                     先生成尾帧
                   </el-button>
                 </div>
-                <el-button
-                  type="primary"
-                  plain
-                  size="small"
-                  :loading="videoBusyIds.includes(b.id)"
-                  @click="genVideo(b)"
-                >
-                  {{ b.video_url ? '重新生成视频片段' : '生成视频片段' }}
-                </el-button>
+                <!-- 生成视频：动态加载（按钮 loading + 合成中 tag + 行卡脉冲） -->
+                <div class="video-btn-line">
+                  <el-button
+                    type="primary"
+                    plain
+                    size="small"
+                    :loading="isVideoBusy(b)"
+                    :disabled="isVideoBusy(b)"
+                    @click="genVideo(b)"
+                  >
+                    {{ isVideoBusy(b) ? '生成中…' : (b.video_url ? '重新生成视频片段' : '生成视频片段') }}
+                  </el-button>
+                  <el-tag v-if="isVideoBusy(b)" size="small" type="warning" effect="light" class="tts-none-tag">
+                    <el-icon :size="12" class="tts-spin"><LoadingIcon /></el-icon>
+                    合成中
+                  </el-tag>
+                </div>
               </div>
             </div>
           </el-card>
@@ -1416,18 +1603,21 @@ onBeforeUnmount(() => {
           </el-table>
         </el-card>
 
-        <!-- 每镜配音 -->
+        <!-- 分镜配音（一段对白一行：一个角色一句话独立生成与试听，全段齐后自动拼接整镜） -->
         <el-card shadow="never" class="block-card">
           <template #header>
             <div class="voice-card-head">
               <span>分镜配音</span>
-              <span class="voice-card-tip">仅展示有角色对话的分镜（{{ dialogueBoards.length }}/{{ boards.length }} 镜）；无对白的镜头无需配音</span>
+              <span class="voice-card-tip">
+                一句一行独立配音（共 {{ ttsRows.filter((r) => r.segIdx !== null).length }} 段台词，
+                {{ dialogueBoards.length }}/{{ boards.length }} 镜有对白）；全段生成后自动拼接整镜音轨
+              </span>
               <el-button
                 size="small"
                 type="primary"
                 class="batch-tts-btn"
                 :loading="batchTtsBusy"
-                :disabled="!dialogueBoards.some((b) => !b.audio_url)"
+                :disabled="!ttsRows.some((r) => r.segIdx !== null && !r.audioUrl)"
                 @click="batchGenTts"
               >
                 生成全部配音
@@ -1435,59 +1625,88 @@ onBeforeUnmount(() => {
             </div>
           </template>
           <el-table
-            :data="dialogueBoards"
+            :data="ttsRows"
             size="small"
-            :row-class-name="(ctx: { row: Storyboard }) => (isTtsBusy(ctx.row) ? 'tts-row-generating' : '')"
+            :row-class-name="(ctx: { row: TtsRow }) => (isRowBusy(ctx.row) ? 'tts-row-generating' : '')"
           >
             <el-table-column label="镜号" width="80">
-              <template #default="{ row }">#{{ String(row.sequence).padStart(2, '0') }}</template>
+              <template #default="{ row }">#{{ String(row.sb.sequence).padStart(2, '0') }}</template>
             </el-table-column>
-            <el-table-column label="对白" show-overflow-tooltip>
+            <el-table-column label="说话人" width="110">
               <template #default="{ row }">
-                <template v-for="(seg, i) in dialogueSegments(row)" :key="i">
-                  <span v-if="seg.speaker" class="dlg-speaker">{{ seg.speaker }}：</span><span>{{ seg.text }}</span><span v-if="i < dialogueSegments(row).length - 1">　</span>
-                </template>
+                <span v-if="row.segIdx === null" class="tts-full-label">整镜</span>
+                <span v-else-if="row.speaker" class="dlg-speaker">{{ row.speaker }}</span>
+                <span v-else class="tts-narrator-label">旁白</span>
               </template>
             </el-table-column>
-            <el-table-column label="预计时长" width="90">
-              <template #default="{ row }">{{ row.duration }}s</template>
+            <el-table-column label="台词" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span :class="{ 'tts-full-text': row.segIdx === null }">{{ row.text }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="时长" width="90">
+              <template #default="{ row }">
+                {{ row.durationSec ? `${row.durationSec}s` : (row.segIdx === null ? `${row.sb.duration}s` : '—') }}
+              </template>
             </el-table-column>
             <el-table-column label="操作" width="230">
               <template #default="{ row }">
-                <el-button
-                  size="small"
-                  type="primary"
-                  plain
-                  :loading="isTtsBusy(row)"
-                  :disabled="unlockedSpeakersOf(row).length > 0 || isTtsBusy(row)"
-                  :title="unlockedSpeakersOf(row).length
-                    ? `角色「${unlockedSpeakersOf(row).join('、')}」音色未锁定，请先在上方映射中确认`
-                    : '生成该镜配音'"
-                  @click="genTts(row)"
-                >
-                  {{ isTtsBusy(row) ? '生成中…' : (row.audio_url ? '重新配音' : '生成配音') }}
-                </el-button>
-                <!-- 生成中：动态加载 tag；已配音：行内播放/暂停试听图标；未配音：未生成占位 -->
-                <el-tag v-if="isTtsBusy(row)" size="small" type="warning" effect="light" class="tts-none-tag">
-                  <el-icon :size="12" class="tts-spin"><LoadingIcon /></el-icon>
-                  合成中
-                </el-tag>
-                <el-button
-                  v-else-if="row.audio_url"
-                  link
-                  type="primary"
-                  class="tts-play-btn"
-                  :title="playingSbId === row.id ? '暂停试听' : '播放配音'"
-                  @click="togglePlay(row)"
-                >
-                  <el-icon :size="18">
-                    <VideoPause v-if="playingSbId === row.id" />
-                    <VideoPlay v-else />
-                  </el-icon>
-                </el-button>
-                <el-tag v-else size="small" type="info" effect="plain" class="tts-none-tag">
-                  未生成
-                </el-tag>
+                <!-- 整镜预览行：仅试听拼接产物（各段生成后由后端自动拼接） -->
+                <template v-if="row.segIdx === null">
+                  <el-button
+                    v-if="row.audioUrl"
+                    link
+                    type="primary"
+                    class="tts-play-btn"
+                    :title="playingAudioKey === row.key ? '暂停试听' : '播放整镜配音'"
+                    @click="togglePlayUrl(row.audioUrl, row.key)"
+                  >
+                    <el-icon :size="18">
+                      <VideoPause v-if="playingAudioKey === row.key" />
+                      <VideoPlay v-else />
+                    </el-icon>
+                  </el-button>
+                  <el-tag v-else size="small" type="info" effect="plain" class="tts-none-tag">
+                    各段齐后自动拼接
+                  </el-tag>
+                </template>
+                <!-- 台词段行：独立生成/重新配音 + 段级试听 -->
+                <template v-else>
+                  <el-button
+                    size="small"
+                    type="primary"
+                    plain
+                    :loading="isRowBusy(row)"
+                    :disabled="isRowBusy(row) || isSpeakerUnlocked(row.speaker)"
+                    :title="isSpeakerUnlocked(row.speaker)
+                      ? `角色「${row.speaker}」音色未锁定，请先在上方映射中确认`
+                      : '生成该段配音'"
+                    @click="genTtsSeg(row)"
+                  >
+                    {{ isRowBusy(row) ? '生成中…' : (row.audioUrl ? '重新配音' : '生成配音') }}
+                  </el-button>
+                  <!-- 生成中：动态加载 tag；已配音：段级播放/暂停试听图标；未配音：未生成占位 -->
+                  <el-tag v-if="isRowBusy(row)" size="small" type="warning" effect="light" class="tts-none-tag">
+                    <el-icon :size="12" class="tts-spin"><LoadingIcon /></el-icon>
+                    合成中
+                  </el-tag>
+                  <el-button
+                    v-else-if="row.audioUrl"
+                    link
+                    type="primary"
+                    class="tts-play-btn"
+                    :title="playingAudioKey === row.key ? '暂停试听' : `播放「${row.speaker || '旁白'}」的配音`"
+                    @click="togglePlayUrl(row.audioUrl, row.key)"
+                  >
+                    <el-icon :size="18">
+                      <VideoPause v-if="playingAudioKey === row.key" />
+                      <VideoPlay v-else />
+                    </el-icon>
+                  </el-button>
+                  <el-tag v-else size="small" type="info" effect="plain" class="tts-none-tag">
+                    未生成
+                  </el-tag>
+                </template>
               </template>
             </el-table-column>
           </el-table>
@@ -1966,9 +2185,18 @@ onBeforeUnmount(() => {
   }
 }
 @media (prefers-reduced-motion: reduce) {
-  .el-table .tts-row-generating td {
+  .el-table .tts-row-generating td,
+  .el-card.video-row-generating {
     animation: none;
   }
+}
+/* 视频行生成中：卡片背景呼吸脉冲（复用配音行同款节奏）+ 按钮行横排 */
+.el-card.video-row-generating {
+  animation: tts-row-pulse 1.6s ease-in-out infinite;
+}
+.video-btn-line {
+  display: flex;
+  align-items: center;
 }
 .tts-none-tag {
   margin-left: 8px;
@@ -1977,6 +2205,16 @@ onBeforeUnmount(() => {
 .tts-play-btn {
   margin-left: 8px;
   vertical-align: middle;
+}
+/* 整镜预览行（拼接产物）：说明文字弱化展示 */
+.tts-full-label,
+.tts-narrator-label {
+  color: var(--mf-text-3, #909399);
+  font-size: var(--mf-fs-xs, 12px);
+}
+.tts-full-text {
+  color: var(--mf-text-3, #909399);
+  font-style: italic;
 }
 .mix-form {
   max-width: 640px;
