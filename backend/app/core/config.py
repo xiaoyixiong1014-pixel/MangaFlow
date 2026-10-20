@@ -151,6 +151,13 @@ class Settings(BaseSettings):
     video_poll_interval_seconds: int = 5
     video_poll_timeout_seconds: int = 300
 
+    # ---------- 口型同步（Wav2Lip 本地推理，2026-10-20） ----------
+    # 配音生成后对分镜视频做口型对齐：True=该镜有配音时自动口型同步
+    # （失败自动降级为不做口型同步，不阻断任务）；模型权重位于
+    # storage/models/lipsync/（wav2lip_gan.pth + s3fd.pth）。
+    # 许可提示：Wav2Lip 为 CC BY-NC 4.0（非商业），商业化需替换为可商用方案
+    lipsync_enabled: bool = True
+
     # ---------- 模型渠道 Key 加密 ----------
     aes_key: str = "mangaflow-aes-key-1234567890abcd"
 

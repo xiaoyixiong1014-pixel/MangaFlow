@@ -85,6 +85,7 @@ from app.services.audio_separation import extract_no_vocals
 from app.services.billing_service import consume_frozen, refund_frozen
 from app.services.compose_service import _merge_clip_audio, compose_film
 from app.services.generation_service import freeze_and_create_task
+from app.services.lipsync_service import lipsync_video
 from app.services.model_router import ResolvedChannel
 from app.services.review_service import (
     apply_violation_penalty,
@@ -1339,17 +1340,10 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         await _fail_task(db, task, user_id, "platform_error", "视频供应商返回空结果（已尝试全部渠道）")
         return
     task.result_url = result["url"]
-    # 音轨策略（2026-10-20 音源分离方案）：wan 系模型会按对白自行合成角色
-    # 人声，与环境音混在原生音轨中无法用 ffmpeg 选择性剔除——产物侧先用
-    # demucs 分离出无人声环境音轨，再剥除原生音轨（人声绝不进最终产物）；
-    # 有配音时以「环境音 0.35 + 配音 1.0」混流（时长按 max(视频,配音) 对齐，
-    # 配音从镜首 0s 起，与既有 compose 同款口径）产出完整带声分镜视频；
-    # 无配音 / 分离失败降级时保持纯无声（配音后补，由合成阶段拼轨）。
-    # 约定：video 自带音轨 ⟺ 已含当前配音（compose 据此跳过 audio_url
-    # 重复混音防双声；重新配音时剥除内嵌旧配音）
     video_path = settings.storage_path() / str(result["url"]).removeprefix("/storage/")
     audio_dubbed = False
     audio_env_separated = False
+    lipsync_applied = False
     sb_for_dub = await db.get(Storyboard, int(storyboard_id)) if storyboard_id else None
     dub_path: Optional[Path] = None
     if sb_for_dub and sb_for_dub.audio_url:
@@ -1358,27 +1352,64 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
             dub_path = cand
     ffmpeg_bin = shutil.which("ffmpeg")
     ffprobe_bin = shutil.which("ffprobe")
-    # 音轨治理（2026-10-20 音源分离方案）：wan 原生音轨 = 模型按提示词对白
-    # 自行合成的角色人声 + 环境音的混合体，ffmpeg 无法选择性去人声——先用
-    # demucs 分离出无人声环境音轨，再剥除原生音轨（人声绝不进最终产物）；
-    # 分离失败降级为纯剥轨（无声/纯配音），不阻断任务
+    # 音轨治理（2026-10-20 音源分离 + 口型同步方案）：wan 原生音轨 = 模型按
+    # 提示词对白自行合成的角色人声 + 环境音的混合体，ffmpeg 无法选择性去
+    # 人声——先用 demucs 分离出无人声环境音轨，再剥除原生音轨（人声绝不进
+    # 最终产物）；有配音时：纯配音混流（时长 max 对齐，配音从镜首 0s 起）
+    # → Wav2Lip 口型同步（角色口型与配音逐帧对齐，失败降级保留无口型产物）
+    # → 叠回环境音 0.35。约定：video 自带音轨 ⟺ 已含当前配音（compose 据
+    # 此跳过 audio_url 重复混音防双声；重新配音时剥除内嵌旧配音）
     env_audio_path: Optional[Path] = None
     if ffmpeg_bin and ffprobe_bin:
         env_audio_path = await extract_no_vocals(video_path)
         audio_env_separated = env_audio_path is not None
         await _strip_video_audio(video_path)
         if dub_path is not None:
+            await _set_progress(db, task, 78)
             merged = await _merge_clip_audio(
                 ffmpeg_bin, ffprobe_bin, video_path, dub_path,
                 video_path.with_name(f"{video_path.stem}_dub{video_path.suffix}"),
-                env_audio_path=env_audio_path,
+                env_audio_path=None,
             )
             if merged is not None:
                 merged.replace(video_path)
                 audio_dubbed = True
+                # 口型同步（可选开关）：配音驱动角色口型逐帧对齐，产物音轨=配音
+                if settings.lipsync_enabled:
+                    await _set_progress(db, task, 85)
+                    synced_path = video_path.with_name(f"{video_path.stem}_sync{video_path.suffix}")
+                    if await lipsync_video(
+                        video_path, dub_path, synced_path,
+                        settings.storage_path() / "models" / "lipsync",
+                    ):
+                        synced_path.replace(video_path)
+                        lipsync_applied = True
+                    else:
+                        logger.warning("任务 %s 口型同步失败，保留无口型产物：%s",
+                                       task.id, video_path.name)
             else:
-                # 混流失败：已剥原生音轨保持纯无声，配音由合成阶段补拼
-                logger.warning("任务 %s 配音混流失败，视频保持无声：%s", task.id, video_path.name)
+                # 纯配音混流失败：回退「环境音+配音」一步混流（v2 兜底口径）
+                logger.warning("任务 %s 配音混流失败，回退环境音混流：%s", task.id, video_path.name)
+                merged = await _merge_clip_audio(
+                    ffmpeg_bin, ffprobe_bin, video_path, dub_path,
+                    video_path.with_name(f"{video_path.stem}_dub{video_path.suffix}"),
+                    env_audio_path=env_audio_path,
+                )
+                if merged is not None:
+                    merged.replace(video_path)
+                    audio_dubbed = True
+                    env_audio_path = None  # env 已随回退混流并入，无需再叠
+                else:
+                    logger.warning("任务 %s 配音混流失败，视频保持无声：%s", task.id, video_path.name)
+            # 环境音叠回（0.35，视频流 copy 不重编码）：口型同步产物/纯配音
+            # 产物音轨均只有配音，此处补上分离出的环境音
+            if audio_dubbed and env_audio_path is not None:
+                await _set_progress(db, task, 92)
+                env_out = video_path.with_name(f"{video_path.stem}_envmix{video_path.suffix}")
+                if await _overlay_env_audio(ffmpeg_bin, video_path, env_audio_path, env_out):
+                    env_out.replace(video_path)
+                else:
+                    logger.warning("任务 %s 环境音叠回失败，保留纯配音音轨", task.id)
     else:
         await _strip_video_audio(video_path)
     # 环境音临时产物用完即弃（混流已完成或未发生）
@@ -1387,6 +1418,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         env_audio_path = None
     if audio_dubbed:
         result.setdefault("meta", {})["audio_dubbed"] = True
+        if lipsync_applied:
+            result.setdefault("meta", {})["lipsync_applied"] = True
     # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）；
     # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
     # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
@@ -1472,6 +1505,48 @@ async def _strip_video_audio(path: Path) -> bool:
         return True
     except Exception as exc:  # noqa: BLE001 —— 剥离失败不阻断任务主流程
         logger.warning("视频 %s 剥离音轨异常：%s", path.name, exc)
+        return False
+
+
+async def _overlay_env_audio(
+    ffmpeg: str, video_path: Path, env_path: Path, out_path: Path,
+) -> bool:
+    """把分离出的环境音以 0.35 音量叠进已有配音音轨（内部辅助）。
+
+    视频流 -c:v copy 不重编码；音轨 amix（配音 1.0 + 环境音 0.35，
+    duration=first 以视频/配音轨为准），输出统一 AAC 44.1kHz 保证与合成
+    阶段 concat 兼容。
+
+    Args:
+        ffmpeg: ffmpeg 可执行文件路径。
+        video_path: 输入视频（含配音音轨）。
+        env_path: demucs 分离出的无人声环境音 WAV。
+        out_path: 输出路径。
+
+    Returns:
+        bool: 成功 True；失败 False（调用方保留原产物降级）。
+
+    Raises:
+        无：内部捕获全部异常。
+    """
+    cmd = [
+        ffmpeg, "-y", "-v", "error",
+        "-i", str(video_path), "-i", str(env_path),
+        "-filter_complex",
+        "[1:a]volume=0.35[env];[0:a][env]amix=inputs=2:duration=first:dropout_transition=0[a]",
+        "-map", "0:v", "-map", "[a]",
+        "-c:v", "copy", "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+        str(out_path),
+    ]
+    import subprocess as _sp
+
+    try:
+        proc = await asyncio.to_thread(
+            _sp.run, cmd, capture_output=True, timeout=300,
+        )
+        return proc.returncode == 0 and out_path.is_file()
+    except Exception as exc:  # noqa: BLE001 —— 叠加失败降级保留原音轨
+        logger.warning("环境音叠回异常：%s", exc)
         return False
 
 
