@@ -435,8 +435,10 @@ async def test_hecheng_renwu_bilingual_meta_touchuan_renwu_bushibai(client, auth
 @pytest.mark.parametrize(
     "style,expect_size",
     [
+        # font_size 显式传值即真实像素，Sub = 主字号 × 0.7
         ({"font_size": 24, "position": "bottom"}, 16),
-        (None, 16),
+        # None：默认按竖屏规格 70px（2026-10-20 字号真实像素语义），Sub = 49
+        (None, 49),
         ({"font_size": 12, "position": "top"}, 10),
     ],
 )

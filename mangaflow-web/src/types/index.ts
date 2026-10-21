@@ -905,6 +905,8 @@ export interface Storyboard {
     } | null> | null
     /** 视频已内嵌当前配音（视频任务阶段混流，true 时前端不再同步叠加配音轨） */
     video_dubbed?: boolean
+    /** 对白字幕已烧录进视频画面（合成阶段字幕构建据此跳过该镜防双字幕） */
+    burned_subtitles?: boolean
   } | null
   /** 关键帧 URL */
   keyframe_url?: string | null

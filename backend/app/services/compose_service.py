@@ -25,6 +25,7 @@
 
 import asyncio
 import json
+import logging
 import re
 import shutil
 import subprocess
@@ -38,6 +39,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models import FilmOutput, Storyboard, Task
 from app.providers.llm import chat
+
+logger = logging.getLogger("mangaflow.services.compose_service")
 
 # 成片输出 URL 前缀（storage/outputs 目录经 /storage 挂载对外可访问）
 _OUTPUT_URL_PREFIX = "/storage/outputs"
@@ -215,6 +218,8 @@ def build_srt(storyboards: List) -> Optional[str]:
     时间轴按各分镜实际时长（actual_duration，缺省预估时长 duration，
     再缺省 5 秒）顺序累计；字幕行取分镜对白/旁白（dialogue），为空回退
     画面描述（visual_description）；两者皆空的分镜不产生字幕条目。
+    已烧分镜字幕的镜（storyboard.audio.burned_subtitles，2026-10-20 分镜
+    级字幕）整镜跳过——画面已含字幕，成片再烧会重复。
 
     Args:
         storyboards: 分镜对象列表（Storyboard 或同字段鸭子类型），按镜头序。
@@ -229,6 +234,10 @@ def build_srt(storyboards: List) -> Optional[str]:
     cursor = 0.0
     for sb in storyboards:
         duration = float(sb.actual_duration or sb.duration or 5)
+        # 已烧分镜字幕的镜整镜跳过（时间轴仍累计，保证后续镜时段正确）
+        if (getattr(sb, "audio", None) or {}).get("burned_subtitles"):
+            cursor += duration
+            continue
         text = ((sb.dialogue or "").strip() or (sb.visual_description or "").strip())
         if text:
             entries.append((cursor, cursor + duration, text))
@@ -241,16 +250,25 @@ def build_srt(storyboards: List) -> Optional[str]:
     return "\n".join(blocks)
 
 
-def build_subtitles_filter(sub_path: Path, style: Optional[dict]) -> str:
+def build_subtitles_filter(
+    sub_path: Path, style: Optional[dict], video_height: int = 0,
+) -> str:
     """构造 ffmpeg subtitles 烧录滤镜（Task 5.1，内部函数）。
 
     字幕源可为 SRT（单行）或 ASS（P-16 双语）文件；样式经 force_style 注入：
     FontSize / PrimaryColour / Alignment；颜色仅接受 ASS &H... 格式（正则白
     名单），非法值回退默认白色，防止滤镜注入。
 
+    字号语义（2026-10-20 统一）：style.font_size 为「视频画面上的真实像素」。
+    SRT 外挂字幕由 libass 按默认脚本高度 288 渲染再放大到视频分辨率，故
+    video_height>0 时按 video_height 换算注入值（libass_fontsize =
+    real_px * 288 / video_height）；未提供 video_height 时保持原值（兼容
+    ASS 路径——ASS 脚本自带 PlayRes，字号已相对 PlayRes 定义）。
+
     Args:
         sub_path: 字幕文件本地路径（.srt 或 .ass）。
         style: 字幕样式 dict（font_size/color/position，可空用默认）。
+        video_height: 视频实际高度（像素，SRT 路径换算用；0/缺省不换算）。
 
     Returns:
         str: subtitles 滤镜表达式。
@@ -268,6 +286,9 @@ def build_subtitles_filter(sub_path: Path, style: Optional[dict]) -> str:
         if re_ass_color(candidate):
             color = candidate
         align = _SUB_POSITION_ALIGNMENT.get(style.get("position"), 2)
+    if video_height > 0:
+        # 真实像素 → libass 脚本字号（默认 PlayResY=288 渲染基准）
+        font_size = max(4, round(font_size * _LIBASS_DEFAULT_PLAYRES_Y / video_height))
     return (
         f"subtitles=filename='{_escape_filter_path(sub_path)}':"
         f"force_style='FontSize={font_size},PrimaryColour={color},Alignment={align}'"
@@ -287,6 +308,352 @@ def re_ass_color(value: str) -> bool:
         无。
     """
     return bool(re.fullmatch(r"&H[0-9A-Fa-f]{6,8}", value or ""))
+
+
+# ---------------------------------------------------------------------------
+# 分镜级字幕（2026-10-20）：分镜视频烧录对白字幕 + 成片防重复
+# ---------------------------------------------------------------------------
+
+# 段级配音的段间静音时长（与 runner._concat_wav_segments 拼接口径一致，
+# 字幕时间轴据此推算每段在整镜音轨中的实际起点）
+_SUB_SEGMENT_GAP = 0.35
+# 段时长缺失时的估算语速（字/秒，兜底不至于时间为 0）
+_SUB_FALLBACK_CHARS_PER_SEC = 4.0
+
+# 字幕真实像素规格（2026-10-20 用户确认）：字号语义统一为「视频画面上的
+# 实际像素高度」，9:16 竖屏 60~80px（默认 70）、16:9 横屏 40~55px（默认
+# 48）。libass 对 SRT 外挂字幕按默认脚本高度 288 渲染再放大到视频实际
+# 分辨率（如 720x1280 下 FontSize=24 实际渲染约 107px），因此 force_style
+# 注入前必须按 video_height 换算：libass_fontsize = real_px * 288 / video_h
+_SUB_REAL_PX_BASE = {"portrait": (60, 80, 70), "landscape": (40, 55, 48)}
+# libass 对无样式脚本（SRT）的默认 PlayResY（渲染缩放基准）
+_LIBASS_DEFAULT_PLAYRES_Y = 288
+
+
+def default_subtitle_font_size(width: int, height: int) -> int:
+    """按视频画幅计算字幕默认字号（真实像素，公共函数）。
+
+    竖屏（h>w）基准 70px@1280 高等比缩放并钳制 60~80；横屏基准 48px@720
+    高等比缩放并钳制 40~55——不同分辨率输出（720p/1080p）下观感一致。
+
+    Args:
+        width: 视频宽度（像素）。
+        height: 视频高度（像素）。
+
+    Returns:
+        int: 默认字号（真实像素）。
+
+    Raises:
+        无：参数异常回退竖屏 70 / 横屏 48。
+    """
+    if width <= 0 or height <= 0:
+        return 70
+    lo, hi, base = _SUB_REAL_PX_BASE["portrait" if height > width else "landscape"]
+    ref_h = 1280 if height > width else 720
+    return int(min(hi, max(lo, round(height * base / ref_h))))
+
+
+async def _probe_resolution(ffprobe: Optional[str], video_path: Path) -> Tuple[int, int]:
+    """探测视频分辨率（内部函数，字幕字号换算用）。
+
+    Args:
+        ffprobe: ffprobe 可执行文件路径（None 时返回 (0, 0) 走默认字号）。
+        video_path: 视频文件路径。
+
+    Returns:
+        Tuple[int, int]: (width, height)；探测失败返回 (0, 0)。
+
+    Raises:
+        无：内部捕获全部异常。
+    """
+    if not ffprobe:
+        return (0, 0)
+    try:
+        proc = await shutil_get_run(
+            [ffprobe, "-v", "error", "-select_streams", "v:0",
+             "-show_entries", "stream=width,height", "-of", "csv=p=0",
+             str(video_path)],
+            timeout=30, capture=True,
+        )
+        if proc is None or proc.returncode != 0:
+            return (0, 0)
+        parts = str((proc.stdout or b"").decode("utf-8", "replace")).strip().split(",")
+        if len(parts) >= 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
+            return (int(parts[0]), int(parts[1]))
+    except Exception:  # noqa: BLE001 —— 探测失败走默认字号
+        pass
+    return (0, 0)
+
+
+def _strip_speaker_prefix(line: str) -> str:
+    """剥离单行对白的说话人前缀（内部函数，字幕文本口径）。
+
+    与 generation_service._strip_dialogue_speakers 同款正则（「XXX：台词」
+    取冒号后台词），字幕不显示说话人名；无前缀行原样保留。
+
+    Args:
+        line: 单行对白文本。
+
+    Returns:
+        str: 纯台词文本。
+
+    Raises:
+        无：纯文本处理，不产生异常路径。
+    """
+    m = re.match(r"^(?:[^：:]{1,20})[：:](.+)$", line.strip())
+    return (m.group(1) if m else line).strip()
+
+
+# 句级拆分标点（中英文句读；拆出的标点保留在句尾维持语感）
+_SUB_SENTENCE_SPLIT_RE = re.compile(r"([，。！？；…,.!?;])")
+# 短句粒度（字）：拆句后过短合并、过长硬切——单条字幕观感匹配 70px 字号
+# 下 720 宽一行约 10 字的排版
+_SUB_CHUNK_MIN = 4
+_SUB_CHUNK_MAX = 14
+# 句时长分配的去标点字数正则（TTS 朗读速度按音节，标点不计）
+_SUB_PUNCT_RE = re.compile(r"[，。！？；…、：,.!?;:\s]")
+
+
+def _split_subtitle_chunks(
+    text: str, max_chars: int = _SUB_CHUNK_MAX, min_chars: int = _SUB_CHUNK_MIN,
+) -> List[str]:
+    """把一段台词按标点拆成短句序列（内部函数，句级字幕粒度）。
+
+    规则：按标点切句（标点保留句尾）→ 过短句与相邻句合并（≥ min_chars
+    且遇句末强标点优先出条）→ 超长无标点片段按 max_chars 硬切 → 尾部碎句
+    并入前条。max_chars 由调用方按「视频宽度 / 字号」的单行容纳字数动态
+    计算（2026-10-21 用户确认单行显示），保证每条字幕不折行。
+
+    Args:
+        text: 单段台词文本（已剥说话人前缀）。
+        max_chars: 单条字幕最大字数（单行容纳上限）。
+        min_chars: 短句合并下限。
+
+    Returns:
+        List[str]: 短句序列（非空）。
+
+    Raises:
+        无：纯文本处理，不产生异常路径。
+    """
+    max_chars = max(2, min_chars + 1 if max_chars <= min_chars else max_chars)
+    parts = [p for p in _SUB_SENTENCE_SPLIT_RE.split(text) if p]
+    sentences: List[str] = []
+    for i in range(0, len(parts) - 1, 2):
+        s = (parts[i] + parts[i + 1]).strip()
+        if s:
+            sentences.append(s)
+    if len(parts) % 2 == 1 and parts[-1].strip():
+        sentences.append(parts[-1].strip())
+    if not sentences:
+        return [text.strip()] if text.strip() else []
+
+    chunks: List[str] = []
+    buf = ""
+    for s in sentences:
+        cand = buf + s if buf else s
+        if len(cand) <= max_chars:
+            buf = cand
+            # 达到最短长度且本句以句末强标点收尾：先出条（贴合说话节奏）
+            if len(buf) >= min_chars and s[-1] in "。！？!?；;…":
+                chunks.append(buf)
+                buf = ""
+        else:
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            while len(s) > max_chars:
+                chunks.append(s[:max_chars])
+                s = s[max_chars:]
+            buf = s
+    if buf:
+        if chunks and len(buf) < min_chars:
+            chunks[-1] += buf  # 尾部碎句并入前条
+        else:
+            chunks.append(buf)
+    return chunks
+
+
+def _chunk_weight(text: str) -> int:
+    """短句时长权重：去标点后的有效字数（内部函数）。
+
+    TTS 朗读时长与音节数正相关，标点仅产生停顿（已含在段间/句间分配的
+    时间里），权重按去标点字数计算使句级时间轴更贴合实际说话速度。
+
+    Args:
+        text: 短句文本。
+
+    Returns:
+        int: 有效字数（≥1，防除零）。
+
+    Raises:
+        无：纯文本处理。
+    """
+    return max(1, len(_SUB_PUNCT_RE.sub("", text)))
+
+
+def build_storyboard_subtitle_segments(
+    storyboard, max_chars: int = _SUB_CHUNK_MAX, min_chars: int = _SUB_CHUNK_MIN,
+) -> Optional[List[Dict]]:
+    """构建分镜视频的对白字幕时间轴（公共函数，供 runner 烧录调用）。
+
+    句级粒度（2026-10-20 用户确认「逐句按说话速度对齐出现」）：段级真实
+    时长（TTS 实测 duration_sec）内按短句去标点字数占比线性切分时间轴，
+    长台词逐句出现而非整段铺满——TTS 语速均匀，字数比例即真实节奏。
+    max_chars 传「视频宽度 / 字号」的单行容纳字数（2026-10-21 单行显示）
+    可保证每条字幕不折行。时间轴数据源优先级：
+    - 段级配音产物（storyboard.audio.dialogue，2026-10-20 段级模式）：逐段
+      duration_sec 精确累计，段间补 0.35s 静音间隔（与整镜音轨拼接口径一致）；
+    - 回退：dialogue 逐行剥离说话人前缀后按行均分整镜时长（旧整镜模式无
+      段级时长，均分近似）。
+
+    Args:
+        storyboard: 分镜 ORM 对象（audio/dialogue/actual_duration/duration）。
+        max_chars: 单条字幕最大字数（单行容纳上限，可空用默认 14）。
+        min_chars: 短句合并下限（可空用默认 4）。
+
+    Returns:
+        Optional[List[Dict]]: [{"text": 短句, "start": 起始秒, "end": 结束秒}]；
+            无任何对白文本返回 None（无对白镜不烧字幕）。
+
+    Raises:
+        无：数据异常逐段跳过，不产生异常路径。
+    """
+    audio = getattr(storyboard, "audio", None) or {}
+    segments: List[Dict] = []
+    dlg = [
+        d for d in (audio.get("dialogue") or [])
+        if isinstance(d, dict) and str(d.get("text") or "").strip()
+    ]
+    if dlg:
+        # 段级精确时间轴：段时长累计 + 段间 0.35s 静音；段内按短句字数占比切分
+        cursor = 0.0
+        for d in dlg:
+            seg_text = str(d.get("text")).strip()
+            try:
+                dur = float(d.get("duration_sec") or 0)
+            except (TypeError, ValueError):
+                dur = 0.0
+            if dur <= 0:
+                dur = max(0.8, len(seg_text) / _SUB_FALLBACK_CHARS_PER_SEC)
+            chunks = _split_subtitle_chunks(seg_text, max_chars, min_chars)
+            weights = [_chunk_weight(c) for c in chunks]
+            total_w = sum(weights)
+            seg_start = cursor
+            acc = 0.0
+            for c, w in zip(chunks, weights):
+                cdur = dur * w / total_w
+                segments.append({
+                    "text": c,
+                    "start": round(seg_start + acc, 3),
+                    "end": round(seg_start + acc + cdur, 3),
+                })
+                acc += cdur
+            cursor = seg_start + dur + _SUB_SEGMENT_GAP
+    else:
+        # 回退：逐行剥说话人前缀，按行均分整镜时长（行内再按短句占比切分）
+        lines = [
+            _strip_speaker_prefix(line)
+            for line in str(storyboard.dialogue or "").splitlines()
+        ]
+        lines = [x for x in lines if x]
+        if not lines:
+            return None
+        try:
+            total = float(getattr(storyboard, "actual_duration", None)
+                          or getattr(storyboard, "duration", None) or 5)
+        except (TypeError, ValueError):
+            total = 5.0
+        total = max(1.0, total)
+        per = total / len(lines)
+        for i, line in enumerate(lines):
+            chunks = _split_subtitle_chunks(line, max_chars, min_chars)
+            weights = [_chunk_weight(c) for c in chunks]
+            total_w = sum(weights)
+            seg_start = i * per
+            acc = 0.0
+            for c, w in zip(chunks, weights):
+                cdur = per * w / total_w
+                segments.append({
+                    "text": c,
+                    "start": round(seg_start + acc, 3),
+                    "end": round(seg_start + acc + cdur, 3),
+                })
+                acc += cdur
+    return segments or None
+
+
+async def burn_storyboard_subtitles(
+    ffmpeg: str,
+    ffprobe: Optional[str],
+    video_path: Path,
+    storyboard,
+    out_path: Path,
+    style: Optional[dict] = None,
+) -> bool:
+    """把对白字幕烧录进分镜视频（公共函数，供 runner 口型同步后调用）。
+
+    流程：探测视频分辨率 → 按画幅定字幕真实字号（style.font_size 优先）
+    → 按单行容纳字数（宽度/字号，留 10% 余量）句级切分时间轴（2026-10-21
+    用户确认单行显示，保证每条字幕不折行）→ SRT 临时文件 → subtitles 滤镜
+    重编码（libx264 crf 20，音轨 -c:a copy）→ 清理临时文件。
+
+    Args:
+        ffmpeg: ffmpeg 可执行文件路径。
+        ffprobe: ffprobe 可执行文件路径（分辨率探测，None 时走默认竖屏字号）。
+        video_path: 输入分镜视频（已含配音音轨）。
+        storyboard: 分镜 ORM 对象（时间轴数据源：audio.dialogue/dialogue）。
+        out_path: 输出视频路径（不得与 video_path 相同，调用方再 replace）。
+        style: 字幕样式 dict（font_size 为真实像素/color/position，可空用默认）。
+
+    Returns:
+        bool: 成功 True；无对白/失败 False（调用方保留无字幕产物降级）。
+
+    Raises:
+        无：内部捕获全部异常收敛为 False。
+    """
+    # 分辨率探测 → 字号（真实像素）→ 单行容纳字数（宽度/字号，留 10% 余量）
+    v_w, v_h = await _probe_resolution(ffprobe, video_path)
+    burn_style = dict(style or {})
+    if not burn_style.get("font_size"):
+        burn_style["font_size"] = default_subtitle_font_size(v_w, v_h)
+    font_px = int(burn_style["font_size"])
+    line_chars = (
+        max(4, int(v_w / font_px * 0.9)) if v_w > 0 else _SUB_CHUNK_MAX
+    )
+    segments = build_storyboard_subtitle_segments(
+        storyboard, max_chars=line_chars, min_chars=min(4, max(2, line_chars - 1)),
+    )
+    if not segments:
+        return False
+    srt_path = video_path.parent / f"_sb_sub_{video_path.stem}.srt"
+    try:
+        blocks: List[str] = []
+        for index, seg in enumerate(segments, start=1):
+            blocks.append(
+                f"{index}\n{_srt_timestamp(float(seg['start']))} --> "
+                f"{_srt_timestamp(float(seg['end']))}\n{str(seg['text'])}\n"
+            )
+        srt_path.write_text("\n".join(blocks), encoding="utf-8")
+        vf = build_subtitles_filter(srt_path, burn_style, v_h or 1280)
+        cmd = [
+            ffmpeg, "-y", "-v", "error", "-i", str(video_path),
+            "-vf", vf,
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p", "-c:a", "copy",
+            str(out_path),
+        ]
+        proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
+        return bool(
+            proc is not None and proc.returncode == 0 and out_path.is_file()
+        )
+    except Exception:  # noqa: BLE001 —— 字幕烧录失败降级不阻断
+        logger.warning("分镜字幕烧录异常：%s", video_path.name, exc_info=True)
+        return False
+    finally:
+        try:
+            srt_path.unlink(missing_ok=True)
+        except OSError:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -355,6 +722,9 @@ def _subtitle_texts(storyboards: List) -> List[str]:
     """
     texts: List[str] = []
     for sb in storyboards:
+        # 已烧分镜字幕的镜整镜跳过（与 build_srt 过滤口径一致）
+        if (getattr(sb, "audio", None) or {}).get("burned_subtitles"):
+            continue
         text = ((sb.dialogue or "").strip() or (sb.visual_description or "").strip())
         if text:
             texts.append(text)
@@ -408,11 +778,17 @@ async def _translate_bilingual_lines(texts: List[str]) -> Optional[List[Optional
 
 
 def build_ass_subtitles(
-    storyboards: List, translations: Optional[List[Optional[str]]], style: Optional[dict]
+    storyboards: List,
+    translations: Optional[List[Optional[str]]],
+    style: Optional[dict],
+    aspect_ratio: Optional[str] = None,
 ) -> Optional[str]:
     """生成双语 ASS 字幕文件内容（P-16，内部函数）。
 
-    时间轴与 build_srt 一致（按分镜实际时长累计）。双样式定义：
+    时间轴与 build_srt 一致（按分镜实际时长累计）。脚本 PlayRes 按画幅
+    （2026-10-20 字号真实像素语义：9:16 竖 720x1280 / 16:9 横 1280x720 /
+    1:1 方 1080x1080），style.font_size 即画面真实像素：缺省按画幅取规格
+    默认（竖 70 / 横 48 / 方 60），与分镜烧录字幕观感一致。双样式定义：
     - Style Main（原文在上）：主字号/主颜色，底部位置时 MarginV 抬高为译文行留空；
     - Style Sub（译文在下）：字号为主样式 0.7 倍（下限 10）、灰色区分，
       贴近画面底部（MarginV 12）。
@@ -422,7 +798,8 @@ def build_ass_subtitles(
         storyboards: 分镜对象列表（按镜头序）。
         translations: 与 _subtitle_texts(storyboards) 等长的译文列表
             （缺失位 None 单行显示）；None 表示全部单行。
-        style: 字幕样式 dict（font_size/color/position）。
+        style: 字幕样式 dict（font_size/color/position，font_size 为真实像素）。
+        aspect_ratio: 项目画幅（"9:16"/"16:9"/"1:1"，决定 PlayRes 与默认字号）。
 
     Returns:
         Optional[str]: 完整 ASS 文本；无任何可用字幕文本时返回 None。
@@ -434,6 +811,10 @@ def build_ass_subtitles(
     cursor = 0.0
     for sb in storyboards:
         duration = float(sb.actual_duration or sb.duration or 5)
+        # 已烧分镜字幕的镜整镜跳过（与 build_srt 过滤口径一致，防双字幕）
+        if (getattr(sb, "audio", None) or {}).get("burned_subtitles"):
+            cursor += duration
+            continue
         text = ((sb.dialogue or "").strip() or (sb.visual_description or "").strip())
         if text:
             entries.append((cursor, cursor + duration, text))
@@ -441,10 +822,22 @@ def build_ass_subtitles(
     if not entries:
         return None
 
+    # PlayRes 按画幅（字号真实像素语义的渲染基准）
+    ar = str(aspect_ratio or "")
+    if ar == "16:9":
+        play_w, play_h = 1280, 720
+    elif ar == "1:1":
+        play_w, play_h = 1080, 1080
+    else:
+        play_w, play_h = 720, 1280
+
     try:
-        font_size = max(10, min(72, int((style or {}).get("font_size", 24))))
+        font_size = int((style or {}).get("font_size") or 0)
     except (TypeError, ValueError):
-        font_size = 24
+        font_size = 0
+    if font_size <= 0:
+        font_size = default_subtitle_font_size(play_w, play_h)
+    font_size = max(10, min(120, font_size))
     main_color = str((style or {}).get("color") or "")
     if not re_ass_color(main_color):
         main_color = "&H00FFFFFF"
@@ -459,8 +852,8 @@ def build_ass_subtitles(
         "[Script Info]\n"
         "; MangaFlow P-16 bilingual subtitles (auto-generated)\n"
         "ScriptType: v4.00+\n"
-        "PlayResX: 720\n"
-        "PlayResY: 1280\n"
+        f"PlayResX: {play_w}\n"
+        f"PlayResY: {play_h}\n"
         "WrapStyle: 2\n\n"
         "[V4+ Styles]\n"
         "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, "
@@ -509,7 +902,8 @@ def _write_subtitle_file(path: Path, content: str) -> Optional[Path]:
 
 
 async def _prepare_subtitle_file(
-    storyboards: List, subtitle_style: Dict, task_id: int, out_dir: Path
+    storyboards: List, subtitle_style: Dict, task_id: int, out_dir: Path,
+    aspect_ratio: Optional[str] = None,
 ) -> Optional[Path]:
     """按字幕样式准备待烧录字幕文件（内部函数，P-16 双语支持）。
 
@@ -521,9 +915,11 @@ async def _prepare_subtitle_file(
 
     Args:
         storyboards: 涉及分镜列表（按镜头序）。
-        subtitle_style: 字幕样式 dict（font_size/color/position/bilingual）。
+        subtitle_style: 字幕样式 dict（font_size/color/position/bilingual，
+            font_size 为真实像素）。
         task_id: 任务 ID（字幕临时文件命名，避免并发覆盖）。
         out_dir: 字幕文件输出目录（storage/outputs）。
+        aspect_ratio: 项目画幅（ASS PlayRes 与默认字号基准，可空默认竖屏）。
 
     Returns:
         Optional[Path]: 字幕文件路径（.ass 或 .srt）；无可字幕文本/写盘失败为 None。
@@ -536,7 +932,9 @@ async def _prepare_subtitle_file(
         if texts:
             translations = await _translate_bilingual_lines(texts)
             if translations:
-                ass_content = build_ass_subtitles(storyboards, translations, subtitle_style)
+                ass_content = build_ass_subtitles(
+                    storyboards, translations, subtitle_style, aspect_ratio,
+                )
                 if ass_content:
                     return _write_subtitle_file(out_dir / f"_subs_{task_id}.ass", ass_content)
         # 双语任一环节失败：降级 SRT 单行
@@ -1072,7 +1470,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             sub_path: Optional[Path] = None
             if subtitle_on and current:
                 sub_path = await _prepare_subtitle_file(
-                    storyboards, subtitle_style, task.id, out_dir
+                    storyboards, subtitle_style, task.id, out_dir, aspect_ratio,
                 )
 
             # BGM（Task 5.2）：/storage URL 还原物理路径（曲库或用户上传素材）
@@ -1089,11 +1487,17 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
 
             # 后处理（Task 4.4 水印 + 5.1 字幕 + 5.2 BGM）：失败沿用 pre 处理产物
             if current:
+                # SRT 字幕按 libass 默认脚本高度 288 渲染：字号为真实像素时
+                # 需按成片实际高度换算；ASS 自带 PlayRes 无需换算
+                sub_video_height = 0
+                if sub_path is not None and sub_path.suffix.lower() == ".srt":
+                    _, sub_video_height = await _probe_resolution(ffprobe, current)
                 final_path = out_dir / f"{task.project_id}_v{version_no}_final.mp4"
                 if await _postprocess_film(
                     ffmpeg, ffprobe, current, final_path,
                     subtitles_filter=(
-                        build_subtitles_filter(sub_path, subtitle_style) if sub_path else None
+                        build_subtitles_filter(sub_path, subtitle_style, sub_video_height)
+                        if sub_path else None
                     ),
                     drawtext_filter=build_drawtext_filter(watermark_id[:8]),
                     bgm_path=bgm_path,

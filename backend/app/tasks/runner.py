@@ -83,7 +83,7 @@ from app.providers.video_wan import generate_video_wan
 from app.services import model_router, notification_service
 from app.services.audio_separation import extract_no_vocals
 from app.services.billing_service import consume_frozen, refund_frozen
-from app.services.compose_service import _merge_clip_audio, compose_film
+from app.services.compose_service import _merge_clip_audio, burn_storyboard_subtitles, compose_film
 from app.services.generation_service import freeze_and_create_task
 from app.services.lipsync_service import lipsync_video
 from app.services.model_router import ResolvedChannel
@@ -1412,6 +1412,26 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
                     logger.warning("任务 %s 环境音叠回失败，保留纯配音音轨", task.id)
     else:
         await _strip_video_audio(video_path)
+    # 分镜级字幕烧录（2026-10-20 句级 + 2026-10-21 单行显示）：对白字幕按
+    # 配音段时间轴（句级切分上限=单行容纳字数）烧进画面（该镜有配音才有
+    # 时间轴），预览/导出即带字幕；audio JSONB 打标 burned_subtitles 供合成
+    # 阶段跳过该镜防双字幕；无对白镜静默跳过、失败降级保留无字幕产物不阻断
+    burned_subtitles = False
+    if audio_dubbed and sb_for_dub is not None and ffmpeg_bin and ffprobe_bin:
+        has_sub_text = bool(
+            (sb_for_dub.audio or {}).get("dialogue")
+            or (sb_for_dub.dialogue or "").strip()
+        )
+        if has_sub_text:
+            await _set_progress(db, task, 94)
+            sub_out = video_path.with_name(f"{video_path.stem}_sub{video_path.suffix}")
+            if await burn_storyboard_subtitles(
+                ffmpeg_bin, ffprobe_bin, video_path, sb_for_dub, sub_out,
+            ):
+                sub_out.replace(video_path)
+                burned_subtitles = True
+            else:
+                logger.warning("任务 %s 分镜字幕烧录失败，保留无字幕产物：%s", task.id, video_path.name)
     # 环境音临时产物用完即弃（混流已完成或未发生）
     if env_audio_path is not None:
         env_audio_path.unlink(missing_ok=True)
@@ -1420,6 +1440,8 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         result.setdefault("meta", {})["audio_dubbed"] = True
         if lipsync_applied:
             result.setdefault("meta", {})["lipsync_applied"] = True
+        if burned_subtitles:
+            result.setdefault("meta", {})["burned_subtitles"] = True
     # provider meta 合并进任务 meta，追加降级链与实际 provider 溯源（不覆盖既有键）；
     # D3 打标：演示占位产物写入 placeholder 标记（provider meta 或 mock 哨兵命中）；
     # 自有渠道命中：实际使用用户自有 Key 的渠道时写 own_channel_exempt（成功后免积分）
@@ -1448,9 +1470,15 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         if sb:
             sb.video_url = result["url"]
             # 配音已混流入视频：audio JSONB 打标（前端据此跳过同步叠加防双声，
-            # compose 据此跳过 audio_url 混音）
+            # compose 据此跳过 audio_url 混音）；burned_subtitles 供合成阶段
+            # 字幕构建跳过该镜防双字幕
+            audio_patch: Dict = {}
             if audio_dubbed:
-                sb.audio = {**dict(sb.audio or {}), "video_dubbed": True}
+                audio_patch["video_dubbed"] = True
+            if burned_subtitles:
+                audio_patch["burned_subtitles"] = True
+            if audio_patch:
+                sb.audio = {**dict(sb.audio or {}), **audio_patch}
     await db.commit()
     await _succeed_task(db, task, user_id)
 

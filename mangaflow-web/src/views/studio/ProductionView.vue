@@ -585,14 +585,13 @@ function onVideoSeek(b: Storyboard): void {
 }
 
 /**
- * 生成单镜视频片段（P-12：携带分辨率/帧率/运动幅度；P-03：按开关携带尾帧控制）。
+ * 提交单镜视频任务并启动终态轮询（genVideo 与批量生成的公共主体）。
+ * 携带分辨率/帧率/运动幅度（P-12）与该镜尾帧开关（P-03）；提交后由
+ * 右侧任务面板 + SSE 跟踪，终态后刷新分镜取回 video_url。
  * @param b 目标分镜
- * @returns 无
+ * @returns 是否提交成功（提交失败/被防重拦截返回 false）
  */
-async function genVideo(b: Storyboard): Promise<void> {
-  if (!ensureProductionReady()) return
-  if (isVideoBusy(b)) return
-  videoBusyIds.value = [...videoBusyIds.value, b.id]
+async function submitVideoTask(b: Storyboard): Promise<boolean> {
   try {
     const task = await productionApi.video(projectId.value, b.id, {
       resolution: videoConfig.resolution,
@@ -600,8 +599,6 @@ async function genVideo(b: Storyboard): Promise<void> {
       motion_strength: videoConfig.motion_strength,
       use_end_frame: !!useEndFrameMap[b.id],
     })
-    ElMessage.success(`视频任务 #${task.id} 已提交`)
-    videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
     videoGeneratingIds.value = [...videoGeneratingIds.value, b.id]
     startTaskStream()
     void refreshTasks()
@@ -628,8 +625,92 @@ async function genVideo(b: Storyboard): Promise<void> {
         videoGeneratingIds.value = videoGeneratingIds.value.filter((i) => i !== b.id)
       }
     }, 5000)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 生成单镜视频片段（P-12：携带分辨率/帧率/运动幅度；P-03：按开关携带尾帧控制）。
+ * @param b 目标分镜
+ * @returns 无
+ */
+async function genVideo(b: Storyboard): Promise<void> {
+  if (!ensureProductionReady()) return
+  if (isVideoBusy(b)) return
+  videoBusyIds.value = [...videoBusyIds.value, b.id]
+  try {
+    const ok = await submitVideoTask(b)
+    if (ok) ElMessage.success('视频任务已提交')
   } finally {
     videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
+  }
+}
+
+/** 批量生成全部视频进行中（防重复点击） */
+const batchVideoBusy = ref(false)
+
+/**
+ * 一键生成全部视频：对所有「有关键帧且尚无视频产物」的镜逐个提交视频任务
+ * （不等终态，任务在右侧任务面板跟踪；无关键帧的镜自动跳过并提示；
+ * 单个提交失败不影响其余镜头）。视频参数取当前参数区配置，尾帧开关
+ * 按每镜自身开关状态携带。
+ * @returns 无
+ */
+async function batchGenVideos(): Promise<void> {
+  if (!ensureProductionReady()) return
+  if (batchVideoBusy.value) return
+  const pending = boards.value.filter((b) => b.keyframe_url && !b.video_url && !isVideoBusy(b))
+  const noKeyframe = boards.value.filter((b) => !b.keyframe_url)
+  if (!pending.length) {
+    ElMessage.info(noKeyframe.length ? '无待生成视频的镜头（无关键帧的镜请先生成关键帧）' : '所有镜头均已生成视频')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `将为 ${pending.length} 个未生成视频的镜头逐个提交视频任务（按镜头时长计费，视频时长自动对齐配音）。是否继续？`,
+      '一键生成全部视频',
+      { type: 'info', confirmButtonText: '开始生成' },
+    )
+  } catch {
+    return
+  }
+  batchVideoBusy.value = true
+  try {
+    let submitted = 0
+    const skipped: string[] = []
+    for (const b of pending) {
+      if (isVideoBusy(b)) {
+        skipped.push(`#${String(b.sequence).padStart(2, '0')}（任务进行中）`)
+        continue
+      }
+      videoBusyIds.value = [...videoBusyIds.value, b.id]
+      try {
+        const ok = await submitVideoTask(b)
+        if (ok) submitted += 1
+        else skipped.push(`#${String(b.sequence).padStart(2, '0')}（提交失败）`)
+      } catch {
+        skipped.push(`#${String(b.sequence).padStart(2, '0')}（提交失败）`)
+      } finally {
+        videoBusyIds.value = videoBusyIds.value.filter((i) => i !== b.id)
+      }
+    }
+    if (submitted) {
+      ElMessage.success(`已提交 ${submitted} 个视频生成任务`)
+      panelVisible.value = true
+      startTaskStream()
+      void refreshTasks()
+      void refreshWallet()
+    }
+    if (noKeyframe.length) {
+      ElMessage.warning(`以下镜头无关键帧已跳过（请先生成关键帧）：${noKeyframe.map((b) => `#${String(b.sequence).padStart(2, '0')}`).join('、')}`)
+    }
+    if (skipped.length) {
+      ElMessage.warning(`以下镜头提交被跳过：${skipped.join('、')}`)
+    }
+  } finally {
+    batchVideoBusy.value = false
   }
 }
 
@@ -1081,13 +1162,46 @@ const bgmFileRef = ref<HTMLInputElement>()
 
 /** 是否烧录字幕 */
 const subtitleEnabled = ref(false)
-/** 字幕样式（字号/颜色/位置/双语，颜色为 #RRGGBB，提交时转 ASS 格式） */
+/** 字幕样式（字号/颜色/位置/双语，颜色为 #RRGGBB，提交时转 ASS 格式；字号为画面真实像素） */
 const subtitleStyle = reactive({
-  font_size: 24,
+  font_size: 70,
   color: '#FFFFFF',
   position: 'bottom' as 'bottom' | 'middle' | 'top',
   bilingual: false,
 })
+
+/**
+ * 项目画幅是否竖屏（内部计算属性）。
+ *
+ * 依据项目 aspect_ratio：仅 '9:16' 视为竖屏（60~80px），'16:9'/'1:1'
+ * 按横屏规格（40~55px）。
+ *
+ * Returns:
+ *   boolean: 竖屏 true。
+ */
+const isPortraitProject = computed<boolean>(() => {
+  const ar = (projectStore.currentProject as { aspect_ratio?: string } | null)?.aspect_ratio
+  return ar === '9:16'
+})
+
+/**
+ * 当前画幅的字号可调范围与默认值（内部计算属性，2026-10-20 用户规格）。
+ *
+ * Returns:
+ *   { min, max, def }: 竖屏 60~80 默认 70；横屏 40~55 默认 48。
+ */
+const subtitleFontRange = computed<{ min: number; max: number; def: number }>(() =>
+  isPortraitProject.value
+    ? { min: 60, max: 80, def: 70 }
+    : { min: 40, max: 55, def: 48 },
+)
+
+// 画幅切换/加载后字号越界时自动归位默认值（项目画幅在页面加载后异步到达）
+watch(subtitleFontRange, (r) => {
+  if (subtitleStyle.font_size < r.min || subtitleStyle.font_size > r.max) {
+    subtitleStyle.font_size = r.def
+  }
+}, { immediate: true })
 
 /** 是否启用转场 */
 const transitionEnabled = ref(false)
@@ -1424,6 +1538,16 @@ onBeforeUnmount(() => {
             <span class="vc-label">播放时同步配音</span>
             <el-switch v-model="dubSyncEnabled" size="small" />
             <span class="vc-tip">以上参数随每次「生成视频片段」提交生效</span>
+            <!-- 一键生成全部视频：逐镜提交缺视频产物且有关键帧的镜头 -->
+            <el-button
+              type="primary"
+              size="small"
+              :loading="batchVideoBusy"
+              :disabled="batchVideoBusy"
+              @click="batchGenVideos"
+            >
+              一键生成全部视频
+            </el-button>
           </div>
         </el-card>
         <div class="video-rows">
@@ -1435,15 +1559,6 @@ onBeforeUnmount(() => {
             :class="{ 'video-row-generating': isVideoBusy(b) }"
           >
             <div class="video-row-body">
-              <el-image
-                v-if="b.keyframe_url"
-                :src="b.keyframe_url"
-                fit="cover"
-                class="video-thumb"
-                :preview-src-list="[b.keyframe_url]"
-                preview-teleported
-              />
-              <div v-else class="video-thumb video-thumb--empty">无首帧</div>
               <div class="video-play">
                 <video
                   v-if="b.video_url && !b.video_url.endsWith('.svg')"
@@ -1480,6 +1595,8 @@ onBeforeUnmount(() => {
                     已配音{{ dubSyncEnabled ? ' · 播放时同步接入' : ' · 纯视频预览（同步配音已关）' }}
                   </el-tag>
                   <el-tag v-else size="small" type="warning" effect="plain">未配音</el-tag>
+                  <!-- 分镜级字幕：对白已按配音段时间轴烧进画面（合成阶段自动跳过防双字幕） -->
+                  <el-tag v-if="b.audio?.burned_subtitles" size="small" type="info" effect="plain">已烧字幕</el-tag>
                   <span v-if="!(b.audio_url && (b.dialogue || '').trim())" class="dub-tip">建议先到「配音」Tab 生成配音，视频时长将自动对齐配音</span>
                 </div>
                 <!-- P-03/P-08 尾帧控制：仅尾帧已生成的分镜可开启 -->
@@ -1761,11 +1878,11 @@ onBeforeUnmount(() => {
             <el-form-item label="字幕">
               <el-switch v-model="subtitleEnabled" />
               <template v-if="subtitleEnabled">
-                <span class="mix-inline-label">字号</span>
+                <span class="mix-inline-label">字号(px)</span>
                 <el-input-number
                   v-model="subtitleStyle.font_size"
-                  :min="10"
-                  :max="72"
+                  :min="subtitleFontRange.min"
+                  :max="subtitleFontRange.max"
                   size="small"
                   style="width: 100px; margin-left: 8px"
                 />
@@ -1788,6 +1905,10 @@ onBeforeUnmount(() => {
                 >
                   双语字幕（中英）
                 </el-checkbox>
+                <!-- 分镜级字幕说明：已烧字幕的镜不重复烧录 -->
+                <span class="mix-inline-label" style="margin-left: 12px; color: var(--el-text-color-secondary)">
+                  已烧字幕的分镜不再重复烧录
+                </span>
               </template>
             </el-form-item>
             <el-form-item label="转场">
@@ -1887,10 +2008,20 @@ onBeforeUnmount(() => {
   border-radius: var(--mf-r-ctl);
 }
 .top-bar {
+  /* 吸顶：Tab 行固定在滚动容器顶部，不随页面滚动（2026-10-21 用户确认）；
+     负水平 margin 抵消 page-container 左右内边距使背景铺满整行，
+     studio-layout header 在滚动容器外不会被遮挡 */
+  position: sticky;
+  top: 0;
+  z-index: 20;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: var(--mf-sp-4);
+  background: var(--mf-bg);
+  padding: var(--mf-sp-2) var(--mf-sp-8);
+  margin: 0 calc(-1 * var(--mf-sp-8));
+  border-bottom: 1px solid var(--mf-border);
 }
 .prod-tabs {
   flex: 1;
@@ -2091,22 +2222,10 @@ onBeforeUnmount(() => {
 }
 .video-row-body {
   display: grid;
-  grid-template-columns: 140px 1fr 240px;
+  /* 关键帧缩略图已移除（2026-10-21 用户确认）：播放器 + 信息区两列布局 */
+  grid-template-columns: 1fr 240px;
   gap: var(--mf-sp-4);
   align-items: center;
-}
-.video-thumb {
-  width: 140px;
-  height: 100px;
-  border-radius: var(--mf-r-ctl);
-}
-.video-thumb--empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--mf-surface-2);
-  color: var(--mf-text-3);
-  font-size: var(--mf-fs-sm);
 }
 .video-player {
   width: 100%;
