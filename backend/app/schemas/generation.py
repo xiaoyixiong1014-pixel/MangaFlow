@@ -89,6 +89,9 @@ class TaskOut(BaseModel):
         created_at: 创建时间。
         placeholder: 是否为演示占位产物（D3：mock 兜底渠道产物打标，
             从任务 meta 提取；True 时对应任务已执行计费豁免）。
+        compose_done: 合成任务已完成镜数（成片整合二期，从 meta 白名单
+            提取；仅 compose 类型非空）。
+        compose_total: 合成任务参与合成的总镜数（同上，非 compose 为 None）。
     """
 
     model_config = ConfigDict(from_attributes=True)
@@ -108,6 +111,8 @@ class TaskOut(BaseModel):
     estimated_seconds: Optional[int] = None
     created_at: Optional[datetime] = None
     placeholder: bool = False
+    compose_done: Optional[int] = None
+    compose_total: Optional[int] = None
 
     @classmethod
     def from_task(cls, task) -> "TaskOut":
@@ -117,7 +122,8 @@ class TaskOut(BaseModel):
             task: Task ORM 对象。
 
         Returns:
-            TaskOut: 任务输出模型实例（placeholder 从 meta 提取，缺省 False）。
+            TaskOut: 任务输出模型实例（placeholder/compose_done/compose_total
+                从 meta 白名单提取，缺省 None/False）。
 
         Raises:
             无：字段均为简单映射，不产生异常路径。
@@ -138,6 +144,8 @@ class TaskOut(BaseModel):
             estimated_seconds=task.estimated_seconds,
             created_at=task.created_at,
             placeholder=bool((task.meta or {}).get("placeholder")),
+            compose_done=(task.meta or {}).get("compose_done"),
+            compose_total=(task.meta or {}).get("compose_total"),
         )
 
 

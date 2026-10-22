@@ -1018,6 +1018,10 @@ export interface GenTask {
   created_at?: string | null
   /** 是否为演示占位产物（D3：mock 兜底渠道产物打标，占位任务已计费豁免） */
   placeholder?: boolean
+  /** 合成任务已完成镜数（成片整合二期，仅 compose 类型非空） */
+  compose_done?: number | null
+  /** 合成任务参与合成的总镜数（仅 compose 类型非空） */
+  compose_total?: number | null
 }
 
 /** 视频片段生成请求体（P-12 视频参数 + P-03 尾帧控制） */
@@ -1074,6 +1078,10 @@ export interface FilmOutput {
   has_password: boolean
   /** 分享是否已撤销 */
   share_revoked: boolean
+  /** 绑定剧集 ID（null=未绑定剧集的全量合成） */
+  episode_id?: number | null
+  /** 绑定剧集序号（后端 join episodes 填充，展示「第N集」） */
+  episode_no?: number | null
   /** 创建时间 */
   created_at?: string | null
 }

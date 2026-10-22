@@ -4,6 +4,7 @@
 - POST /api/projects/{project_id}/compose                          发起成片合成（闸门二）
 - GET  /api/projects/{project_id}/outputs                          成片版本列表
 - POST /api/projects/{project_id}/outputs/{output_id}/set-current  切换当前版本（版本回退）
+- DELETE /api/projects/{project_id}/outputs/{output_id}            删除成片版本（分享保护 + 当前版本自动接任）
 - GET  /api/projects/{project_id}/reviews                          审核记录列表
 - POST /api/projects/{project_id}/publish                          发布并生成分享链接（闸门三）
 - POST /api/projects/{project_id}/share/revoke                     撤销分享
@@ -299,9 +300,21 @@ async def list_project_outputs(
         .order_by(FilmOutput.version_no.desc())
         .offset((page - 1) * page_size).limit(page_size)
     )
+    films = list(rows.scalars().all())
+    # 绑定剧集序号映射（成片整合二期 2026-10-22）：版本条目展示「第N集」
+    ep_ids = {f.episode_id for f in films if f.episode_id is not None}
+    ep_nos: dict = {}
+    if ep_ids:
+        ep_rows = await db.execute(
+            select(Episode.id, Episode.sequence).where(Episode.id.in_(ep_ids))
+        )
+        ep_nos = {eid: seq for eid, seq in ep_rows.all()}
     return PageResult(
         total=total or 0, page=page, page_size=page_size,
-        items=[OutputOut.from_output(o) for o in rows.scalars().all()],
+        items=[
+            OutputOut.from_output(o, episode_no=ep_nos.get(o.episode_id))
+            for o in films
+        ],
     )
 
 
@@ -335,7 +348,68 @@ async def set_current_output(
         old.is_current = False
     film.is_current = True
     await db.commit()
-    return OutputOut.from_output(film)
+    ep_no: Optional[int] = None
+    if film.episode_id is not None:
+        ep = await db.get(Episode, film.episode_id)
+        ep_no = ep.sequence if ep else None
+    return OutputOut.from_output(film, episode_no=ep_no)
+
+
+@router.delete("/api/projects/{project_id}/outputs/{output_id}")
+async def delete_project_output(
+    project_id: int,
+    output_id: int,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """删除成片版本（成片整合二期 2026-10-22）。
+
+    硬删 film_outputs 记录（storage/outputs 物理文件保留，便于数据恢复与
+    其他版本引用不受影响）；已发布且分享仍在有效期的版本须先撤回分享；
+    删除当前版本时自动把剩余最新版本置为当前，保证项目恒有可用成片。
+
+    Args:
+        project_id: 项目 ID。
+        output_id: 目标成片版本 ID。
+        user: 当前登录用户。
+        db: 请求级异步数据库会话。
+
+    Returns:
+        dict: {"ok": True, "new_current_version_no": 删除后接任的当前版本号（可 None）}。
+
+    Raises:
+        HTTPException: 403/404 —— 归属校验失败；400 —— 分享未撤回时拦截删除。
+    """
+    await get_owned_project(db, user.id, project_id)
+    film = await _get_owned_output(db, project_id, output_id)
+    # 分享保护：分享链接仍有效（已发布 + 未撤销 + 未过期）时禁止删除
+    now = datetime.now(timezone.utc)
+    if (
+        film.share_token
+        and not film.share_revoked
+        and (film.share_expires_at is None or film.share_expires_at > now)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="该版本已发布分享且链接仍有效，请先在分享设置中撤回后再删除",
+        )
+    was_current = bool(film.is_current)
+    await db.delete(film)
+    new_current_no: Optional[int] = None
+    if was_current:
+        # 删除的是当前版本：剩余最新版本自动接任为当前
+        rows = await db.execute(
+            select(FilmOutput)
+            .where(FilmOutput.project_id == project_id)
+            .order_by(FilmOutput.version_no.desc())
+            .limit(1)
+        )
+        newest = rows.scalars().first()
+        if newest is not None:
+            newest.is_current = True
+            new_current_no = newest.version_no
+    await db.commit()
+    return {"ok": True, "new_current_version_no": new_current_no}
 
 
 @router.get("/api/projects/{project_id}/reviews", response_model=PageResult[ReviewOut])

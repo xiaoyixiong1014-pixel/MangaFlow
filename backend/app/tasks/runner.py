@@ -2056,6 +2056,11 @@ async def _run_tts(db, task: Task, user_id: int, meta: dict) -> None:
 async def _run_compose(db, task: Task, user_id: int) -> None:
     """执行成片合成任务（委托 compose_service.compose_film）。
 
+    进度按镜细化（成片整合二期 2026-10-22）：构造 on_progress 回调写入
+    task.progress 与 task.meta 的 compose_done/compose_total 白名单字段
+    （经 TaskOut 透出供前端展示「第 X/Y 镜」），逐节点提交供 SSE 观察；
+    回调异常已由 compose_service._report_progress 兜底，不阻断合成。
+
     Args:
         db: 异步数据库会话。
         task: 任务对象。
@@ -2067,8 +2072,33 @@ async def _run_compose(db, task: Task, user_id: int) -> None:
     Raises:
         无：compose 异常被捕获后走失败流程。
     """
+
+    async def on_progress(progress: int, done: Optional[int] = None, total: Optional[int] = None) -> None:
+        """合成进度回调：写主进度与按镜计数（meta 白名单字段）并立即提交。
+
+        Args:
+            progress: 总进度百分比（0~100）。
+            done: 已完成镜数（可 None 表示非按镜节点）。
+            total: 参与合成的总镜数（可 None）。
+
+        Returns:
+            None
+
+        Raises:
+            Exception: 数据库提交异常向上抛（由 _report_progress 兜底忽略）。
+        """
+        task.progress = int(progress)
+        if done is not None or total is not None:
+            m = dict(task.meta or {})
+            if done is not None:
+                m["compose_done"] = int(done)
+            if total is not None:
+                m["compose_total"] = int(total)
+            task.meta = m
+        await db.commit()
+
     try:
-        url = await compose_film(db, task)
+        url = await compose_film(db, task, on_progress=on_progress)
         await db.commit()
     except Exception as exc:
         await db.rollback()

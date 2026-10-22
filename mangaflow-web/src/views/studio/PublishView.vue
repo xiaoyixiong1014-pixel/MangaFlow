@@ -216,6 +216,73 @@ async function setCurrentVersion(o: FilmOutput): Promise<void> {
   }
 }
 
+// ============================================================
+// 版本预览与删除（成片整合二期 2026-10-22）
+// ============================================================
+
+/** 预览弹窗可见性 */
+const previewVisible = ref(false)
+/** 当前预览的版本（null=关闭） */
+const previewOutput = ref<FilmOutput | null>(null)
+/** 删除进行中的版本 ID */
+const removeBusyId = ref<number | null>(null)
+
+/**
+ * 拼接成片访问地址（内部函数）：相对存储路径补 /storage 前缀。
+ * @param url 后端返回的相对路径
+ * @returns 可访问 URL
+ */
+function resolveMediaUrl(url: string): string {
+  if (!url) return ''
+  if (/^https?:\/\//.test(url) || url.startsWith('/')) return url
+  return `/storage/${url}`
+}
+
+/**
+ * 打开版本预览弹窗。
+ * @param o 目标版本
+ */
+function openPreview(o: FilmOutput): void {
+  previewOutput.value = o
+  previewVisible.value = true
+}
+
+/**
+ * 删除成片版本：二次确认；当前版本删除后由最新版本自动接任；
+ * 分享有效的版本后端 400 拦截（拦截器已展示 detail）。
+ * @param o 目标版本
+ * @returns 无
+ */
+async function removeVersion(o: FilmOutput): Promise<void> {
+  if (removeBusyId.value) return
+  const tip = o.is_current
+    ? `v${o.version_no} 是当前版本，删除后剩余最新版本将自动接任为当前。确定删除吗？`
+    : `确定删除成片版本 v${o.version_no} 吗？`
+  try {
+    await ElMessageBox.confirm(tip, '删除成片版本', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  removeBusyId.value = o.id
+  try {
+    const res = await productionApi.removeOutput(projectId.value, o.id)
+    if (res.new_current_version_no != null) {
+      ElMessage.success(`已删除 v${o.version_no}，v${res.new_current_version_no} 已接任为当前版本`)
+    } else {
+      ElMessage.success(`已删除 v${o.version_no}`)
+    }
+    await loadAll()
+  } catch {
+    /* 错误已由拦截器 ElMessage(detail) 提示（如分享未撤回 400） */
+  } finally {
+    removeBusyId.value = null
+  }
+}
+
 /** 对比选择的两个版本 ID */
 const diffA = ref<number | null>(null)
 const diffB = ref<number | null>(null)
@@ -572,8 +639,19 @@ onMounted(loadAll)
               <div class="ver-line">
                 <span class="ver-no">v{{ o.version_no }}</span>
                 <el-tag v-if="o.is_current" size="small" type="success">当前</el-tag>
+                <el-tag
+                  v-if="o.episode_no != null"
+                  size="small"
+                  type="info"
+                  effect="plain"
+                >
+                  第{{ o.episode_no }}集
+                </el-tag>
                 <span class="ver-meta">{{ o.resolution }} · {{ o.duration }}s</span>
                 <span class="ver-time">{{ o.created_at?.slice(0, 16).replace('T', ' ') }}</span>
+                <el-button size="small" text type="primary" @click="openPreview(o)">
+                  预览
+                </el-button>
                 <el-button
                   v-if="!o.is_current"
                   size="small"
@@ -583,6 +661,15 @@ onMounted(loadAll)
                   @click="setCurrentVersion(o)"
                 >
                   设为当前
+                </el-button>
+                <el-button
+                  size="small"
+                  text
+                  type="danger"
+                  :loading="removeBusyId === o.id"
+                  @click="removeVersion(o)"
+                >
+                  删除
                 </el-button>
               </div>
             </div>
@@ -664,6 +751,29 @@ onMounted(loadAll)
         </el-tabs>
       </div>
     </div>
+
+    <!-- 版本预览弹窗（成片整合二期）：按版本播放成片 -->
+    <el-dialog
+      v-model="previewVisible"
+      :title="previewOutput ? `预览成片 v${previewOutput.version_no}` : '预览成片'"
+      width="520px"
+      append-to-body
+      destroy-on-close
+    >
+      <video
+        v-if="previewOutput"
+        :src="resolveMediaUrl(previewOutput.url)"
+        class="preview-video"
+        controls
+        autoplay
+        preload="metadata"
+      ></video>
+      <div v-if="previewOutput" class="preview-meta">
+        {{ previewOutput.resolution }} · {{ previewOutput.duration }}s ·
+        {{ previewOutput.aspect_ratio }}
+        <template v-if="previewOutput.episode_no != null"> · 第{{ previewOutput.episode_no }}集</template>
+      </div>
+    </el-dialog>
   </div>
 </template>
 
@@ -835,6 +945,20 @@ onMounted(loadAll)
   color: var(--mf-text-3);
   font-size: var(--mf-fs-sm);
   margin-left: auto;
+}
+/* 版本预览弹窗（成片整合二期）：视频铺满弹窗宽度 + 参数行 */
+.preview-video {
+  width: 100%;
+  max-height: 70vh;
+  border-radius: var(--mf-radius-md, 8px);
+  background: #000;
+  display: block;
+}
+.preview-meta {
+  margin-top: var(--mf-sp-2);
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  text-align: center;
 }
 .diff-select {
   display: flex;

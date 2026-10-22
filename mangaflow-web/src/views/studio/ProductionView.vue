@@ -1302,6 +1302,28 @@ const introCardEnabled = ref(true)
 const composing = ref(false)
 /** 合成任务进度（轮询 taskDetail） */
 const composeProgress = ref(0)
+/** 合成已完成镜数（后端按镜进度回传，成片整合二期） */
+const composeDone = ref(0)
+/** 合成参与合成的总镜数 */
+const composeTotal = ref(0)
+
+/**
+ * 合成阶段文案（computed）：按后端进度区间映射当前环节，
+ * 音画对齐阶段展示「第 X/Y 镜」按镜计数。
+ */
+const composeStage = computed(() => {
+  const p = composeProgress.value
+  if (p < 5) return '准备合成…'
+  if (p < 10) return '分析分镜清单'
+  if (p < 60) return `音画对齐（第 ${composeDone.value}/${composeTotal.value || '…'} 镜）`
+  if (p < 63) return '生成片头片尾卡'
+  if (p < 70) return '拼接片段'
+  if (p < 76) return '转场合成'
+  if (p < 82) return '准备字幕'
+  if (p < 90) return '字幕 / BGM 后处理'
+  if (p < 100) return '写入成片版本'
+  return '即将完成'
+})
 
 /** 当前集缺视频产物的分镜（合成完整性门禁，2026-10-21） */
 const missingVideoBoards = computed(() => boards.value.filter((b) => !b.video_url))
@@ -1332,6 +1354,8 @@ async function composeFilm(): Promise<void> {
   }
   composing.value = true
   composeProgress.value = 0
+  composeDone.value = 0
+  composeTotal.value = 0
   try {
     // 并入 BGM / 字幕 / 转场配置（Task 10.4，字段对齐后端 ComposeCreateRequest）；
     // S-06：携带当前剧集 ID，仅合成该剧集分镜（默认剧集 = 不传，合成全部）
@@ -1345,11 +1369,13 @@ async function composeFilm(): Promise<void> {
     startTaskStream()
     void refreshTasks()
     void refreshWallet()
-    // 轮询合成任务详情（进度条展示），终态后引导跳转
+    // 轮询合成任务详情（进度条 + 阶段文案展示），终态后引导跳转
     for (;;) {
       await new Promise((r) => setTimeout(r, 2000))
       const t = await productionApi.taskDetail(task.id)
       composeProgress.value = t.progress
+      composeDone.value = t.compose_done ?? composeDone.value
+      composeTotal.value = t.compose_total ?? composeTotal.value
       if (t.status === 'done') {
         ElMessage.success('合成完成')
         try {
@@ -2007,6 +2033,7 @@ onBeforeUnmount(() => {
           :percentage="composeProgress"
           class="compose-progress"
         />
+        <span v-if="composing" class="compose-stage">{{ composeStage }}</span>
         <span v-else class="footer-tip">全部镜头关键帧 / 配音 / 视频完成后即可合成成片</span>
         <el-button size="large" type="primary" class="confirm-btn" :loading="composing" @click="composeFilm">
           全部完成，进入合成
@@ -2441,6 +2468,12 @@ onBeforeUnmount(() => {
 }
 .compose-progress {
   flex: 1;
+}
+/* 合成阶段文案（成片整合二期）：footer-bar 行内展示当前环节与按镜计数 */
+.compose-stage {
+  font-size: 12px;
+  color: var(--el-text-color-secondary);
+  white-space: nowrap;
 }
 .confirm-btn {
   background: var(--mf-brand);

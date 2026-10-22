@@ -30,7 +30,7 @@ import re
 import shutil
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -41,6 +41,37 @@ from app.models import Episode, FilmOutput, Project, Storyboard, Task
 from app.providers.llm import chat
 
 logger = logging.getLogger("mangaflow.services.compose_service")
+
+# 合成进度回调类型（成片整合二期 2026-10-22）：参数依次为
+# progress（0~100 总进度）、done（已完成镜数，可 None）、total（参与合成镜数，可 None）。
+# 回调由执行器提供（写 task.progress + meta.compose_done/compose_total 并提交），
+# 上报失败仅告警不阻断合成主流程。
+_ProgressCb = Optional[Callable[[int, Optional[int], Optional[int]], Awaitable[None]]]
+
+
+async def _report_progress(
+    cb: _ProgressCb, progress: int, done: Optional[int] = None, total: Optional[int] = None,
+) -> None:
+    """上报合成进度（内部辅助，回调缺失或异常时静默跳过不阻断合成）。
+
+    Args:
+        cb: 进度回调（可为 None）。
+        progress: 总进度百分比（0~100）。
+        done: 已完成镜数（按镜埋点时传入，可 None）。
+        total: 参与合成的总镜数（按镜埋点时传入，可 None）。
+
+    Returns:
+        None
+
+    Raises:
+        无：回调异常被捕获并记录 warning 日志。
+    """
+    if cb is None:
+        return
+    try:
+        await cb(progress, done, total)
+    except Exception:  # noqa: BLE001 —— 进度上报失败不阻断合成主流程
+        logger.warning("compose 进度上报失败（不阻断合成）", exc_info=True)
 
 # 成片输出 URL 前缀（storage/outputs 目录经 /storage 挂载对外可访问）
 _OUTPUT_URL_PREFIX = "/storage/outputs"
@@ -1509,7 +1540,9 @@ async def _placeholder_film(task: Task, out_dir: Path, ffmpeg: Optional[str]) ->
     return f"{_OUTPUT_URL_PREFIX}/{filename}"
 
 
-async def compose_film(db: AsyncSession, task: Task) -> str:
+async def compose_film(
+    db: AsyncSession, task: Task, on_progress: _ProgressCb = None,
+) -> str:
     """执行成片合成并写入 film_outputs 版本记录（compose 任务执行主体）。
 
     合成流水线：分镜查询（增量过滤）→ concat 直拼 → xfade 转场（可选）→
@@ -1517,10 +1550,16 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     到上一级产物（最终回退占位成片）；项目完全无片段且本机无 ffmpeg 时
     抛异常（由执行器置任务 failed，不返回假 URL）。
 
+    进度埋点（成片整合二期）：5 查询清单 / 10~60 逐镜音画对齐 / 63 片头片尾卡
+    / 70 直拼 / 76 转场 / 82 字幕准备 / 90 后处理 / 96 版本落库前，经
+    on_progress 回调上报，失败不阻断合成。
+
     Args:
         db: 异步数据库会话（调用方负责最终提交；本函数内不 commit）。
         task: 合成任务（meta 携带 resolution/aspect_ratio/storyboard_ids/
             subtitles/subtitle_style/bgm/transition）。
+        on_progress: 进度回调（可 None；参数 progress/done/total，由执行器
+            提供并负责持久化，异常已在 _report_progress 内兜底）。
 
     Returns:
         str: 成片资源 URL（/storage/outputs/...，占位场景可能指向片段或
@@ -1561,6 +1600,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     if wanted_ids:
         wanted = {int(sid) for sid in wanted_ids}
         storyboards = [sb for sb in storyboards if sb.id in wanted]
+    await _report_progress(on_progress, 5, 0, len(storyboards))
 
     out_dir = settings.storage_path() / "outputs"
     version_no = await _next_version_no(db, task.project_id)
@@ -1592,6 +1632,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
         # 补齐，短于视频时补静音），无配音镜也统一重编码补静音轨——保证 concat
         # -c copy 拼接编码参数与音轨连续性；对齐失败的镜回退原片段不阻断合成
         pairs: List[Tuple[Storyboard, Path]] = []
+        n_clips = len(storyboards)
         for idx, sb in enumerate(storyboards):
             vp = _physical_path(sb.video_url)
             if not vp.exists():
@@ -1610,6 +1651,10 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                 target_size=target_size, target_fps=target_fps,
             )
             pairs.append((sb, merged or vp))
+            # 按镜进度埋点（成片整合二期）：10→60 线性推进，携带 done/total
+            await _report_progress(
+                on_progress, 10 + int(50 * (idx + 1) / n_clips), idx + 1, n_clips,
+            )
         clip_paths = [p for _, p in pairs]
         # 转场（2026-10-21 用户确认解除配音互斥）：xfade+acrossfade 双链保留
         # 各片段配音音轨，有配音也生效；转场失败回退 concat 直拼
@@ -1645,6 +1690,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                     )
         intro_dur = 2.5 if intro_path is not None else 0.0
         outro_dur = 2.0 if outro_path is not None else 0.0
+        await _report_progress(on_progress, 63)
         all_paths = (
             ([intro_path] if intro_path else [])
             + clip_paths
@@ -1656,6 +1702,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             current: Optional[Path] = (
                 base_path if await _concat_clips(ffmpeg, all_paths, base_path, list_path) else None
             )
+            await _report_progress(on_progress, 70)
             xfade_applied = False
             transition_duration = 0.0
             # 转场（Task 5.3）：≥2 片段时以 xfade+acrossfade 双链重编码替代
@@ -1679,6 +1726,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                         )
                     except (TypeError, ValueError):
                         transition_duration = 0.5
+                    await _report_progress(on_progress, 76)
 
             # 字幕（Task 5.1/P-16）：双语样式先 LLM 翻译生成 ASS，任一失败
             # 降级 SRT 单行；无可字幕文本/写盘失败降级无字幕（不阻断合成）
@@ -1687,6 +1735,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                 sub_path = await _prepare_subtitle_file(
                     storyboards, subtitle_style, task.id, out_dir, aspect_ratio,
                 )
+            await _report_progress(on_progress, 82)
 
             # BGM（Task 5.2）：/storage URL 还原物理路径（曲库或用户上传素材）
             bgm_path: Optional[Path] = None
@@ -1719,6 +1768,7 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
                     bgm_volume=bgm_volume,
                 ):
                     current = final_path
+            await _report_progress(on_progress, 90)
             if current is not None:
                 film_url = f"{_OUTPUT_URL_PREFIX}/{current.name}"
     if film_url is None:
@@ -1737,6 +1787,8 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     chain_len = len(all_paths) if ffmpeg and storyboards else 0
     if xfade_applied and chain_len >= 2:
         total_duration = max(1, int(total_duration - (chain_len - 1) * transition_duration))
+
+    await _report_progress(on_progress, 96)
 
     # 版本切换：历史版本全部退出"当前版本"，新版本置为当前
     existing = (

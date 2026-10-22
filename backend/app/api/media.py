@@ -1,15 +1,21 @@
 """媒体素材路由模块（文件级说明）。
 
 实现素材库查询 / 上传 / 详情 / 删除（引用保护）/ meta 更新：
-- GET    /api/media              分页查询（media_type/source/project_id/search 过滤）
+- GET    /api/media              分页查询（media_type/source/project_id/search 过滤；
+                                 2026-10-21 改为「项目产物聚合 + 上传素材」合并视图——
+                                 图片=项目关键帧、视频=发布成片（film_outputs，非分镜视频）、
+                                 音频=角色音色试音（characters.voice_sample_url，非分镜配音）、
+                                 文本=剧本正文摘录（scripts.content），source='project'，
+                                 合成负数 id 且不可删除；上传素材（media_assets 表）照常可删）
 - POST   /api/media/upload       上传文件（50MB 上限，落盘 storage/uploads/{yyyy-mm}/）
 - GET    /api/media/{id}         素材详情
 - DELETE /api/media/{id}         删除（meta.ref_count > 0 时 409 拒绝，PL-19 引用保护）
 - PUT    /api/media/{id}/meta    整体替换 meta 元数据
 """
 
+import json
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from sqlalchemy import func, or_, select
@@ -17,7 +23,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models import MediaAsset, Project, User
+from app.models import (
+    Character,
+    FilmOutput,
+    MediaAsset,
+    Project,
+    Script,
+    Storyboard,
+    User,
+)
 from app.api.projects import get_owned_project
 from app.schemas.common import PageResult
 from app.schemas.media import MediaMetaUpdateRequest, MediaOut
@@ -26,8 +40,15 @@ from app.services.media_service import MEDIA_TYPES, infer_media_type, save_uploa
 
 router = APIRouter(prefix="/api/media", tags=["media"])
 
-# 合法素材来源集合（RD-47）
-_SOURCES = ("ai_generated", "upload", "canvas", "studio")
+# 合法素材来源集合（RD-47 + 2026-10-21 聚合来源 project——仅用于查询过滤，
+# 不落库（media_assets 表 CK 约束不含该值），聚合条目 source 固定 'project'）
+_SOURCES = ("ai_generated", "upload", "canvas", "studio", "project")
+
+# 聚合条目合成负 id 的类型偏移（互不重叠：image=-sb_id / video=-1e6-film_id
+# / audio=-2e6-char_id / text=-3e6-script_id；仅作前端 key 与防误删标识）
+_OFF_VIDEO = 1_000_000
+_OFF_AUDIO = 2_000_000
+_OFF_TEXT = 3_000_000
 
 
 @router.get("", response_model=PageResult[MediaOut])
@@ -69,29 +90,153 @@ async def list_media(
         )
     page, page_size = normalize_pagination(page, page_size)
 
-    conditions = [MediaAsset.user_id == user.id, MediaAsset.deleted_at.is_(None)]
-    if media_type:
-        conditions.append(MediaAsset.media_type == media_type)
-    if source:
-        conditions.append(MediaAsset.source == source)
-    if project_id is not None:
-        conditions.append(MediaAsset.project_id == project_id)
-    if search:
-        pattern = f"%{search}%"
-        conditions.append(or_(
-            MediaAsset.url.ilike(pattern),
-            func.coalesce(MediaAsset.meta["filename"].astext(), "").ilike(pattern),
-        ))
+    # ---------- 1. 上传素材（media_assets 表，source=project 时跳过） ----------
+    db_items: List[MediaOut] = []
+    if source != "project":
+        conditions = [MediaAsset.user_id == user.id, MediaAsset.deleted_at.is_(None)]
+        if media_type:
+            conditions.append(MediaAsset.media_type == media_type)
+        if source:
+            conditions.append(MediaAsset.source == source)
+        if project_id is not None:
+            conditions.append(MediaAsset.project_id == project_id)
+        if search:
+            pattern = f"%{search}%"
+            conditions.append(or_(
+                MediaAsset.url.ilike(pattern),
+                func.coalesce(MediaAsset.meta["filename"].astext(), "").ilike(pattern),
+            ))
+        rows = await db.execute(
+            select(MediaAsset).where(*conditions)
+            .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
+        )
+        db_items = [MediaOut.model_validate(r) for r in rows.scalars().all()]
 
-    total = await db.scalar(select(func.count()).select_from(MediaAsset).where(*conditions))
-    rows = await db.execute(
-        select(MediaAsset).where(*conditions)
-        .order_by(MediaAsset.created_at.desc(), MediaAsset.id.desc())
-        .offset((page - 1) * page_size).limit(page_size)
+    # ---------- 2. 项目产物聚合（2026-10-21 存储方式更新） ----------
+    # 项目名映射（聚合条目 meta.project_title 展示用）
+    proj_rows = await db.execute(
+        select(Project.id, Project.title).where(
+            Project.user_id == user.id, Project.deleted_at.is_(None)
+        )
     )
+    titles: Dict[int, str] = {pid: title for pid, title in proj_rows.all()}
+    agg: List[MediaOut] = []
+
+    def _mk(
+        agg_id: int, mtype: str, url: str, pid: int, created: Optional[datetime], meta: dict,
+    ) -> MediaOut:
+        """构造聚合素材条目（内部函数，source 固定 project）。"""
+        meta = dict(meta)
+        meta["project_title"] = titles.get(pid, "")
+        return MediaOut(
+            id=agg_id, user_id=user.id, project_id=pid, media_type=mtype,
+            source="project", url=url, meta=meta, created_at=created,
+        )
+
+    # 仅聚合请求的类型（media_type 未指定时四路全聚合）
+
+    def _want(t: str) -> bool:
+        """判断是否需要聚合指定类型（media_type 未指定时全部聚合）。"""
+        return media_type in (None, t)
+
+    if _want("image"):
+        rows = await db.execute(
+            select(Storyboard.id, Storyboard.keyframe_url, Storyboard.project_id, Storyboard.created_at)
+            .join(Project, Project.id == Storyboard.project_id)
+            .where(
+                Project.user_id == user.id, Project.deleted_at.is_(None),
+                Storyboard.keyframe_url.isnot(None),
+            )
+        )
+        for sid, url, pid, created in rows.all():
+            # 排除 SVG 占位图（mock 渠道时代产物）
+            if not url or url.endswith(".svg"):
+                continue
+            if project_id is not None and pid != project_id:
+                continue
+            agg.append(_mk(-sid, "image", url, pid, created,
+                           {"storyboard_id": sid, "kind": "关键帧"}))
+
+    if _want("video"):
+        # 发布成片（film_outputs，完整一集，非分镜视频）：全部版本均列出
+        rows = await db.execute(
+            select(
+                FilmOutput.id, FilmOutput.url, FilmOutput.project_id, FilmOutput.created_at,
+                FilmOutput.version_no, FilmOutput.resolution, FilmOutput.duration,
+                FilmOutput.episode_id, FilmOutput.is_current,
+            )
+            .join(Project, Project.id == FilmOutput.project_id)
+            .where(Project.user_id == user.id, Project.deleted_at.is_(None))
+        )
+        for fid, url, pid, created, ver, reso, dur, eid, cur in rows.all():
+            if project_id is not None and pid != project_id:
+                continue
+            agg.append(_mk(
+                -(_OFF_VIDEO + fid), "video", url, pid, created,
+                {"kind": "成片", "version_no": ver, "resolution": reso,
+                 "duration": dur, "episode_id": eid, "is_current": bool(cur)},
+            ))
+
+    if _want("audio"):
+        # 角色音色试音（characters.voice_sample_url，「我是XX，这是我的配音」），
+        # 非分镜配音（storyboard.audio_url 不进素材库）
+        rows = await db.execute(
+            select(Character.id, Character.voice_sample_url, Character.project_id,
+                   Character.created_at, Character.name)
+            .join(Project, Project.id == Character.project_id)
+            .where(
+                Project.user_id == user.id, Project.deleted_at.is_(None),
+                Character.voice_sample_url.isnot(None),
+            )
+        )
+        for cid, url, pid, created, name in rows.all():
+            if not url or project_id is not None and pid != project_id:
+                continue
+            agg.append(_mk(-(_OFF_AUDIO + cid), "audio", url, pid, created,
+                           {"kind": "角色试音", "character_name": name, "character_id": cid}))
+
+    if _want("text"):
+        # 剧本正文（scripts.content.value：title + scenes 的 plot/对白拼摘录）
+        rows = await db.execute(
+            select(Script.id, Script.content, Script.project_id, Script.created_at, Script.episode_id)
+            .join(Project, Project.id == Script.project_id)
+            .where(Project.user_id == user.id, Project.deleted_at.is_(None))
+        )
+        for scid, content, pid, created, eid in rows.all():
+            if project_id is not None and pid != project_id:
+                continue
+            value = (content or {}).get("value") or {}
+            title = str(value.get("title") or "未命名剧本")
+            excerpt_parts: List[str] = [title]
+            for scene in (value.get("scenes") or [])[:3]:
+                plot = str(scene.get("plot") or "").strip()
+                if plot:
+                    excerpt_parts.append(plot)
+                break
+            excerpt = "｜".join(excerpt_parts)[:120]
+            agg.append(_mk(
+                -(_OFF_TEXT + scid), "text", "", pid, created,
+                {"kind": "剧本正文", "title": title, "excerpt": excerpt, "episode_id": eid},
+            ))
+
+    # ---------- 3. 合并 + 过滤 + 排序 + 内存分页 ----------
+    if search:
+        kw = search.strip().lower()
+        if kw:
+            db_items = [
+                m for m in db_items
+                if kw in m.url.lower() or kw in json.dumps(m.meta, ensure_ascii=False).lower()
+            ]
+        agg = [
+            m for m in agg
+            if kw in m.url.lower() or kw in json.dumps(m.meta, ensure_ascii=False).lower()
+        ]
+    merged = db_items + agg
+    merged.sort(key=lambda m: (m.created_at or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    total = len(merged)
     return PageResult(
-        total=total or 0, page=page, page_size=page_size,
-        items=[MediaOut.model_validate(r) for r in rows.scalars().all()],
+        total=total, page=page, page_size=page_size,
+        items=merged[(page - 1) * page_size: page * page_size],
     )
 
 
@@ -216,8 +361,16 @@ async def delete_media(
         dict: {"message": "素材已删除"}。
 
     Raises:
-        HTTPException: 409 —— 素材正被引用；404 —— 素材不存在/非本人。
+        HTTPException: 400 —— 聚合项目产物（合成负 id，随项目产物存续不可删）；
+            409 —— 素材正被引用；404 —— 素材不存在/非本人。
     """
+    if media_id < 0:
+        # 聚合项目产物（关键帧/成片/试音/剧本正文）不落 media_assets 表，
+        # 随项目产物存续——直接拒绝删除（前端也已隐藏删除入口）
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="项目产物素材不可删除，请到对应项目中管理",
+        )
     media = await _get_owned_media(db, media_id, user)
     meta = media.meta or {}
     ref_count = meta.get("ref_count", 0)

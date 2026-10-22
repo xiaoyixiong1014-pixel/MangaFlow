@@ -44,12 +44,13 @@ const typeTabs = [
   { value: 'text', label: '文本' },
 ] as const
 
-/** 来源选项（与后端枚举一致） */
+/** 来源选项（与后端枚举一致；project=项目产物聚合，2026-10-21 存储方式更新） */
 const sourceOptions = [
   { value: 'ai_generated', label: 'AI 生成' },
   { value: 'upload', label: '上传' },
   { value: 'canvas', label: '画布' },
   { value: 'studio', label: 'Studio' },
+  { value: 'project', label: '项目产物' },
 ]
 
 /** 来源中文文案映射 */
@@ -58,6 +59,19 @@ const sourceLabels: Record<string, string> = {
   upload: '上传',
   canvas: '画布',
   studio: 'Studio',
+  project: '项目产物',
+}
+
+/**
+ * 来源 Tag 颜色映射（内部函数，项目产物高亮区分）。
+ * @param s 来源标识
+ * @returns el-tag type
+ */
+function sourceTagType(s: string): 'primary' | 'success' | 'warning' | 'info' {
+  if (s === 'project') return 'warning'
+  if (s === 'ai_generated') return 'primary'
+  if (s === 'upload') return 'success'
+  return 'info'
 }
 
 /**
@@ -300,7 +314,7 @@ onMounted(async () => {
           <!-- 信息区 -->
           <div class="info">
             <div class="info-row">
-              <el-tag size="small" :type="m.source === 'ai_generated' ? 'primary' : m.source === 'upload' ? 'success' : 'info'">
+              <el-tag size="small" :type="sourceTagType(m.source)">
                 {{ sourceLabels[m.source] ?? m.source }}
               </el-tag>
               <span class="time">{{ (m.created_at ?? '').slice(0, 16).replace('T', ' ') }}</span>
@@ -309,7 +323,8 @@ onMounted(async () => {
               <span class="project" :title="projects.find((p) => p.id === m.project_id)?.title ?? '独立素材'">
                 {{ projects.find((p) => p.id === m.project_id)?.title ?? '独立素材' }}
               </span>
-              <el-button link type="danger" size="small" @click="removeItem(m)">删除</el-button>
+              <!-- 项目产物（关键帧/成片/试音/剧本正文）随项目存续，不提供删除 -->
+              <el-button v-if="m.source !== 'project'" link type="danger" size="small" @click="removeItem(m)">删除</el-button>
             </div>
           </div>
         </div>

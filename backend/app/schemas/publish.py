@@ -100,6 +100,8 @@ class OutputOut(BaseModel):
         share_expires_at: 分享过期时间。
         has_password: 是否设置了提取码（不回传明文密码）。
         share_revoked: 分享是否已撤销。
+        episode_id: 绑定剧集 ID（None=未绑定剧集的全量合成）。
+        episode_no: 绑定剧集的序号（列表接口 join episodes 填充，展示「第N集」）。
         created_at: 创建时间。
     """
 
@@ -115,14 +117,17 @@ class OutputOut(BaseModel):
     share_expires_at: Optional[datetime] = None
     has_password: bool = False
     share_revoked: bool = False
+    episode_id: Optional[int] = None
+    episode_no: Optional[int] = None
     created_at: Optional[datetime] = None
 
     @classmethod
-    def from_output(cls, o) -> "OutputOut":
+    def from_output(cls, o, episode_no: Optional[int] = None) -> "OutputOut":
         """从 ORM 成片对象构造输出模型（密码仅回传是否设置）。
 
         Args:
             o: FilmOutput ORM 对象。
+            episode_no: 绑定剧集序号（调用方 join episodes 填充，可 None）。
 
         Returns:
             OutputOut: 成片版本输出实例。
@@ -143,6 +148,8 @@ class OutputOut(BaseModel):
             share_expires_at=o.share_expires_at,
             has_password=bool(o.share_password),
             share_revoked=o.share_revoked,
+            episode_id=o.episode_id,
+            episode_no=episode_no,
             created_at=o.created_at,
         )
 

@@ -227,6 +227,22 @@ export function setCurrent(projectId: number, outputId: number): Promise<FilmOut
 }
 
 /**
+ * 删除成片版本（成片整合二期）：硬删版本记录，物理文件保留；
+ * 删除当前版本时剩余最新版本自动接任；分享有效版本后端 400 拦截。
+ * @param projectId 项目 ID
+ * @param outputId 版本记录 ID
+ * @returns {ok, new_current_version_no}
+ */
+export function removeOutput(
+  projectId: number,
+  outputId: number,
+): Promise<{ ok: boolean; new_current_version_no: number | null }> {
+  return client
+    .delete(`/projects/${projectId}/outputs/${outputId}`)
+    .then((r) => r.data)
+}
+
+/**
  * 分页查询项目审核记录。
  * @param projectId 项目 ID
  * @param params 分页参数
