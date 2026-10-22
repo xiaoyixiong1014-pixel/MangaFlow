@@ -143,7 +143,10 @@ onMounted(async () => {
   gap: var(--mf-sp-4);
   height: var(--mf-topbar-h);
   padding: 0 var(--mf-sp-5);
-  background: var(--mf-surface);
+  /* 玻璃底与环境氛围层连续（与 DefaultLayout 顶栏一致） */
+  background: var(--mf-topbar-bg, var(--mf-surface));
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
   border-bottom: 1px solid var(--mf-border);
   flex-shrink: 0;
 }

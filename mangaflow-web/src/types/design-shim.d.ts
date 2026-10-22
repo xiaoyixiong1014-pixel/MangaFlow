@@ -81,8 +81,8 @@ declare module '@mangaflow/design' {
     key: string
     /** 文案 */
     label: string
-    /** 文本图标 / emoji */
-    icon?: string
+    /** 图标：字符串（文本/emoji 兼容）或图标组件（如 @element-plus/icons-vue） */
+    icon?: string | import('vue').Component
     /** 右侧胶囊徽标 */
     badge?: string | number
     /** 是否禁用 */
@@ -143,5 +143,11 @@ declare module '@mangaflow/design' {
   export const MfTag: MfComponent<{
     variant?: 'brand' | 'brand2' | 'ok' | 'warn' | 'danger' | 'info' | 'neutral'
     size?: 'sm' | 'md'
+  }>
+
+  /** 品牌 logo（∞ 胶片环矢量标，自带渐变固定色） */
+  export const MfLogo: MfComponent<{
+    size?: number
+    label?: string
   }>
 }

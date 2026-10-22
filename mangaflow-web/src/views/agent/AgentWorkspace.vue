@@ -110,6 +110,14 @@ function onFileChosen(e: Event): void {
 }
 
 /**
+ * 移除指定参考文件 chip（点击 chip 上的 ×）。
+ * @param index 待移除的 chip 序号
+ */
+function removeFile(index: number): void {
+  refFiles.value.splice(index, 1)
+}
+
+/**
  * 点击「优化」：调 /agent/intake 识别意图并提示（不发送）。
  */
 async function optimize(): Promise<void> {
@@ -282,6 +290,8 @@ function scrollChatToBottom(): void {
 // ---------- 渠道健康标红条（Task 10.2 D-05） ----------
 /** 渠道健康摘要 */
 const healthSummary = ref<HealthSummary | null>(null)
+/** 用户是否已手动关闭渠道异常警告（本次会话内不再展示，重新进入页面重置） */
+const healthAlertDismissed = ref(false)
 /** 异常渠道（down / degraded）列表 */
 const unhealthyChannels = computed(() =>
   (healthSummary.value?.channels ?? []).filter(
@@ -310,6 +320,53 @@ async function fetchHealth(): Promise<void> {
 const threads = ref<AgentThread[]>([])
 /** 会话列表加载中 */
 const threadsLoading = ref(false)
+
+/** 会话阶段 → 中文标签（与意图识别映射一致；对外不暴露英文枚举与原始 ID） */
+const STAGE_TEXT: Record<string, string> = {
+  script: '剧本创作',
+  asset: '资产管理',
+  storyboard: '分镜拆解',
+  generation: '视频生成',
+  canvas: '画布编排',
+  billing: '积分查询',
+  chat: '自由对话',
+}
+
+/**
+ * 会话阶段中文标签（未知阶段回落"自由对话"）。
+ * @param stage 后端阶段枚举（可空）
+ * @returns 中文标签
+ */
+function stageText(stage?: string | null): string {
+  return (stage && STAGE_TEXT[stage]) || '自由对话'
+}
+
+/**
+ * 会话短 ID（展示用前 8 位，避免暴露完整内部标识；完整 ID 仅用于回放）。
+ * @param id 会话 thread_id
+ * @returns 缩短后的展示 ID
+ */
+function shortThreadId(id: string): string {
+  return id.length > 8 ? `${id.slice(0, 8)}…` : id
+}
+
+/**
+ * 项目状态中文标签（与项目列表页映射一致，避免英文枚举直接展示）。
+ * @param status 后端状态枚举（可空）
+ * @returns 中文标签（未知回落"草稿"）
+ */
+function projectStatusText(status?: string | null): string {
+  const map: Record<string, string> = {
+    draft: '草稿',
+    scripting: '剧本中',
+    asset: '资产中',
+    storyboard: '分镜中',
+    producing: '生成中',
+    review: '审核中',
+    published: '已发布',
+  }
+  return (status && map[status]) || '草稿'
+}
 /** 回放弹窗可见性 */
 const replayVisible = ref(false)
 /** 回放中的会话消息 */
@@ -452,15 +509,17 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="page-container workspace">
-    <!-- ==================== 渠道健康标红条（D-05，Task 10.2） ==================== -->
+    <!-- ==================== 渠道健康标红条（D-05，Task 10.2；对外脱敏：不暴露渠道地址）。
+         可手动关闭：用户点击 × 表示已知悉，本次会话不再打扰；渠道全部恢复后随条件自然消失 -->
     <el-alert
-      v-if="unhealthyChannels.length"
+      v-if="unhealthyChannels.length && !healthAlertDismissed"
       :type="hasDownChannel ? 'error' : 'warning'"
       show-icon
-      :closable="false"
+      closable
       class="health-alert"
-      :title="`模型渠道 ${unhealthyChannels.length} 异常，AI 生成可能降级`"
-      :description="unhealthyChannels.map((c) => `#${c.id} ${c.base_url}（${c.health_status === 'down' ? '不可用' : '降级'}）`).join('；')"
+      :title="`部分模型渠道异常（${unhealthyChannels.length} 个），AI 生成能力可能暂时降级`"
+      :description="unhealthyChannels.map((c) => `渠道 #${c.id}（${c.health_status === 'down' ? '不可用' : '降级'}）`).join('；')"
+      @close="healthAlertDismissed = true"
     />
 
     <!-- ==================== 意图承接条（官网带入） ==================== -->
@@ -489,7 +548,18 @@ onBeforeUnmount(() => {
         />
         <!-- 参考文件 chips（视觉占位） -->
         <div v-if="refFiles.length" class="ref-files">
-          <span v-for="(f, i) in refFiles" :key="f + i" class="ref-chip">📎 {{ f }}</span>
+          <span v-for="(f, i) in refFiles" :key="f + i" class="ref-chip">
+            📎 {{ f }}
+            <button
+              type="button"
+              class="ref-chip__close"
+              :aria-label="`移除参考图 ${f}`"
+              title="移除"
+              @click="removeFile(i)"
+            >
+              ×
+            </button>
+          </span>
         </div>
         <!-- 底部能力条 -->
         <div class="agent-toolbar">
@@ -587,9 +657,15 @@ onBeforeUnmount(() => {
           :image-size="80"
         />
         <ul v-else class="thread-list">
-          <li v-for="t in threads" :key="t.thread_id" class="thread-item" @click="openReplay(t)">
-            <span class="thread-id">{{ t.thread_id }}</span>
-            <MfTag v-if="t.stage" variant="brand" size="sm">{{ t.stage }}</MfTag>
+          <li
+            v-for="t in threads"
+            :key="t.thread_id"
+            class="thread-item"
+            :title="`会话 ${t.thread_id}`"
+            @click="openReplay(t)"
+          >
+            <span class="thread-stage">{{ stageText(t.stage) }}</span>
+            <span class="thread-id">{{ shortThreadId(t.thread_id) }}</span>
             <span class="thread-time">{{ t.updated_at?.slice(5, 16).replace('T', ' ') ?? '' }}</span>
             <!-- 历史检查点入口（Time Travel，Task 10.4） -->
             <el-button
@@ -623,7 +699,7 @@ onBeforeUnmount(() => {
           <li v-for="p in projects" :key="p.id" class="project-item" @click="router.push(`/projects/${p.id}/script`)">
             <span class="project-cover" aria-hidden="true" />
             <span class="project-title">{{ p.title }}</span>
-            <MfTag variant="neutral" size="sm">{{ p.status }}</MfTag>
+            <MfTag variant="neutral" size="sm">{{ projectStatusText(p.status) }}</MfTag>
             <span class="project-time">{{ p.updated_at?.slice(5, 16).replace('T', ' ') ?? '' }}</span>
           </li>
         </ul>
@@ -754,11 +830,34 @@ onBeforeUnmount(() => {
   margin-bottom: var(--mf-sp-2);
 }
 .ref-chip {
-  padding: 2px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 10px;
   border-radius: var(--mf-r-pill);
   background: var(--mf-brand-soft);
-  color: var(--mf-brand);
+  color: var(--mf-brand-strong);
   font-size: var(--mf-fs-xs);
+}
+/* chip 移除按钮：hover 加深底色提示可点 */
+.ref-chip__close {
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 50%;
+  background: transparent;
+  color: inherit;
+  font-size: var(--mf-fs-sm);
+  line-height: 1;
+  cursor: pointer;
+  transition: background var(--mf-dur) var(--mf-ease), color var(--mf-dur) var(--mf-ease);
+}
+.ref-chip__close:hover {
+  background: var(--mf-danger-soft);
+  color: var(--mf-danger);
 }
 .agent-toolbar {
   display: flex;
@@ -954,6 +1053,14 @@ onBeforeUnmount(() => {
 .project-item + .project-item {
   border-top: 1px solid var(--mf-border);
 }
+/* 会话阶段（主信息，中文标签） */
+.thread-stage {
+  flex: none;
+  font-size: var(--mf-fs-sm);
+  font-weight: var(--mf-fw-semibold);
+  color: var(--mf-text);
+}
+/* 会话短 ID（次要信息，等宽弱化展示） */
 .thread-id {
   flex: 1;
   min-width: 0;
@@ -961,7 +1068,8 @@ onBeforeUnmount(() => {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: var(--mf-mono);
-  font-size: var(--mf-fs-sm);
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
 }
 .thread-time,
 .project-time {

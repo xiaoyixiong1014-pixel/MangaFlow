@@ -175,6 +175,17 @@ const totalDuration = computed(() => boards.value.reduce((sum, b) => sum + (b.du
 /** 预估成本（每镜 10 积分文案，RD-20） */
 const estimatedCost = computed(() => boards.value.length * 10)
 
+/**
+ * 总时长展示格式化：不足 1 分钟时省略"0分"，统一"X分X秒"（不再叠加括号秒数，避免单位混排）。
+ * @param seconds 总秒数
+ * @returns 形如"31秒"或"1分31秒"的文案
+ */
+function durationText(seconds: number): string {
+  const m = Math.floor(seconds / 60)
+  const s = seconds % 60
+  return m > 0 ? `${m}分${s}秒` : `${s}秒`
+}
+
 // ============================================================
 // P0-3 过期镜头（资产更新后引用过期：标黄 + 批量重渲染）
 // ============================================================
@@ -691,7 +702,7 @@ onMounted(loadBoards)
       <div class="toolbar">
         <span>共 <b>{{ boards.length }}</b> 镜</span>
         <el-divider direction="vertical" />
-        <span>总时长 <b>{{ Math.floor(totalDuration / 60) }}分{{ totalDuration % 60 }}秒</b>（{{ totalDuration }}s）</span>
+        <span>总时长 <b>{{ durationText(totalDuration) }}</b></span>
         <el-divider direction="vertical" />
         <span class="toolbar-cost">预估生成消耗：{{ boards.length }} 镜 ≈ {{ estimatedCost }} 积分</span>
         <!-- 连续性检查（SB-06：窄口径规则，suspect/info 分组展示） -->

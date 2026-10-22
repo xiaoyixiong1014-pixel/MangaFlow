@@ -186,50 +186,76 @@ onMounted(async () => {
     <h2 class="page-title">个人中心</h2>
 
     <el-tabs class="profile-tabs">
-      <!-- 账号与安全 -->
+      <!-- 账号与安全：左表单 + 右账户信息卡（利用横向空间，避免单列窄表单右侧大片空白） -->
       <el-tab-pane label="账号与安全">
-        <div class="pane-narrow">
-          <!-- 头像与用户名 -->
-          <div class="profile-head">
-            <img v-if="auth.user?.avatar" :src="auth.user.avatar" class="avatar-lg" alt="头像" />
-            <span v-else class="avatar-lg avatar-fallback">{{ (auth.user?.username ?? '游')[0] }}</span>
-            <div>
-              <div class="username">{{ auth.user?.username }}</div>
-              <div class="role-tip">用户名即昵称，暂不支持修改 · 角色：{{ auth.user?.role === 'operator' ? '运营' : '用户' }}</div>
+        <div class="account-grid">
+          <div class="account-main">
+            <!-- 头像与用户名 -->
+            <div class="profile-head">
+              <img v-if="auth.user?.avatar" :src="auth.user.avatar" class="avatar-lg" alt="头像" />
+              <span v-else class="avatar-lg avatar-fallback">{{ (auth.user?.username ?? '游')[0] }}</span>
+              <div>
+                <div class="username">{{ auth.user?.username }}</div>
+                <div class="role-tip">用户名即昵称，暂不支持修改 · 角色：{{ auth.user?.role === 'operator' ? '运营' : '用户' }}</div>
+              </div>
             </div>
+
+            <el-form label-width="90px" label-position="left" class="form">
+              <el-form-item label="头像 URL">
+                <el-input v-model="avatarInput" placeholder="https://... 图片地址" />
+              </el-form-item>
+              <el-form-item label="用户名">
+                <el-input :model-value="auth.user?.username" disabled />
+              </el-form-item>
+              <el-form-item label="邮箱">
+                <el-input v-model="emailInput" placeholder="you@example.com" />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存资料</el-button>
+              </el-form-item>
+            </el-form>
+
+            <el-divider />
+            <h3 class="sub-title">修改密码</h3>
+            <el-form label-width="90px" label-position="left" class="form">
+              <el-form-item label="旧密码">
+                <el-input v-model="pwdForm.oldPassword" type="password" show-password />
+              </el-form-item>
+              <el-form-item label="新密码">
+                <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="至少 6 位" />
+              </el-form-item>
+              <el-form-item label="确认新密码">
+                <el-input v-model="pwdForm.confirm" type="password" show-password />
+              </el-form-item>
+              <el-form-item>
+                <el-button type="primary" :loading="changingPwd" @click="changePassword">修改密码</el-button>
+              </el-form-item>
+            </el-form>
           </div>
 
-          <el-form label-width="90px" label-position="left" class="form">
-            <el-form-item label="头像 URL">
-              <el-input v-model="avatarInput" placeholder="https://... 图片地址" />
-            </el-form-item>
-            <el-form-item label="用户名">
-              <el-input :model-value="auth.user?.username" disabled />
-            </el-form-item>
-            <el-form-item label="邮箱">
-              <el-input v-model="emailInput" placeholder="you@example.com" />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" :loading="savingProfile" @click="saveProfile">保存资料</el-button>
-            </el-form-item>
-          </el-form>
-
-          <el-divider />
-          <h3 class="sub-title">修改密码</h3>
-          <el-form label-width="90px" label-position="left" class="form">
-            <el-form-item label="旧密码">
-              <el-input v-model="pwdForm.oldPassword" type="password" show-password />
-            </el-form-item>
-            <el-form-item label="新密码">
-              <el-input v-model="pwdForm.newPassword" type="password" show-password placeholder="至少 6 位" />
-            </el-form-item>
-            <el-form-item label="确认新密码">
-              <el-input v-model="pwdForm.confirm" type="password" show-password />
-            </el-form-item>
-            <el-form-item>
-              <el-button type="primary" :loading="changingPwd" @click="changePassword">修改密码</el-button>
-            </el-form-item>
-          </el-form>
+          <!-- 右侧：账户概览卡（只读，替代原大片空白） -->
+          <aside class="account-aside">
+            <h3 class="sub-title">账户概览</h3>
+            <ul class="overview-list">
+              <li class="overview-row">
+                <span class="overview-label">用户名</span>
+                <span class="overview-value">{{ auth.user?.username ?? '—' }}</span>
+              </li>
+              <li class="overview-row">
+                <span class="overview-label">角色</span>
+                <span class="overview-value">{{ auth.user?.role === 'operator' ? '运营' : '用户' }}</span>
+              </li>
+              <li class="overview-row">
+                <span class="overview-label">邮箱</span>
+                <span class="overview-value">{{ auth.user?.email || '未绑定' }}</span>
+              </li>
+              <li class="overview-row">
+                <span class="overview-label">积分余额</span>
+                <span class="overview-value overview-points">{{ auth.balance }}</span>
+              </li>
+            </ul>
+            <p class="overview-tip">积分可用于 AI 生成消耗，充值与流水请前往「计费与配额」。</p>
+          </aside>
         </div>
       </el-tab-pane>
 
@@ -332,6 +358,62 @@ onMounted(async () => {
 }
 .pane-narrow {
   max-width: 560px;
+}
+/* 账号与安全两栏：左表单自适应，右概览卡定宽；窄屏回落单列 */
+.account-grid {
+  display: grid;
+  grid-template-columns: minmax(360px, 560px) 260px;
+  gap: var(--mf-sp-8);
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .account-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.account-aside {
+  padding: var(--mf-sp-5);
+  border: 1px solid var(--mf-border);
+  border-radius: var(--mf-r-card);
+  background: var(--mf-surface);
+}
+.overview-list {
+  margin: 0 0 var(--mf-sp-3);
+  padding: 0;
+  list-style: none;
+}
+.overview-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mf-sp-3);
+  padding: var(--mf-sp-2) 0;
+}
+.overview-row + .overview-row {
+  border-top: 1px solid var(--mf-border);
+}
+.overview-label {
+  color: var(--mf-text-2);
+  font-size: var(--mf-fs-sm);
+  flex-shrink: 0;
+}
+.overview-value {
+  color: var(--mf-text);
+  font-size: var(--mf-fs-sm);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.overview-points {
+  font-family: var(--mf-mono);
+  font-weight: var(--mf-fw-semibold);
+  color: var(--mf-brand-strong);
+}
+.overview-tip {
+  margin: 0;
+  color: var(--mf-text-3);
+  font-size: var(--mf-fs-xs);
+  line-height: 1.7;
 }
 .profile-head {
   display: flex;

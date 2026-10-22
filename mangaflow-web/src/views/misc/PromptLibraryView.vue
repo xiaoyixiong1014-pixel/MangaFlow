@@ -319,7 +319,9 @@ onMounted(fetchList)
         </div>
       </div>
       <div class="pager">
+        <!-- 数据不足一页时隐藏分页器，避免对少量数据渲染无效翻页控件 -->
         <el-pagination
+          v-if="total > pageSize"
           v-model:current-page="page"
           v-model:page-size="pageSize"
           :total="total"

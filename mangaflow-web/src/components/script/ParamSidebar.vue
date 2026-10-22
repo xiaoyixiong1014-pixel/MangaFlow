@@ -198,7 +198,7 @@ onMounted(load)
         <span class="param-label">正文进度</span>
         <span class="param-value">{{ bodyCount ? `已生成正文 ${bodyCount} 集` : '—' }}</span>
       </div>
-      <div class="param-row">
+      <div class="param-row param-row--cost">
         <span class="param-label">预估消耗</span>
         <span class="param-value">{{ costEstimate }}</span>
       </div>
@@ -212,28 +212,37 @@ onMounted(load)
 .param-card {
   align-self: start;
 }
+/* 头部：品牌竖条锚点，强化面板识别 */
 .param-head {
+  display: flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
   font-weight: var(--mf-fw-semibold);
 }
+.param-head::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--mf-brand);
+}
+/* 参数行：去虚线碎边，靠间距成组；标签弱化、值加权重 */
 .param-row {
   display: flex;
   align-items: baseline;
   justify-content: space-between;
-  gap: var(--mf-sp-2);
-  padding: var(--mf-sp-2) 0;
-  border-bottom: 1px dashed var(--mf-border);
-}
-.param-row:last-of-type {
-  border-bottom: none;
+  gap: var(--mf-sp-3);
+  padding: calc(var(--mf-sp-2) - 1px) 0;
 }
 .param-label {
   flex-shrink: 0;
   color: var(--mf-text-3);
-  font-size: var(--mf-fs-sm);
+  font-size: var(--mf-fs-xs);
 }
 .param-value {
   color: var(--mf-text);
   font-size: var(--mf-fs-sm);
+  font-weight: var(--mf-fw-medium);
   text-align: right;
   word-break: break-all;
 }
@@ -241,6 +250,13 @@ onMounted(load)
   display: block;
   color: var(--mf-text-3);
   font-size: var(--mf-fs-xs);
+  font-weight: var(--mf-fw-regular);
+}
+/* 预估消耗：数字等宽强调 */
+.param-row--cost .param-value {
+  font-family: var(--mf-mono);
+  color: var(--mf-brand-strong);
+  font-weight: var(--mf-fw-semibold);
 }
 .param-divider {
   margin: var(--mf-sp-3) 0 var(--mf-sp-1);

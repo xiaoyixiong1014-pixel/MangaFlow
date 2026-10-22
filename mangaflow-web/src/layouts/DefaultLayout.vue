@@ -11,9 +11,14 @@
   实时追加（断线静默 + 5s 延迟重连）；积分余额低于免费额度 20% 时展示配额预警条。
 -->
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch, type Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
+import {
+  Avatar, Bell, Coin, Film, Fold, Expand, MagicStick, Menu, Moon,
+  Notebook, Picture, QuestionFilled, Setting, Share, Sunny, TrendCharts,
+  User, UserFilled, Wallet,
+} from '@element-plus/icons-vue'
 import { MfSidebar, MfTopbar, type MfMenuGroup } from '@mangaflow/design'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -25,37 +30,37 @@ const router = useRouter()
 const auth = useAuthStore()
 const ui = useUiStore()
 
-/** 侧栏菜单：四组 11 项（创作/项目/资产/账户）+ 底部帮助 */
+/** 侧栏菜单：四组 11 项（创作/项目/资产/账户）+ 底部帮助（图标统一 EP 图标库，替代 emoji 保证跨平台一致） */
 const menu: MfMenuGroup[] = [
   {
     title: '创作',
     items: [
-      { key: '/agent', label: 'AI 工作台', icon: '✨' },
+      { key: '/agent', label: 'AI 工作台', icon: MagicStick as Component },
     ],
   },
   {
     title: '项目',
     items: [
-      { key: '/projects', label: '漫剧项目', icon: '🎬' },
-      { key: '/canvas', label: 'AI 画布', icon: '🧩' },
-      { key: '/collab', label: '协作', icon: '👥', disabled: true },
+      { key: '/projects', label: '漫剧项目', icon: Film as Component },
+      { key: '/canvas', label: 'AI 画布', icon: Share as Component },
+      { key: '/collab', label: '协作', icon: Avatar as Component, disabled: true },
     ],
   },
   {
     title: '资产',
     items: [
-      { key: '/characters', label: '角色与场景', icon: '🧑‍🎨' },
-      { key: '/media', label: '素材库', icon: '🖼️' },
-      { key: '/prompts', label: '提示词库', icon: '📝' },
+      { key: '/characters', label: '角色与场景', icon: User as Component },
+      { key: '/media', label: '素材库', icon: Picture as Component },
+      { key: '/prompts', label: '提示词库', icon: Notebook as Component },
     ],
   },
   {
     title: '账户',
     items: [
-      { key: '/models', label: '模型配置', icon: '⚙️' },
-      { key: '/models/compare', label: '模型效果对比', icon: '📊' },
-      { key: '/billing', label: '计费与配额', icon: '💰' },
-      { key: '/profile', label: '个人中心', icon: '👤' },
+      { key: '/models', label: '模型配置', icon: Setting as Component },
+      { key: '/models/compare', label: '模型效果对比', icon: TrendCharts as Component },
+      { key: '/billing', label: '计费与配额', icon: Wallet as Component },
+      { key: '/profile', label: '个人中心', icon: UserFilled as Component },
     ],
   },
 ]
@@ -247,7 +252,7 @@ onBeforeUnmount(() => {
     >
       <template #footer>
         <button type="button" class="help-link" @click="router.push('/help')">
-          <span aria-hidden="true">❓</span>
+          <QuestionFilled class="help-link__icon" aria-hidden="true" />
           <span v-if="!ui.sidebarCollapsed">帮助</span>
         </button>
       </template>
@@ -266,7 +271,7 @@ onBeforeUnmount(() => {
       <MfSidebar :menu="menu" :active-key="activeKey" :collapsed="false" @select="onSelect">
         <template #footer>
           <button type="button" class="help-link" @click="router.push('/help')">
-            <span aria-hidden="true">❓</span>
+            <QuestionFilled class="help-link__icon" aria-hidden="true" />
             <span>帮助</span>
           </button>
         </template>
@@ -274,6 +279,10 @@ onBeforeUnmount(() => {
     </el-drawer>
 
     <el-container direction="vertical" class="default-layout__right">
+      <!-- 环境氛围层：fixed 双光斑缓慢漂移，让大面积留白不再单调；
+           透明度随主题切换（浅色极淡 / 深色稍亮），不遮挡内容 -->
+      <div class="ambient ambient--a" aria-hidden="true" />
+      <div class="ambient ambient--b" aria-hidden="true" />
       <MfTopbar>
         <template #left>
           <!-- 顶栏控制按钮：移动端打开/关闭抽屉，桌面端折叠/展开侧栏 -->
@@ -284,16 +293,22 @@ onBeforeUnmount(() => {
             :title="ui.isMobile ? '打开侧栏' : (ui.sidebarCollapsed ? '展开侧栏' : '折叠侧栏')"
             @click="ui.isMobile ? ui.toggleMobileSidebar() : ui.setSidebarCollapsed(!ui.sidebarCollapsed)"
           >
-            {{ ui.isMobile ? '☰' : (ui.sidebarCollapsed ? '»' : '«') }}
+            <Menu v-if="ui.isMobile" aria-hidden="true" />
+            <Expand v-else-if="ui.sidebarCollapsed" aria-hidden="true" />
+            <Fold v-else aria-hidden="true" />
           </button>
-          <!-- 顶栏标题：独立类名，避免与全局 .page-title（内容区大标题，含 margin-bottom）冲突导致垂直不居中 -->
-          <span class="topbar-title">{{ pageTitle }}</span>
+          <!-- 顶栏面包屑：主应用壳层即"工作台"，点击回到 AI 工作台；页面名不再于内容区重复渲染大标题的同名信息 -->
+          <nav class="topbar-crumb" aria-label="面包屑">
+            <button type="button" class="topbar-crumb__root" @click="router.push('/agent')">工作台</button>
+            <span class="topbar-crumb__sep" aria-hidden="true">/</span>
+            <span class="topbar-crumb__current">{{ pageTitle }}</span>
+          </nav>
         </template>
 
         <template #right>
           <!-- 积分余额：点击跳计费页 -->
           <button type="button" class="balance-btn" title="积分余额，点击查看计费与配额" @click="router.push('/billing')">
-            <span aria-hidden="true">💰</span>
+            <Coin class="balance-btn__icon" aria-hidden="true" />
             <span>{{ auth.balance }}</span>
           </button>
 
@@ -302,7 +317,7 @@ onBeforeUnmount(() => {
             <template #reference>
               <el-badge :value="unreadCount" :hidden="unreadCount === 0" :max="99" class="notify-badge">
                 <button type="button" class="icon-btn" title="通知">
-                  <span aria-hidden="true">🔔</span>
+                  <Bell aria-hidden="true" />
                 </button>
               </el-badge>
             </template>
@@ -341,7 +356,8 @@ onBeforeUnmount(() => {
             :title="ui.theme === 'dark' ? '切换浅色' : '切换深色'"
             @click="ui.toggleTheme()"
           >
-            {{ ui.theme === 'dark' ? '🌙' : '☀️' }}
+            <Moon v-if="ui.theme === 'dark'" aria-hidden="true" />
+            <Sunny v-else aria-hidden="true" />
           </button>
 
           <!-- 头像菜单 -->
@@ -379,10 +395,50 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+/* ============================================================
+   环境氛围层（fixed 光斑）：
+   - 布局壳自身透明，页面底色由 body（--mf-bg）承担，光斑浮于其上
+   - 浅色主题极淡（避免干扰内容），深色主题稍亮（延续放映厅氛围）
+   - 位移为缓慢大尺度循环（40s+），属氛围动画
+   ============================================================ */
 .default-layout {
   height: 100vh;
-  background: var(--mf-bg);
+  background: transparent;
   color: var(--mf-text);
+}
+.ambient {
+  position: fixed;
+  border-radius: 50%;
+  filter: blur(80px);
+  pointer-events: none;
+  /* 不设 z-index：DOM 位于内容之前，按文档顺序绘制在内容下方；
+     人为 z-index 会在 main 侧创建层叠上下文，导致弹窗遮罩盖不住顶栏 */
+}
+.ambient--a {
+  width: 520px;
+  height: 520px;
+  left: -140px;
+  top: -120px;
+  background: var(--mf-ambient-a, rgba(18, 179, 166, 0.06));
+  animation: ambient-drift 44s ease-in-out infinite alternate;
+}
+.ambient--b {
+  width: 620px;
+  height: 620px;
+  right: -180px;
+  bottom: -160px;
+  background: var(--mf-ambient-b, rgba(124, 107, 240, 0.05));
+  animation: ambient-drift 56s ease-in-out 6s infinite alternate-reverse;
+}
+[data-theme='dark'] .ambient--a {
+  background: rgba(18, 179, 166, 0.13);
+}
+[data-theme='dark'] .ambient--b {
+  background: rgba(124, 107, 240, 0.09);
+}
+@keyframes ambient-drift {
+  from { transform: translate3d(0, 0, 0) scale(1); }
+  to { transform: translate3d(90px, 70px, 0) scale(1.14); }
 }
 .default-layout__right {
   min-width: 0;
@@ -393,7 +449,7 @@ onBeforeUnmount(() => {
   overflow-y: auto;
 }
 
-/* 折叠按钮 / 图标按钮 */
+/* 折叠按钮 / 图标按钮（EP 图标组件统一 16px，继承 currentColor） */
 .collapse-btn,
 .icon-btn {
   display: inline-flex;
@@ -409,15 +465,42 @@ onBeforeUnmount(() => {
   cursor: pointer;
   transition: background var(--mf-dur) var(--mf-ease), color var(--mf-dur) var(--mf-ease);
 }
+.collapse-btn svg,
+.icon-btn svg {
+  width: 16px;
+  height: 16px;
+}
 .collapse-btn:hover,
 .icon-btn:hover {
   background: var(--mf-surface-2);
   color: var(--mf-text);
 }
 
-/* 顶栏页标题（独立类名：全局 .page-title 为内容区大标题，含 margin，不适用于顶栏） */
-.topbar-title {
-  font-size: var(--mf-fs-lg);
+/* 顶栏面包屑（根节点可点击回工作台；当前页为纯文本弱化，避免与内容区 h2 双重强调） */
+.topbar-crumb {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--mf-sp-2);
+  min-width: 0;
+  font-size: var(--mf-fs-md);
+}
+.topbar-crumb__root {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: var(--mf-text-2);
+  font-family: var(--mf-font);
+  font-size: var(--mf-fs-md);
+  cursor: pointer;
+  transition: color var(--mf-dur) var(--mf-ease);
+}
+.topbar-crumb__root:hover {
+  color: var(--mf-brand-strong);
+}
+.topbar-crumb__sep {
+  color: var(--mf-text-3);
+}
+.topbar-crumb__current {
   font-weight: var(--mf-fw-semibold);
   color: var(--mf-text);
   white-space: nowrap;
@@ -435,7 +518,7 @@ onBeforeUnmount(() => {
   border: 1px solid var(--mf-border);
   border-radius: var(--mf-r-pill);
   background: var(--mf-brand-soft);
-  color: var(--mf-brand);
+  color: var(--mf-brand-strong);
   font-family: var(--mf-font);
   font-size: var(--mf-fs-sm);
   font-weight: var(--mf-fw-semibold);
@@ -444,6 +527,10 @@ onBeforeUnmount(() => {
 }
 .balance-btn:hover {
   filter: brightness(1.05);
+}
+.balance-btn__icon {
+  width: 14px;
+  height: 14px;
 }
 
 /* 通知铃铛与列表（Task 10.2） */
@@ -579,6 +666,11 @@ onBeforeUnmount(() => {
 .help-link:hover {
   background: var(--mf-surface-2);
   color: var(--mf-text);
+}
+.help-link__icon {
+  width: 16px;
+  height: 16px;
+  flex: none;
 }
 </style>
 

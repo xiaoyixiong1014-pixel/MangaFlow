@@ -9,6 +9,7 @@
 import { computed, reactive, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
+import { MfLogo } from '@mangaflow/design'
 import { useAuthStore } from '@/stores/auth'
 import { useAgentStore } from '@/stores/agent'
 import { updatePassword } from '@/api/auth'
@@ -115,6 +116,11 @@ const forgotRules: FormRules = {
 /** 弹窗标题（随面板切换） */
 const dialogTitle = computed(() =>
   mode.value === 'login' ? '登录后开始你的创作' : mode.value === 'register' ? '注册账号' : '找回密码',
+)
+
+/** 头部副文案（随面板切换） */
+const headSub = computed(() =>
+  mode.value === 'login' ? 'AI 漫剧一站式生产平台' : mode.value === 'register' ? '注册即赠初始积分，免费开始第一部漫剧' : '两步重置你的账号密码',
 )
 
 /** 官网承接的创作意图（只读 chip 展示，登录后由工作台承接） */
@@ -227,12 +233,21 @@ function backToLogin(): void {
 <template>
   <el-dialog
     v-model="modelValue"
-    :title="dialogTitle"
-    width="440px"
+    width="480px"
     align-center
     destroy-on-close
     class="auth-dialog"
+    :show-close="true"
   >
+    <!-- 自定义头部：品牌标 + 动态标题 + 副文案（放映厅深色头带，与官网呼应） -->
+    <template #header>
+      <div class="auth-head">
+        <MfLogo :size="40" label="漫序 MangaFlow" class="auth-head__logo" />
+        <h2 class="auth-head__title">{{ dialogTitle }}</h2>
+        <p class="auth-head__sub">{{ headSub }}</p>
+      </div>
+    </template>
+
     <!-- 意图承接区：官网带入的创作意图（原型 L-02） -->
     <el-alert
       v-if="pendingIntent"
@@ -380,6 +395,59 @@ function backToLogin(): void {
 </template>
 
 <style scoped>
+/* ============================================================
+   品牌头部带：放映厅深色渐变，与官网 Hero 同源；
+   el-dialog header 本体置空（padding 清零），头部满铺至弹窗边缘
+   ============================================================ */
+.auth-dialog :deep(.el-dialog) {
+  border-radius: var(--mf-r-card);
+  overflow: hidden;
+  padding: 0;
+}
+.auth-dialog :deep(.el-dialog__header) {
+  padding: 0;
+  margin-right: 0;
+}
+.auth-dialog :deep(.el-dialog__headerbtn) {
+  top: 14px;
+  right: 14px;
+  z-index: 2;
+}
+.auth-dialog :deep(.el-dialog__headerbtn .el-dialog__close) {
+  color: rgba(232, 237, 234, 0.8);
+}
+.auth-dialog :deep(.el-dialog__headerbtn:hover .el-dialog__close) {
+  color: #fff;
+}
+.auth-dialog :deep(.el-dialog__body) {
+  padding: var(--mf-sp-6) var(--mf-sp-6) var(--mf-sp-5);
+}
+.auth-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: var(--mf-sp-6) var(--mf-sp-5) var(--mf-sp-5);
+  text-align: center;
+  background:
+    radial-gradient(120% 140% at 80% 0%, rgba(79, 216, 202, 0.22), transparent 55%),
+    linear-gradient(160deg, #12241F, #0C1A18);
+}
+.auth-head__logo {
+  margin-bottom: 2px;
+}
+.auth-head__title {
+  margin: 0;
+  font-size: var(--mf-fs-xl);
+  font-weight: var(--mf-fw-bold);
+  color: #FFFFFF;
+}
+.auth-head__sub {
+  margin: 0;
+  font-size: var(--mf-fs-xs);
+  color: rgba(232, 237, 234, 0.62);
+}
+
 /* 意图承接提示（弹窗顶部） */
 .intent-chip {
   margin-bottom: var(--mf-sp-4);
@@ -406,6 +474,8 @@ function backToLogin(): void {
 .submit-btn {
   width: 100%;
   margin-top: var(--mf-sp-2);
+  height: 44px;
+  font-size: var(--mf-fs-base);
 }
 
 /* 面板底部链接区 */

@@ -11,6 +11,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import * as productionApi from '@/api/production'
+import { MfLogo } from '@mangaflow/design'
 import type { ShareInfo } from '@/types'
 
 const route = useRoute()
@@ -105,7 +106,7 @@ onUnmounted(() => {
     <!-- 顶栏 -->
     <header class="share-header">
       <div class="brand" @click="router.push('/')">
-        <span class="brand-logo" aria-hidden="true">漫序</span>
+        <MfLogo :size="22" label="" class="brand-logo" />
         <span class="brand-name">漫序 MangaFlow</span>
       </div>
       <span class="header-tip">分享作品</span>
@@ -214,15 +215,7 @@ onUnmounted(() => {
 }
 .brand-logo {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 34px;
   border-radius: 10px;
-  background: linear-gradient(135deg, var(--mf-brand), var(--mf-brand2));
-  color: var(--mf-brand-contrast);
-  font-weight: var(--mf-fw-bold);
-  font-size: var(--mf-fs-sm);
 }
 .brand-name {
   font-weight: var(--mf-fw-semibold);

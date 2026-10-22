@@ -790,11 +790,13 @@ async function handleSave(): Promise<boolean> {
   flex-shrink: 0;
   min-width: 220px;
   max-width: 260px;
-  padding: var(--mf-sp-3);
+  padding: var(--mf-sp-3) var(--mf-sp-4);
   border: 1px solid var(--mf-border);
   border-radius: var(--mf-r-ctl);
   background: var(--mf-surface);
   cursor: pointer;
+  position: relative;
+  overflow: hidden;
   transition: border-color var(--mf-dur) var(--mf-ease), background var(--mf-dur) var(--mf-ease),
     transform var(--mf-dur) var(--mf-ease);
 }
@@ -802,24 +804,47 @@ async function handleSave(): Promise<boolean> {
   border-color: var(--mf-brand);
   transform: translateY(-1px);
 }
+/* 选中态：品牌左边条 + 品牌浅底 + 描边，三重信号 */
 .ep-card--active {
   border-color: var(--mf-brand);
   background: var(--mf-brand-soft);
   box-shadow: 0 0 0 1px var(--mf-brand) inset;
+}
+.ep-card--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--mf-brand);
 }
 .ep-card__head {
   display: flex;
   align-items: center;
   gap: var(--mf-sp-2);
 }
+/* 集号徽标：圆形序号，序列感更强 */
 .ep-seq {
   flex-shrink: 0;
-  color: var(--mf-brand);
+  min-width: 22px;
+  height: 22px;
+  padding: 0 6px;
+  border-radius: var(--mf-r-pill);
+  background: var(--mf-brand-soft);
+  color: var(--mf-brand-strong);
   font-weight: var(--mf-fw-semibold);
-  font-size: var(--mf-fs-sm);
+  font-size: var(--mf-fs-xs);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ep-card--active .ep-seq {
+  background: var(--mf-brand);
+  color: var(--mf-brand-contrast);
 }
 .ep-card__title {
-  margin-top: var(--mf-sp-1);
+  margin-top: var(--mf-sp-2);
   font-weight: var(--mf-fw-semibold);
   display: -webkit-box;
   -webkit-line-clamp: 2;
@@ -839,15 +864,31 @@ async function handleSave(): Promise<boolean> {
   color: var(--mf-text-3);
   font-size: var(--mf-fs-xs);
 }
+/* 新增集：虚线框卡片，与集卡同构，暗示"添加一格" */
 .add-ep-card {
   align-self: stretch;
-  min-height: 64px;
+  min-height: 72px;
+  border: 1px dashed var(--mf-border-strong);
+  border-radius: var(--mf-r-ctl);
+  color: var(--mf-text-2);
+  background: transparent;
+}
+.add-ep-card:hover {
+  border-color: var(--mf-brand);
+  color: var(--mf-brand-strong);
+  background: var(--mf-brand-soft);
 }
 .editor-head {
   display: flex;
   align-items: center;
   gap: var(--mf-sp-2);
   font-weight: var(--mf-fw-semibold);
+}
+/* 编辑器表单：标签统一弱化为辅助信息层级，与输入内容形成对比 */
+.ep-editor :deep(.el-form-item__label) {
+  color: var(--mf-text-2);
+  font-weight: var(--mf-fw-medium);
+  font-size: var(--mf-fs-xs);
 }
 .editor-title {
   min-width: 0;

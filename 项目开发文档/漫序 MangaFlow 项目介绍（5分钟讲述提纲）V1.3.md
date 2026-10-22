@@ -32,10 +32,6 @@
 
 
 
-### 5. 多智能体编排中枢
-
-最后就是多智能体编排中枢，统一入口承接意图，按需调度各领域能力。采用LangGraph StateGraph 加 Supervisor 意图路由，域智能体只通过共享状态交接；PostgresSaver 落检查点支持续跑与阶段回退，人工确认用 `interrupt` / `Command(resume)`，批量任务用 `Send` 做 map-reduce，审核与一致性封装为子图复用。
-
 
 
 ## 三、一句话收尾

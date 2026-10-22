@@ -137,7 +137,7 @@ async function submit(): Promise<void> {
   text-align: center;
 }
 .auth-links a {
-  color: var(--mf-brand);
+  color: var(--mf-brand-strong);
   text-decoration: none;
 }
 .auth-links a:hover {

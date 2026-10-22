@@ -461,9 +461,10 @@ onMounted(loadAll)
       @close="gateError = ''"
     />
 
-    <!-- 审核未通过顶部警示 -->
+    <!-- 审核未通过顶部警示：仅在右侧「审核结果」面板可见（已有成片列表）时展示，
+         避免无成片空态下指引落空 -->
     <el-alert
-      v-if="hasViolate"
+      v-if="hasViolate && outputs.length"
       type="error"
       show-icon
       :closable="false"
@@ -473,7 +474,11 @@ onMounted(loadAll)
 
     <!-- 空态：还没有成片 -->
     <el-card v-if="!loading && !outputs.length" shadow="never">
-      <el-empty description="还没有成片，请先到「生成」页完成合成">
+      <el-empty
+        :description="hasViolate
+          ? '还没有成片：存在待处理的审核记录，请先到「生成」页处理对应镜头后重新合成'
+          : '还没有成片，请先到「生成」页完成合成'"
+      >
         <el-button type="primary" @click="$router.push(`/projects/${projectId}/production`)">
           去合成成片
         </el-button>

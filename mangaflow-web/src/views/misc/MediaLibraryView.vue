@@ -323,8 +323,16 @@ onMounted(async () => {
               <span class="project" :title="projects.find((p) => p.id === m.project_id)?.title ?? '独立素材'">
                 {{ projects.find((p) => p.id === m.project_id)?.title ?? '独立素材' }}
               </span>
-              <!-- 项目产物（关键帧/成片/试音/剧本正文）随项目存续，不提供删除 -->
-              <el-button v-if="m.source !== 'project'" link type="danger" size="small" @click="removeItem(m)">删除</el-button>
+              <!-- 项目产物（关键帧/成片/试音/剧本正文）随项目存续，不提供删除；
+                   删除为破坏性操作：默认隐藏，卡片 hover 才浮现（触屏设备常显），点击仍有二次确认 -->
+              <el-button
+                v-if="m.source !== 'project'"
+                link
+                type="danger"
+                size="small"
+                class="card-del"
+                @click="removeItem(m)"
+              >删除</el-button>
             </div>
           </div>
         </div>
@@ -458,6 +466,21 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+/* 破坏性删除按钮：平时隐藏降低误触与视觉噪音，hover 卡片时浮现 */
+.card-del {
+  opacity: 0;
+  transition: opacity var(--mf-dur) var(--mf-ease);
+}
+.media-card:hover .card-del,
+.card-del:focus-visible {
+  opacity: 1;
+}
+/* 触屏（无 hover 能力）设备常显，保证可达 */
+@media (hover: none) {
+  .card-del {
+    opacity: 1;
+  }
 }
 .pager {
   display: flex;

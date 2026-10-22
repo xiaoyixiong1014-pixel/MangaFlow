@@ -8,6 +8,7 @@ import { reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
+import { MfLogo } from '@mangaflow/design'
 import { useAuthStore } from '@/stores/auth'
 
 const route = useRoute()
@@ -56,7 +57,7 @@ async function submit(): Promise<void> {
   <div class="auth-page">
     <div class="auth-card">
       <div class="brand">
-        <span class="brand-logo" aria-hidden="true" />
+        <MfLogo :size="22" label="" />
         <span class="brand-name">漫序 MangaFlow</span>
       </div>
       <h1 class="auth-title">登录</h1>
@@ -105,12 +106,6 @@ async function submit(): Promise<void> {
   gap: var(--mf-sp-2);
   margin-bottom: var(--mf-sp-6);
 }
-.brand-logo {
-  width: 22px;
-  height: 22px;
-  border-radius: 8px;
-  background: linear-gradient(135deg, var(--mf-brand), var(--mf-brand2));
-}
 .brand-name {
   font-weight: var(--mf-fw-bold);
   color: var(--mf-text);
@@ -136,7 +131,7 @@ async function submit(): Promise<void> {
   font-size: var(--mf-fs-sm);
 }
 .auth-links a {
-  color: var(--mf-brand);
+  color: var(--mf-brand-strong);
   text-decoration: none;
 }
 .auth-links a:hover {

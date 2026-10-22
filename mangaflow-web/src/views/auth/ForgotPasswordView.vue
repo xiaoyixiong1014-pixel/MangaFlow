@@ -36,7 +36,7 @@ const form = reactive({
 
 /** 第二步表单校验规则 */
 const rules: FormRules = {
-  oldPassword: [{ required: true, message: '演示环境需输入原密码完成校验', trigger: 'blur' }],
+  oldPassword: [{ required: true, message: '请输入原密码完成身份校验', trigger: 'blur' }],
   newPassword: [
     { required: true, message: '请输入新密码', trigger: 'blur' },
     { min: 6, message: '密码至少 6 位', trigger: 'blur' },
@@ -99,9 +99,8 @@ async function submitReset(): Promise<void> {
         <el-step title="设置新密码" />
       </el-steps>
 
-      <!-- 第一步：验证账号（演示环境仅非空校验） -->
+      <!-- 第一步：验证账号（本地非空校验，账号有效性由第二步原密码校验兜底） -->
       <el-form v-if="step === 1" label-position="top" size="large" @submit.prevent>
-        <div class="demo-tip">演示环境未接入短信 / 邮箱验证，账号信息仅作记录</div>
         <el-form-item label="用户名">
           <el-input v-model="form.username" placeholder="注册时的用户名" autocomplete="username" />
         </el-form-item>
@@ -113,10 +112,9 @@ async function submitReset(): Promise<void> {
         </el-button>
       </el-form>
 
-      <!-- 第二步：设置新密码 -->
+      <!-- 第二步：设置新密码（需原密码完成身份校验，与后端 updatePassword 能力一致） -->
       <el-form v-else ref="formRef" :model="form" :rules="rules" label-position="top" size="large" @keyup.enter="submitReset">
-        <div class="demo-tip">演示环境说明：未接入验证码，需输入原密码完成校验后设置新密码</div>
-        <el-form-item label="原密码（演示校验用）" prop="oldPassword">
+        <el-form-item label="原密码" prop="oldPassword">
           <el-input v-model="form.oldPassword" type="password" placeholder="当前使用的密码" show-password />
         </el-form-item>
         <el-form-item label="新密码" prop="newPassword">
@@ -167,11 +165,6 @@ async function submitReset(): Promise<void> {
 .steps {
   margin-bottom: var(--mf-sp-6);
 }
-.demo-tip {
-  font-size: var(--mf-fs-xs);
-  color: var(--mf-warn);
-  margin-bottom: var(--mf-sp-3);
-}
 .submit-btn {
   width: 100%;
   margin-top: var(--mf-sp-2);
@@ -182,7 +175,7 @@ async function submitReset(): Promise<void> {
   text-align: center;
 }
 .auth-links a {
-  color: var(--mf-brand);
+  color: var(--mf-brand-strong);
   text-decoration: none;
 }
 .auth-links a:hover {

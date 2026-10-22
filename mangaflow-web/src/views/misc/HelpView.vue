@@ -4,6 +4,7 @@
 -->
 <script setup lang="ts">
 import { ref } from 'vue'
+import { MfLogo } from '@mangaflow/design'
 
 /** 当前展开的 FAQ 项 */
 const activeNames = ref<string[]>(['faq-1'])
@@ -72,7 +73,7 @@ const shortcuts = [
 <template>
   <div class="help-page">
     <header class="help-hero">
-      <div class="help-logo" aria-hidden="true">漫序</div>
+      <MfLogo :size="56" label="漫序 MangaFlow" class="help-logo" />
       <h1 class="help-title">帮助中心</h1>
       <p class="help-sub">创作漫剧过程中常见问题的答案与快捷键速查</p>
     </header>
@@ -118,15 +119,6 @@ const shortcuts = [
 }
 .help-logo {
   display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 56px;
-  height: 56px;
-  border-radius: var(--mf-r-ctl);
-  background: linear-gradient(135deg, var(--mf-brand), var(--mf-brand2));
-  color: var(--mf-brand-contrast);
-  font-weight: var(--mf-fw-bold);
-  font-size: var(--mf-fs-lg);
   margin-bottom: var(--mf-sp-4);
 }
 .help-title {
@@ -148,6 +140,13 @@ const shortcuts = [
 }
 .help-collapse {
   border-radius: var(--mf-r-ctl);
+}
+/* 折叠面板内边距：标题与内容不贴左右边框 */
+.help-collapse :deep(.el-collapse-item__header) {
+  padding: 0 var(--mf-sp-4);
+}
+.help-collapse :deep(.el-collapse-item__content) {
+  padding: 0 var(--mf-sp-4) var(--mf-sp-4);
 }
 .faq-block {
   margin: 0 0 var(--mf-sp-2);

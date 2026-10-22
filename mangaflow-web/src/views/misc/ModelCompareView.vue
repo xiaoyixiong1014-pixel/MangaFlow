@@ -129,7 +129,7 @@ onMounted(loadChannels)
     <h2 class="page-title">模型效果对比</h2>
     <el-alert type="info" :closable="false" class="intro-tip" show-icon>
       <template #title>
-        选择能力并勾选 2~4 个渠道，输入同一提示词并排对比各渠道的生成效果与耗时（PL-11）。
+        选择能力并勾选 2~4 个渠道，输入同一提示词并排对比各渠道的生成效果与耗时。
       </template>
     </el-alert>
 
