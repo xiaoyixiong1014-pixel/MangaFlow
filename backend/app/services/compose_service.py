@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import FilmOutput, Storyboard, Task
+from app.models import Episode, FilmOutput, Project, Storyboard, Task
 from app.providers.llm import chat
 
 logger = logging.getLogger("mangaflow.services.compose_service")
@@ -353,36 +353,44 @@ def default_subtitle_font_size(width: int, height: int) -> int:
     return int(min(hi, max(lo, round(height * base / ref_h))))
 
 
-async def _probe_resolution(ffprobe: Optional[str], video_path: Path) -> Tuple[int, int]:
-    """探测视频分辨率（内部函数，字幕字号换算用）。
+async def _probe_resolution(ffprobe: Optional[str], video_path: Path) -> Tuple[int, int, float]:
+    """探测视频分辨率与帧率（内部函数，字幕字号换算/拼接归一化基准用）。
 
     Args:
-        ffprobe: ffprobe 可执行文件路径（None 时返回 (0, 0) 走默认字号）。
+        ffprobe: ffprobe 可执行文件路径（None 时返回 (0, 0, 0) 走默认字号）。
         video_path: 视频文件路径。
 
     Returns:
-        Tuple[int, int]: (width, height)；探测失败返回 (0, 0)。
+        Tuple[int, int, float]: (width, height, fps)；探测失败返回 (0, 0, 0)。
 
     Raises:
         无：内部捕获全部异常。
     """
     if not ffprobe:
-        return (0, 0)
+        return (0, 0, 0.0)
     try:
         proc = await shutil_get_run(
             [ffprobe, "-v", "error", "-select_streams", "v:0",
-             "-show_entries", "stream=width,height", "-of", "csv=p=0",
+             "-show_entries", "stream=width,height,r_frame_rate", "-of", "csv=p=0",
              str(video_path)],
             timeout=30, capture=True,
         )
         if proc is None or proc.returncode != 0:
-            return (0, 0)
+            return (0, 0, 0.0)
         parts = str((proc.stdout or b"").decode("utf-8", "replace")).strip().split(",")
         if len(parts) >= 2 and parts[0].strip().isdigit() and parts[1].strip().isdigit():
-            return (int(parts[0]), int(parts[1]))
+            fps = 0.0
+            if len(parts) >= 3 and "/" in parts[2]:
+                try:
+                    num, den = parts[2].split("/")
+                    if float(den) > 0:
+                        fps = float(num) / float(den)
+                except (TypeError, ValueError):
+                    fps = 0.0
+            return (int(parts[0]), int(parts[1]), fps)
     except Exception:  # noqa: BLE001 —— 探测失败走默认字号
         pass
-    return (0, 0)
+    return (0, 0, 0.0)
 
 
 def _strip_speaker_prefix(line: str) -> str:
@@ -612,7 +620,7 @@ async def burn_storyboard_subtitles(
         无：内部捕获全部异常收敛为 False。
     """
     # 分辨率探测 → 字号（真实像素）→ 单行容纳字数（宽度/字号，留 10% 余量）
-    v_w, v_h = await _probe_resolution(ffprobe, video_path)
+    v_w, v_h, _fps = await _probe_resolution(ffprobe, video_path)
     burn_style = dict(style or {})
     if not burn_style.get("font_size"):
         burn_style["font_size"] = default_subtitle_font_size(v_w, v_h)
@@ -995,6 +1003,9 @@ async def _concat_clips(ffmpeg: str, clip_paths: List[Path], out_path: Path, lis
             "-f", "concat", "-safe", "0",
             "-i", str(list_path),
             "-c", "copy",
+            # 生成缺失时间戳：各片段音视频轨已在 _merge_clip_audio 严格等长
+            # 归一化，genpts 兜底个别片段 pts 缺失导致的接缝漂移
+            "-fflags", "+genpts",
             str(out_path),
         ]
         proc = await shutil_get_run(cmd)
@@ -1007,18 +1018,20 @@ async def _xfade_clips(
     ffmpeg: str, clip_paths: List[Path], durations: List[float],
     out_path: Path, transition: Dict,
 ) -> bool:
-    """相邻片段 xfade 转场链重编码（Task 5.3，P-15/P-17）。
+    """相邻片段 xfade 转场链重编码（Task 5.3，P-15/P-17；2026-10-21 解除配音互斥）。
 
-    多级 xfade：offset 按各片段时长累计（offset_k = 前序时长和 - k*转场时长）。
-    转场类型经 map_transition_type 白名单映射为 xfade 原生滤镜名（P-17）：
-    fade/dissolve/fadeblack/fadewhite 直通，其余取值回退 fade；转场链只处理
-    视频轨（音频轨丢弃，如需 BGM 由后处理环节混入）。片段时长取分镜配置估算
-    值，与真实片段时长有偏差时由 offset 兜底（clamp 非负）。
+    多级 xfade + acrossfade 双链：视频轨 xfade（offset_k = 前序时长和 -
+    k*转场时长），音频轨 acrossfade 平行链（交叉段=上一合成段尾 t 秒，与
+    视频 xfade 的转场起点天然对齐）——有配音的片段也保留音轨（2026-10-21
+    用户确认「有配音也要有转场」）。转场类型经 map_transition_type 白名单
+    映射（fade/dissolve/fadeblack/fadewhite 直通，其余回退 fade）。片段时长
+    由调用方传真实探测值，估算偏差时 offset clamp 非负兜底。前提：片段均经
+    _merge_clip_audio 归一化（恒有 44.1kHz 音轨、同分辨率/帧率）。
 
     Args:
         ffmpeg: ffmpeg 可执行文件绝对路径。
         clip_paths: 片段物理路径列表（≥2 个）。
-        durations: 各片段时长估算（秒，与 clip_paths 一一对应）。
+        durations: 各片段真实时长（秒，与 clip_paths 一一对应）。
         out_path: 转场产物输出路径。
         transition: 转场参数 dict（type/duration）。
 
@@ -1040,22 +1053,32 @@ async def _xfade_clips(
     # P-17：转场类型白名单映射（非法值回退 fade），整条 xfade 链统一应用同名转场
     xfade_type = map_transition_type(str(transition.get("type") or ""))
     parts: List[str] = []
-    prev_label = "[0:v]"
+    prev_v, prev_a = "[0:v]", "[0:a]"
     acc = 0.0
-    for i in range(1, len(clip_paths)):
-        acc += float(durations[i - 1] if i - 1 < len(durations) else 5)
+    n = len(clip_paths)
+    for i in range(1, n):
+        try:
+            acc += float(durations[i - 1] if i - 1 < len(durations) else 5)
+        except (TypeError, ValueError):
+            acc += 5.0
         # 第 i 次拼接的转场起点 = 已累积时长 - 转场时长；clamp 非负防止 offset 非法
         offset = max(acc - i * t, 0.05)
-        label = f"[v{i}]" if i < len(clip_paths) - 1 else "[vout]"
+        is_last = i == n - 1
+        v_label = "[vout]" if is_last else f"[v{i}]"
+        a_label = "[aout]" if is_last else f"[a{i}]"
         parts.append(
-            f"{prev_label}[{i}:v]xfade=transition={xfade_type}:duration={t:.2f}:offset={offset:.3f}{label}"
+            f"{prev_v}[{i}:v]xfade=transition={xfade_type}:duration={t:.2f}:offset={offset:.3f}{v_label}"
         )
-        prev_label = f"[v{i}]"
+        # 音轨平行交叉淡化：acrossfade 交叉段=prev 尾 t 秒 ↔ 当前片段头 t 秒，
+        # 与视频 xfade 的 [offset, offset+t] 同位（画面与声音同步过渡）
+        parts.append(f"{prev_a}[{i}:a]acrossfade=d={t:.2f}{a_label}")
+        prev_v, prev_a = v_label, a_label
     cmd += [
         "-filter_complex", ";".join(parts),
-        "-map", "[vout]",
+        "-map", "[vout]", "-map", "[aout]",
         "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
         "-pix_fmt", "yuv420p",
+        "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
         str(out_path),
     ]
     proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
@@ -1124,6 +1147,8 @@ async def _merge_clip_audio(
     audio_path: Optional[Path],
     out_path: Path,
     env_audio_path: Optional[Path] = None,
+    target_size: Optional[Tuple[int, int]] = None,
+    target_fps: Optional[float] = None,
 ) -> Optional[Path]:
     """把分镜配音合入视频片段（音频先行音画对齐，2026-10-19 流程确认）。
 
@@ -1134,8 +1159,18 @@ async def _merge_clip_audio(
     - 显式环境音源（env_audio_path 非空，2026-10-20 音源分离方案）：调用方
       已剥除视频原生音轨（人声+环境音混合体），以分离出的无人声环境音轨
       0.35 与配音 1.0 amix——人声不进最终产物；
-    - 无配音片段：补静音音轨（anullsrc），统一「片段恒有 AAC 音轨 + 同参
-      编码」，保证 concat -c copy 拼接兼容与音轨连续。
+    - 无配音但视频自带音轨（2026-10-20 口径「自带音轨⟺已含配音」，跳过
+      混音防双声）：**原音轨保留**（2026-10-21 修复：旧实现该场景走
+      anullsrc 静音分支导致成片整段无声）；
+    - 真无声片段（无配音且视频无原生音轨）：补静音音轨（anullsrc），统一
+      「片段恒有 AAC 音轨 + 同参编码」，保证 concat -c copy 拼接兼容与
+      音轨连续。
+
+    拼接归一化（2026-10-21 修复成片音画漂移）：target_size/target_fps 提供
+    时，视频轨统一 scale/fps 到基准规格；所有分支输出音轨统一经
+    aresample=44100 + apad/atrim 钳制到 total 秒——各镜 mp4 音视频轨严格
+    等长、同规格，消除 concat -c copy 逐镜累积的时间轴漂移（配音快于画面/
+    口型字幕错位的根因）。
 
     任一失败返回 None（调用方回退原片段——音画对齐降级不阻断合成）。
 
@@ -1147,6 +1182,8 @@ async def _merge_clip_audio(
         out_path: 输出片段路径。
         env_audio_path: 显式环境音源 WAV 路径（音源分离产物，可空）。非空时
             优先于视频原生音轨作为环境音源（要求配音 audio_path 同时存在）。
+        target_size: 归一化目标分辨率 (w, h)（拼接基准，可空不缩放）。
+        target_fps: 归一化目标帧率（可空不调整）。
 
     Returns:
         Optional[Path]: 成功返回输出路径；失败返回 None。
@@ -1165,9 +1202,11 @@ async def _merge_clip_audio(
         )
         total = max(video_dur, audio_dur or 0.0)
         pad = max(0.0, total - video_dur)
+        has_native_audio = await _has_audio_stream(ffprobe, video_path)
         # 输入装配：[0]=视频；显式环境音源时 [1]=环境音 [2]=配音（调用方
-        # 已剥除原生音轨）；否则 [1]=配音；无配音补静音源（保证 concat
-        # 音轨参数一致）
+        # 已剥除原生音轨）；否则 [1]=配音；静音源仅在「真无声镜」（无配音
+        # 且视频无原生音轨）时注入——2026-10-21 修复成片无声：跳过混音
+        # 场景（视频自带配音音轨）曾被 anullsrc 静音轨整轨替换
         cmd: List[str] = [ffmpeg, "-y", "-i", str(video_path)]
         use_explicit_env = bool(
             env_audio_path and audio_path and Path(env_audio_path).is_file()
@@ -1178,35 +1217,54 @@ async def _merge_clip_audio(
         elif audio_path:
             cmd += ["-i", str(audio_path)]
             audio_in = "[1:a]"
+        elif has_native_audio:
+            audio_in = ""  # 原音轨保留，无需外部音频输入
         else:
             # 静音源（与配音同采样率，保证 concat 音轨参数一致）
             cmd += ["-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100"]
             audio_in = "[1:a]"
-        has_native_audio = await _has_audio_stream(ffprobe, video_path)
-        vf = f"[0:v]tpad=stop_mode=clone:stop_duration={pad:.3f}[v]"
+        # 视频滤镜链：末帧定格补齐 → 归一化分辨率/帧率（拼接同构，防漂移）
+        vf_parts = [f"tpad=stop_mode=clone:stop_duration={pad:.3f}"]
+        if target_size and target_size[0] > 0 and target_size[1] > 0:
+            vf_parts.append(f"scale={target_size[0]}:{target_size[1]}")
+        if target_fps and target_fps > 0:
+            vf_parts.append(f"fps={target_fps:.3f}")
+        vf = f"[0:v]{','.join(vf_parts)}[v]"
+        # 音频子图：各分支产出 [mix]（内容来源不同），出口统一钳制到
+        # 「44.1kHz + 精确 total 秒」——apad 补齐不足、atrim 截掉超出，
+        # 保证每镜音视频轨严格等长（concat -c copy 无累积漂移）
+        audio_map = "[a]"
         if use_explicit_env:
-            # 显式环境音源（音源分离产物）：环境音 0.35 + 配音 1.0 amix
-            # （视频原生音轨已被调用方剥除，人声不进最终产物）
-            af = (
+            mix_chain = (
                 f"{env_in}volume=0.35[env];{audio_in}volume=1.0[dub];"
-                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0,"
-                f"apad=whole_dur={total:.3f}[a]"
+                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0[mix]"
             )
         elif audio_path and has_native_audio:
             # 片段自带音轨：环境音降量后与配音混音（配音优先）
-            af = (
+            mix_chain = (
                 f"[0:a]volume=0.35[env];{audio_in}volume=1.0[dub];"
-                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0,"
-                f"apad=whole_dur={total:.3f}[a]"
+                f"[env][dub]amix=inputs=2:duration=longest:dropout_transition=0[mix]"
             )
+        elif audio_path:
+            mix_chain = f"{audio_in}anull[mix]"
+        elif has_native_audio:
+            # 跳过混音场景（视频自带配音音轨，2026-10-20 口径「自带音轨⟺已含
+            # 配音」）：原音轨保留——曾被 anullsrc 静音轨整轨替换导致成片无声
+            mix_chain = "[0:a]anull[mix]"
         else:
-            af = f"{audio_in}apad=whole_dur={total:.3f}[a]"
+            # 真无声镜（无配音且视频无原生音轨）：补静音轨保证 concat 兼容
+            mix_chain = f"{audio_in}anull[mix]"
+        af = (
+            f"{mix_chain};"
+            f"[mix]aresample=44100,apad=whole_dur={total:.3f},"
+            f"atrim=end={total:.3f},asetpts=N/SR/TB[a]"
+        )
         cmd += [
             "-filter_complex", f"{vf};{af}",
             "-map", "[v]", "-map", "[a]",
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "128k", "-ar", "44100",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             "-t", f"{total:.3f}",
             str(out_path),
         ]
@@ -1229,12 +1287,17 @@ async def _postprocess_film(
     drawtext_filter: Optional[str],
     bgm_path: Optional[Path],
     bgm_volume: float,
+    bgm_ducking: bool = True,
 ) -> bool:
     """合成产物后处理（一次转码完成字幕+水印烧录与 BGM 混音）。
 
     - 视频滤镜链（先字幕、后水印）与音频混音在同一命令内完成；
     - BGM 无限循环（-stream_loop -1）：有音轨原片按 amix duration=first 截断，
       无音轨原片以 -shortest 随视频结束；
+    - BGM 自动闪避（2026-10-21 成片整合，bgm_ducking=True）：原声 asplit 两路
+      ——一路直出混音、一路作 sidechaincompress 的触发源，对白响起时 BGM
+      自动压低（threshold=0.02 / ratio=8 / attack=120ms / release=900ms），
+      间隙恢复基础音量，解决 BGM 盖配音/间隙太空的听感问题；
     - 无视频滤镜时 -c:v copy 直拷（仅音频处理不重编码）。
 
     Args:
@@ -1245,7 +1308,8 @@ async def _postprocess_film(
         subtitles_filter: subtitles 滤镜表达式（无字幕为 None）。
         drawtext_filter: drawtext 滤镜表达式（无字体为 None）。
         bgm_path: BGM 文件路径（不加 BGM 为 None）。
-        bgm_volume: BGM 音量系数（0~1）。
+        bgm_volume: BGM 音量系数（0~1，闪避时的基础音量）。
+        bgm_ducking: 是否启用 BGM 对白闪避（缺省开启）。
 
     Returns:
         bool: 处理成功返回 True；无需处理/失败/超时返回 False（调用方沿用 src）。
@@ -1268,9 +1332,20 @@ async def _postprocess_film(
         except (TypeError, ValueError):
             volume = "0.30"
         if need_bgm:
-            # 音频子图：有音轨 amix 混入（原声不变），无音轨 BGM 直作唯一音轨
+            # 音频子图：有音轨时 BGM 对白闪避混入（原声不变），无音轨 BGM 直作唯一音轨
             if await _has_audio_stream(ffprobe, src):
-                audio_graph = f"[1:a]volume={volume}[a1];[0:a][a1]amix=inputs=2:duration=first[aout]"
+                if bgm_ducking:
+                    # sidechaincompress：main=BGM（被压），sidechain=原片配音/环境音
+                    # （asplit 出一路作触发源），对白响 → BGM 压低，间隙 → 恢复基础音量
+                    audio_graph = (
+                        f"[0:a]asplit=2[vo][sc];"
+                        f"[1:a]volume={volume}[bgm];"
+                        f"[bgm][sc]sidechaincompress=threshold=0.02:ratio=8:"
+                        f"attack=120:release=900[ducked];"
+                        f"[vo][ducked]amix=inputs=2:duration=first[aout]"
+                    )
+                else:
+                    audio_graph = f"[1:a]volume={volume}[a1];[0:a][a1]amix=inputs=2:duration=first[aout]"
             else:
                 audio_graph = f"[1:a]volume={volume}[aout]"
             if need_video:
@@ -1289,16 +1364,100 @@ async def _postprocess_film(
                     "-c:v", "copy", "-c:a", "aac", "-shortest",
                 ]
         else:
-            # 仅视频滤镜：单条 -vf 链重编码
+            # 仅视频滤镜：单条 -vf 链重编码（音频参数同步统一，防采样率漂移）
             cmd += [
                 "-vf", ",".join(vf_parts),
                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+                "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
             ]
         cmd.append(str(out_path))
         proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
         return proc is not None and proc.returncode == 0 and out_path.exists()
     except Exception:
         return False
+
+
+async def _build_text_card(
+    ffmpeg: str,
+    out_path: Path,
+    width: int,
+    height: int,
+    lines: List[Tuple[str, float, float]],
+    duration: float = 2.5,
+    fps: float = 24.0,
+) -> Optional[Path]:
+    """生成黑底文字标题卡片段（片头/片尾卡，内部函数，2026-10-21 成片整合）。
+
+    lavfi 黑色视频源 + 逐行 drawtext（白字居中，字号/纵向位置按高度比例）
+    + 首尾 0.5s 淡入淡出 + 静音音轨（anullsrc，与分镜片段 AAC 44.1kHz 同参
+    + 帧率与成片一致），保证 concat -c copy / xfade 链编码兼容。本机无可用
+    中文字体时返回 None（调用方降级为不插卡，不阻断合成）。
+
+    Args:
+        ffmpeg: ffmpeg 可执行文件路径。
+        out_path: 输出片段路径（storage/outputs 下）。
+        width: 卡片宽度（与成片片段一致）。
+        height: 卡片高度（与成片片段一致）。
+        lines: 文字行列表 (文本, 字号高度比, 纵向位置高度比)。
+        duration: 卡片时长（秒，片头 2.5 / 片尾 2.0）。
+        fps: 卡片帧率（与成片片段一致）。
+
+    Returns:
+        Optional[Path]: 成功返回输出路径；失败/无字体返回 None。
+
+    Raises:
+        无：内部捕获全部异常收敛为 None。
+    """
+    font = _find_font_file()
+    if font is None:
+        logger.warning("无可用中文字体，跳过片头/片尾卡生成")
+        return None
+    try:
+        font_escaped = font.replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        drawtexts: List[str] = []
+        for text, size_ratio, y_ratio in lines:
+            text = str(text or "").strip()
+            if not text:
+                continue
+            # drawtext text 转义：冒号/单引号/百分号/逗号（逗号会破坏滤镜图分隔）
+            escaped = (
+                text.replace("\\", "\\\\\\\\")
+                .replace(":", "\\:")
+                .replace("'", "\\'")
+                .replace("%", "\\%")
+                .replace(",", "\\,")
+            )
+            fs = max(18, int(height * size_ratio))
+            y = int(height * y_ratio)
+            drawtexts.append(
+                f"drawtext=fontfile='{font_escaped}':text='{escaped}':"
+                f"fontsize={fs}:fontcolor=white:x=(w-tw)/2:y={y}"
+            )
+        fade_out = max(0.0, duration - 0.5)
+        vf_parts = drawtexts + [
+            "fade=t=in:st=0:d=0.5",
+            f"fade=t=out:st={fade_out:.2f}:d=0.5",
+        ]
+        cmd = [
+            ffmpeg, "-y", "-v", "error",
+            "-f", "lavfi", "-i",
+            f"color=c=black:s={width}x{height}:d={duration:.2f}:r={fps:.3f}",
+            "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo",
+            "-vf", ",".join(vf_parts),
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "128k", "-ar", "44100", "-ac", "2",
+            "-shortest",
+            str(out_path),
+        ]
+        proc = await shutil_get_run(cmd, timeout=_POST_TIMEOUT)
+        if proc is not None and proc.returncode == 0 and out_path.is_file():
+            return out_path
+        logger.warning("片头/片尾卡生成失败：%s", (proc.stderr or b"")[-300:] if proc else "timeout")
+        return None
+    except Exception:  # noqa: BLE001 —— 标题卡失败降级不插卡，不阻断合成
+        logger.warning("片头/片尾卡生成异常", exc_info=True)
+        return None
 
 
 async def _placeholder_film(task: Task, out_dir: Path, ffmpeg: Optional[str]) -> str:
@@ -1409,12 +1568,26 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
     watermark_id = uuid4().hex[:32]
 
     film_url: Optional[str] = None
+    # 片头片尾卡状态（块外兜底初始化：ffmpeg 缺失/无片段分支不进入生成逻辑）
+    intro_dur = 0.0
+    outro_dur = 0.0
+    all_paths: List[Path] = []
     # 转场应用标记与时长（时长合计扣减用；作用域覆盖降级分支）
     xfade_applied = False
     transition_duration = 0.0
     ffmpeg = shutil.which("ffmpeg")
     ffprobe = shutil.which("ffprobe")
     if ffmpeg and storyboards:
+        # 拼接归一化基准（2026-10-21）：取首镜产物分辨率/帧率，全部片段统一
+        # scale/fps 与音轨钳制——各镜 mp4 同构后 concat -c copy 才无累积漂移
+        base_w, base_h, base_fps = 0, 0, 0.0
+        for sb0 in storyboards:
+            vp0 = _physical_path(sb0.video_url)
+            if vp0.exists():
+                base_w, base_h, base_fps = await _probe_resolution(ffprobe, vp0)
+                break
+        target_size = (base_w, base_h) if base_w > 0 and base_h > 0 else None
+        target_fps = base_fps if base_fps > 0 else None
         # 音画对齐（音频先行）：每镜先把配音合入片段（配音长于视频时末帧定格
         # 补齐，短于视频时补静音），无配音镜也统一重编码补静音轨——保证 concat
         # -c copy 拼接编码参数与音轨连续性；对齐失败的镜回退原片段不阻断合成
@@ -1434,28 +1607,70 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             merged = await _merge_clip_audio(
                 ffmpeg, ffprobe, vp, audio_phys if has_audio else None,
                 out_dir / f"_av_{task.id}_{idx}.mp4",
+                target_size=target_size, target_fps=target_fps,
             )
             pairs.append((sb, merged or vp))
         clip_paths = [p for _, p in pairs]
-        # 转场与配音互斥（v1）：xfade 链只处理视频轨会丢弃配音音轨，
-        # 存在任一配音片段时跳过转场回退 concat 直拼（保音画同步）
-        has_dub = any(sb.audio_url for sb, _ in pairs)
-        if clip_paths:
+        # 转场（2026-10-21 用户确认解除配音互斥）：xfade+acrossfade 双链保留
+        # 各片段配音音轨，有配音也生效；转场失败回退 concat 直拼
+        # 片头片尾卡（2026-10-21 成片整合）：黑底文字卡作为独立片段插入
+        # 拼接链首尾（片头=剧名+集数 2.5s，片尾=剧终 2s，淡入淡出）；生成
+        # 失败/无字体降级不插卡；卡参与 xfade 时按自身时长计入 durations
+        intro_path: Optional[Path] = None
+        outro_path: Optional[Path] = None
+        if (meta.get("intro_card") or meta.get("outro_card")) and pairs and ffprobe:
+            v_w0, v_h0, v_fps0 = await _probe_resolution(ffprobe, clip_paths[0])
+            if v_w0 > 0 and v_h0 > 0:
+                proj = await db.get(Project, task.project_id)
+                ep = (
+                    await db.get(Episode, episode_filter)
+                    if episode_filter is not None else None
+                )
+                if meta.get("intro_card"):
+                    intro_lines: List[Tuple[str, float, float]] = [
+                        (proj.title if proj else "", 0.055, 0.42)
+                    ]
+                    if ep is not None:
+                        intro_lines.append((f"第{ep.sequence}集 · {ep.title}", 0.032, 0.55))
+                    intro_path = await _build_text_card(
+                        ffmpeg, out_dir / f"_intro_{task.id}.mp4",
+                        v_w0, v_h0, intro_lines, 2.5,
+                        fps=v_fps0 if v_fps0 > 0 else 24.0,
+                    )
+                if meta.get("outro_card"):
+                    outro_path = await _build_text_card(
+                        ffmpeg, out_dir / f"_outro_{task.id}.mp4",
+                        v_w0, v_h0, [("剧终", 0.05, 0.45)], 2.0,
+                        fps=v_fps0 if v_fps0 > 0 else 24.0,
+                    )
+        intro_dur = 2.5 if intro_path is not None else 0.0
+        outro_dur = 2.0 if outro_path is not None else 0.0
+        all_paths = (
+            ([intro_path] if intro_path else [])
+            + clip_paths
+            + ([outro_path] if outro_path else [])
+        )
+        if all_paths:
             base_path = out_dir / f"{task.project_id}_v{version_no}.mp4"
             list_path = out_dir / f"_concat_{task.id}.txt"
             current: Optional[Path] = (
-                base_path if await _concat_clips(ffmpeg, clip_paths, base_path, list_path) else None
+                base_path if await _concat_clips(ffmpeg, all_paths, base_path, list_path) else None
             )
             xfade_applied = False
             transition_duration = 0.0
-            # 转场（Task 5.3）：≥2 片段且全片无分镜配音时以 xfade 链重编码替代
-            # 直拼产物；失败回退直拼
-            if current and transition and len(clip_paths) >= 2 and not has_dub:
-                durations = [
-                    float(sb.actual_duration or sb.duration or 5) for sb, _ in pairs
-                ]
+            # 转场（Task 5.3）：≥2 片段时以 xfade+acrossfade 双链重编码替代
+            # 直拼产物（视频交叉淡化 + 配音音轨交叉淡化）；失败回退直拼。
+            # durations 逐片段真实探测（估算偏差会让转场起点漂移）
+            if current and transition and len(all_paths) >= 2:
+                real_durs: List[float] = []
+                for p_i in all_paths:
+                    d_i = (
+                        await _probe_duration(ffprobe, p_i)
+                        if ffprobe else None
+                    )
+                    real_durs.append(d_i if d_i and d_i > 0 else 5.0)
                 xfade_path = out_dir / f"{task.project_id}_v{version_no}_xfade.mp4"
-                if await _xfade_clips(ffmpeg, clip_paths, durations, xfade_path, transition):
+                if await _xfade_clips(ffmpeg, all_paths, real_durs, xfade_path, transition):
                     current = xfade_path
                     xfade_applied = True
                     try:
@@ -1515,10 +1730,13 @@ async def compose_film(db: AsyncSession, task: Task) -> str:
             film_url = await _placeholder_film(task, out_dir, ffmpeg)
 
     # 时长合计：优先取配音回写的实际时长（RD-31），缺省用分镜预估时长；
-    # 应用 xfade 转场时扣除相邻片段间的转场重叠时长
+    # 片头片尾卡时长计入（2026-10-21）；应用 xfade 转场时按全链片段数扣除
+    # 相邻片段间的转场重叠时长
     total_duration = sum(int(sb.actual_duration or sb.duration or 5) for sb in storyboards)
-    if xfade_applied and len(storyboards) >= 2:
-        total_duration = max(1, int(total_duration - (len(storyboards) - 1) * transition_duration))
+    total_duration += intro_dur + outro_dur
+    chain_len = len(all_paths) if ffmpeg and storyboards else 0
+    if xfade_applied and chain_len >= 2:
+        total_duration = max(1, int(total_duration - (chain_len - 1) * transition_duration))
 
     # 版本切换：历史版本全部退出"当前版本"，新版本置为当前
     existing = (

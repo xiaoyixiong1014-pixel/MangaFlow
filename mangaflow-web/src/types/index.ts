@@ -1120,6 +1120,10 @@ export interface ComposePayload {
   bgm?: BgmPayload
   /** 转场参数（可空表示不加转场） */
   transition?: TransitionPayload
+  /** 是否插入片头标题卡（剧名+集数，2.5s 黑底白字，缺省关闭） */
+  intro_card?: boolean
+  /** 是否插入剧终片尾卡（2s 黑底白字，缺省关闭） */
+  outro_card?: boolean
 }
 
 /** 发布（生成分享链接）请求体 */

@@ -260,6 +260,8 @@ async def create_compose(
         subtitle_style=req.subtitle_style.model_dump() if req.subtitle_style else None,
         bgm=req.bgm.model_dump() if req.bgm else None,
         transition=req.transition.model_dump() if req.transition else None,
+        intro_card=req.intro_card,
+        outro_card=req.outro_card,
     )
     return TaskOut.from_task(task)
 

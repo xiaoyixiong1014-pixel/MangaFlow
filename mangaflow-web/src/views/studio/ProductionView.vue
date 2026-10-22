@@ -1262,7 +1262,7 @@ async function onBgmFileChosen(e: Event): Promise<void> {
 }
 
 /**
- * 组装本次合成的 BGM / 字幕 / 转场配置（对齐 ComposeCreateRequest 字段）。
+ * 组装本次合成的 BGM / 字幕 / 转场 / 片头片尾配置（对齐 ComposeCreateRequest 字段）。
  * @returns ComposePayload 增量字段
  */
 function buildMixPayload(): ComposePayload {
@@ -1283,6 +1283,11 @@ function buildMixPayload(): ComposePayload {
   if (transitionEnabled.value) {
     payload.transition = { type: transitionType.value, duration: transitionDuration.value }
   }
+  // 片头片尾卡（2026-10-21 成片整合）：片头=剧名+集数标题卡 / 片尾=剧终卡
+  if (introCardEnabled.value) {
+    payload.intro_card = true
+    payload.outro_card = true
+  }
   return payload
 }
 
@@ -1290,10 +1295,16 @@ function buildMixPayload(): ComposePayload {
 // 合成（进入发布）
 // ============================================================
 
+/** 片头片尾卡开关（2026-10-21 成片整合：片头=剧名+集数标题卡，片尾=剧终卡，缺省开启） */
+const introCardEnabled = ref(true)
+
 /** 合成进行中 */
 const composing = ref(false)
 /** 合成任务进度（轮询 taskDetail） */
 const composeProgress = ref(0)
+
+/** 当前集缺视频产物的分镜（合成完整性门禁，2026-10-21） */
+const missingVideoBoards = computed(() => boards.value.filter((b) => !b.video_url))
 
 /**
  * 发起成片合成并轮询任务直到终态，完成后确认跳转发布页。
@@ -1302,6 +1313,23 @@ const composeProgress = ref(0)
 async function composeFilm(): Promise<void> {
   if (!ensureProductionReady()) return
   if (composing.value) return
+  // 完整性门禁（前端预防）：缺镜时弹窗引导前往视频 Tab 补齐（后端 400 兜底）
+  if (missingVideoBoards.value.length) {
+    const seqs = missingVideoBoards.value
+      .map((b) => `#${String(b.sequence).padStart(2, '0')}`)
+      .join('、')
+    try {
+      await ElMessageBox.confirm(
+        `还有 ${missingVideoBoards.value.length} 个镜头未生成视频（${seqs}），成片会缺镜头。是否前往视频 Tab 补齐？`,
+        '镜头未补齐',
+        { type: 'warning', confirmButtonText: '去生成视频', cancelButtonText: '留在本页' },
+      )
+      activeTab.value = 'videos'
+    } catch {
+      /* 留在合成 Tab */
+    }
+    return
+  }
   composing.value = true
   composeProgress.value = 0
   try {
@@ -1340,6 +1368,15 @@ async function composeFilm(): Promise<void> {
         ElMessage.error(t.error || '合成失败，可在任务面板重试')
         break
       }
+    }
+  } catch (e: unknown) {
+    // 后端完整性门禁兜底（并发场景下镜头被删/预检后视频失效）：展示缺镜清单
+    const detail = (e as { response?: { data?: { detail?: { code?: string; message?: string; missing?: Array<{ sequence: number }> } } } })
+      ?.response?.data?.detail
+    if (detail && typeof detail === 'object' && detail.code === 'videos_incomplete') {
+      const seqs = (detail.missing || []).map((m) => `#${String(m.sequence).padStart(2, '0')}`).join('、')
+      ElMessage.warning(`${detail.message || '镜头视频未补齐'}：${seqs}`)
+      activeTab.value = 'videos'
     }
   } finally {
     composing.value = false
@@ -1931,8 +1968,35 @@ onBeforeUnmount(() => {
                 />
               </template>
             </el-form-item>
+            <!-- 片头片尾卡（2026-10-21 成片整合）：剧名+集数标题卡 / 剧终卡 -->
+            <el-form-item label="片头片尾">
+              <el-switch v-model="introCardEnabled" />
+              <span class="mix-inline-label" style="margin-left: 12px; color: var(--el-text-color-secondary)">
+                片头「剧名 + 第 N 集」标题卡（2.5s）· 片尾「剧终」卡（2s），自动淡入淡出
+              </span>
+            </el-form-item>
           </el-form>
           <div class="mix-note">以上配置在点击「全部完成，进入合成」时随合成任务提交生效</div>
+        </el-card>
+        <!-- 合成完整性门禁：缺视频的镜清单（补齐后才能合成完整一集） -->
+        <el-card v-if="missingVideoBoards.length" shadow="never" class="block-card missing-card">
+          <template #header>
+            <div class="voice-card-head">
+              <span>镜头完成度 {{ boards.length - missingVideoBoards.length }}/{{ boards.length }}</span>
+              <span class="voice-card-tip">以下镜头尚未生成视频，补齐后才能合成本集成片</span>
+            </div>
+          </template>
+          <div class="missing-tags">
+            <el-tag
+              v-for="b in missingVideoBoards"
+              :key="b.id"
+              type="warning"
+              effect="plain"
+              class="missing-tag"
+            >
+              #{{ String(b.sequence).padStart(2, '0') }} {{ (b.visual_description || '').slice(0, 14) }}
+            </el-tag>
+          </div>
         </el-card>
       </template>
 
@@ -2203,6 +2267,15 @@ onBeforeUnmount(() => {
   margin-left: auto;
   color: var(--mf-text-3);
   font-size: var(--mf-fs-xs);
+}
+/* 合成完整性门禁：缺视频镜头清单卡（2026-10-21 成片整合） */
+.missing-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mf-sp-2);
+}
+.missing-tag {
+  max-width: 100%;
 }
 /* P-03/P-08 尾帧控制行（视频行操作区） */
 .endframe-line {

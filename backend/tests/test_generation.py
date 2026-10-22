@@ -555,9 +555,11 @@ async def test_shipin_tishi_cidan_cijingshuiping(client, auth, db):
     assert "机位角度：平视" in prompt
     assert "环境光影：冷色路灯" in prompt
     assert "镜头情绪：压抑" in prompt
-    assert "角色对白（说话角色口部自然开合）" in prompt
+    # 2026-10-21 说话提示升级：口型 + 表情 + 肢体反应联动（动作驱动）
+    assert "角色对白（说话角色口部自然开合，并配合台词情绪做出表情与肢体反应）" in prompt
     assert "周姨：这么晚你去哪？" in prompt
-    assert "必须与首帧严格一致" in prompt
+    # 2026-10-21 动作驱动型指令：一致性仅限身份/服装/场景/画风（防跑偏不防动作）
+    assert "必须与首帧保持一致" in prompt
 
     # 收尾：等任务终态，避免遗留排队任务
     await wait_task_terminal(client, auth["headers"], task_id)

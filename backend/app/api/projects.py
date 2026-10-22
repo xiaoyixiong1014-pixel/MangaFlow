@@ -16,11 +16,12 @@
 
 import io
 import json
+import random
 import re
 import zipfile
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Optional
+from typing import Dict, List, Optional
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
@@ -150,9 +151,38 @@ async def list_projects(
         .order_by(order_col.desc() if order == "desc" else order_col.asc(), Project.id.desc())
         .offset((page - 1) * page_size).limit(page_size)
     )
+    proj_rows = rows.scalars().all()
+    # 随机关键帧封面（2026-10-21 用户确认）：项目已有关键帧时，从其中随机
+    # 选取一张作为卡片封面（projects.cover_url 未填时生效）——一次查询取回
+    # 本页项目的全部关键帧 URL，Python 侧按项目分组后随机选一张，避免
+    # DISTINCT ON 弃用警告且随机性覆盖全部候选
+    if proj_rows:
+        kf_rows = await db.execute(
+            select(Storyboard.project_id, Storyboard.keyframe_url)
+            .where(
+                Storyboard.project_id.in_([p.id for p in proj_rows]),
+                Storyboard.keyframe_url.isnot(None),
+            )
+        )
+        grouped: Dict[int, List[str]] = {}
+        for pid, url in kf_rows.all():
+            # 排除 SVG 占位图（mock 渠道时代产物，作封面观感差）
+            if url and not url.endswith(".svg"):
+                grouped.setdefault(pid, []).append(url)
+        covers: Dict[int, str] = {
+            pid: urls[random.randrange(len(urls))]
+            for pid, urls in grouped.items()
+        }
+    else:
+        covers = {}
+    items: List[ProjectOut] = []
+    for r in proj_rows:
+        out = ProjectOut.model_validate(r)
+        if not out.cover_url and r.id in covers:
+            out.cover_url = covers[r.id]
+        items.append(out)
     return PageResult(
-        total=total or 0, page=page, page_size=page_size,
-        items=[ProjectOut.model_validate(r) for r in rows.scalars().all()],
+        total=total or 0, page=page, page_size=page_size, items=items,
     )
 
 

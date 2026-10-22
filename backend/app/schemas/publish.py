@@ -67,6 +67,8 @@ class ComposeCreateRequest(BaseModel):
         subtitle_style: 字幕样式（可空用默认样式）。
         bgm: 背景音乐参数（可空表示不加）。
         transition: 转场参数（可空表示不加转场，直接拼接）。
+        intro_card: 是否插入片头标题卡（剧名+集数，2.5s 黑底白字，缺省关闭）。
+        outro_card: 是否插入剧终片尾卡（2s 黑底白字，缺省关闭）。
     """
 
     resolution: Literal["720P", "1080P", "2K"] = "720P"
@@ -78,6 +80,8 @@ class ComposeCreateRequest(BaseModel):
     subtitle_style: Optional[SubtitleStyle] = None
     bgm: Optional[BgmOption] = None
     transition: Optional[TransitionOption] = None
+    intro_card: bool = False
+    outro_card: bool = False
 
 
 class OutputOut(BaseModel):

@@ -157,16 +157,27 @@ CONSISTENCY_DIRECTIVE = (
     "禁止改动参考图中的形象设定；不得新增画面描述与参考图之外的角色、场景元素与物体"
 )
 
-# 视频生成专项一致性指令（2026-10-20 用户反馈视频不按分镜内容生成：
+# 视频生成专项指令（2026-10-20 用户反馈视频不按分镜内容生成：
 # 旧视频提示词仅拼锁定层快照+可编辑层+风格，未直接携带分镜画面描述；
 # 新构造以 visual_description 为核心并追加本指令约束内容一致与对白说话表现；
 # 同日追加音频约束——wan 系模型会按对白自行合成角色语音与平台 TTS 配音冲突，
-# 精细控制为「禁人声、允许环境音」（用户确认：保留人声外的声音接入配音）
+# 精细控制为「禁人声、允许环境音」（用户确认：保留人声外的声音接入配音）；
+# 2026-10-21 用户反馈「视频里只有嘴动、角色像关键帧一样静止」：旧指令全是
+# 「与首帧严格一致/不得新增元素」类压制性措辞，i2v 模型被压得只输出微动画面，
+# 重写为「动作驱动型」——一致性仅限定在角色身份/服装/场景布局/画风（防跑偏），
+# 明确要求角色肢体动作、环境动态与镜头运动，首帧是动作起点而非静止画框
 VIDEO_DIRECTIVE = (
-    "生成要求：严格按照上述分镜画面描述与首帧参考图生成视频内容，"
-    "角色外貌服装、场景环境与道具样式必须与首帧严格一致，"
-    "有对白时说话角色口部自然开合、表情动作与台词情绪匹配，"
-    "镜头运动平稳自然，不得新增画面描述与首帧之外的角色、场景元素与物体；"
+    "生成要求：以上述首帧参考图为动作起点，从该画面自然延续演出，"
+    "画面必须是动态的：角色按照分镜画面描述做出相应的肢体动作与表情变化"
+    "（如走动、转身、抬头、抬手、俯身、推门等具体动作，动作幅度自然连贯），"
+    "有对白时说话角色口部自然开合、表情与台词情绪呼应，"
+    "禁止生成角色静止站立只有嘴部微动的画面；"
+    "场景环境同步呈现自然动态（风吹动发丝衣物树叶、光影流动、"
+    "雨雪烟雾水面波动等按画面场景合理呈现）；"
+    "镜头按机位角度做平稳自然的推拉摇移运动，避免完全固定机位；"
+    "一致性约束仅限：角色身份与外貌服装、场景布局与道具样式、画风必须与"
+    "首帧保持一致，不得新增画面描述与首帧之外的角色与物体，但人物动作、"
+    "环境动态与镜头运动不受首帧限制；"
     "音频要求：严禁生成任何人物说话的人声、语音与对白，"
     "仅可保留与画面环境匹配的自然环境音效（如雨声、风声、脚步声）"
 )
@@ -598,6 +609,11 @@ async def create_video_task(
     cost = max(1, int(per_second * duration))
     # 方案 B：负面排除段从锁定层剥离（视频正向提示词同样不混入负面）
     locked_positive, locked_negative = split_prompt_negative(storyboard.prompt_locked)
+    # 剥离拆解快照中的「固定」运镜残留（2026-10-21 用户反馈视频画面静止）：
+    # 拆解八要素写入「景别运镜：全景/固定」等字样，i2v 模型读到「固定」会
+    # 倾向静止机位/微动画面，与 VIDEO_DIRECTIVE 动作驱动指令直接矛盾——
+    # 仅视频路径替换（关键帧提示词不受影响）
+    locked_positive = locked_positive.replace("/固定", "").replace("运镜：固定", "运镜")
     # 视频专项提示词（2026-10-20 强化）：以分镜画面描述为核心（用户在分镜页
     # 编辑后即时生效，不依赖拆解快照），叠加机位角度/环境光影/情绪要素与
     # 对白说话提示（视频 agent 据此表现角色说话时刻）；锁定层八要素快照与
@@ -614,7 +630,11 @@ async def create_video_task(
     if emotion:
         video_parts.append(f"镜头情绪：{emotion}")
     if (storyboard.dialogue or "").strip():
-        video_parts.append(f"角色对白（说话角色口部自然开合）：{storyboard.dialogue.strip()}")
+        # 说话提示不只口型（2026-10-21）：要求口型+表情+肢体反应联动，
+        # 配合 VIDEO_DIRECTIVE 动作驱动，避免「只有嘴动」的静止演出
+        video_parts.append(
+            f"角色对白（说话角色口部自然开合，并配合台词情绪做出表情与肢体反应）：{storyboard.dialogue.strip()}"
+        )
     prompt = build_prompt(
         *video_parts, locked_positive, storyboard.prompt_editable, project.style, VIDEO_DIRECTIVE,
     )
@@ -1018,8 +1038,14 @@ async def create_compose_task(
     subtitle_style: Optional[dict] = None,
     bgm: Optional[dict] = None,
     transition: Optional[dict] = None,
+    intro_card: bool = False,
+    outro_card: bool = False,
 ) -> Task:
     """创建成片合成任务（成本 200 积分/次）。
+
+    完整性门禁（2026-10-21 用户确认参考即梦/小云雀类平台）：合成前校验
+    范围内分镜视频产物齐备，缺镜返回 400（detail.code=videos_incomplete，
+    携带缺镜 ID/序号清单）——保证一集成片不静默缺镜头。
 
     Args:
         db: 异步数据库会话。
@@ -1035,12 +1061,16 @@ async def create_compose_task(
         subtitle_style: 字幕样式 {font_size, color, position}（可空用默认）。
         bgm: 背景音乐 {url, volume}（Task 5.2，可空表示不加）。
         transition: 转场 {type, duration}（Task 5.3，可空表示不加）。
+        intro_card: 是否插入片头标题卡（剧名+集数，2.5s 黑底白字）。
+        outro_card: 是否插入剧终片尾卡（2s 黑底白字）。
 
     Returns:
         Task: 已落库的新合成任务（meta 携带合成增强参数与涉及分镜清单）。
 
     Raises:
-        HTTPException: 400 —— 项目暂无分镜或增量分镜清单为空；409 —— 积分余额不足。
+        HTTPException: 400 —— 项目暂无分镜/增量分镜清单为空/范围内存在未
+            生成视频的分镜（videos_incomplete，detail 携带缺镜清单）；
+            409 —— 积分余额不足。
     """
     conds = [Storyboard.project_id == project.id]
     if episode_id is not None:
@@ -1056,6 +1086,28 @@ async def create_compose_task(
         targets = [sb.id for sb in rows.scalars().all()]
     if not targets:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="项目暂无分镜，无法合成")
+    # 完整性门禁：范围内分镜视频产物必须齐备（缺镜 400 + 清单，防成片静默缺镜头）
+    sb_rows = (
+        await db.execute(
+            select(Storyboard.id, Storyboard.sequence, Storyboard.video_url)
+            .where(Storyboard.id.in_(targets))
+            .order_by(Storyboard.sequence)
+        )
+    ).all()
+    missing = [
+        {"id": sid, "sequence": seq}
+        for sid, seq, video_url in sb_rows if not video_url
+    ]
+    if missing:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "code": "videos_incomplete",
+                "message": f"还有 {len(missing)} 个镜头未生成视频，请补齐后再合成",
+                "missing": missing,
+                "total": len(sb_rows),
+            },
+        )
     await _precheck_balance(db, project.user_id, COMPOSE_COST)
     return await freeze_and_create_task(
         db,
@@ -1076,6 +1128,9 @@ async def create_compose_task(
             "subtitle_style": subtitle_style,
             "bgm": bgm,
             "transition": transition,
+            # 片头片尾卡（2026-10-21 成片整合：剧名+集数标题卡 / 剧终卡）
+            "intro_card": bool(intro_card),
+            "outro_card": bool(outro_card),
         },
         idempotency_key=f"compose_{project.id}_{uuid4().hex[:8]}",
     )

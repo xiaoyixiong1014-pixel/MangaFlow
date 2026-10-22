@@ -453,7 +453,15 @@ onBeforeUnmount(() => {
       <el-row :gutter="20" class="card-row">
         <el-col v-for="p in items" :key="p.id" :xs="24" :sm="12" :md="8" :lg="6">
           <div class="project-card" @click="openProject(p)">
-            <div class="card-cover" :style="{ background: p.cover_url ? `url(${p.cover_url}) center/cover` : coverOf(p) }">
+            <div
+              class="card-cover"
+              :style="{
+                background: p.cover_url
+                  // 关键帧封面（2026-10-21）：叠暗色渐变保证状态角标与文字可读
+                  ? `linear-gradient(180deg, rgba(0,0,0,.18), rgba(0,0,0,.32)), url(${p.cover_url}) center/cover`
+                  : coverOf(p)
+              }"
+            >
               <MfTag class="card-status" :variant="STATUS_VARIANT[p.status] ?? 'neutral'" size="sm">
                 {{ STATUS_TEXT[p.status] ?? p.status }}
               </MfTag>

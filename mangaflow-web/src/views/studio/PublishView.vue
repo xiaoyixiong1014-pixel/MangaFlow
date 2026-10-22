@@ -99,6 +99,7 @@ async function loadAll(): Promise<void> {
     ])
     outputs.value = outs.items
     reviewList.value = revs?.items ?? []
+    reviewPage.value = 1
     boards.value = sb
     buildPlaceholderMap(imgTasks?.items ?? [])
     composePlaceholder.value = !!(composeTasks?.items ?? []).find(
@@ -168,6 +169,16 @@ function regenShot(b: Storyboard): void {
 const hasViolate = computed(() =>
   reviewList.value.some((r) => r.result === 'violate' || r.result === 'suspect'),
 )
+
+/** 审核结果分页：每页条数（2026-10-21 用户确认，数据多时列表过长） */
+const REVIEW_PAGE_SIZE = 10
+/** 当前页（从 1 起） */
+const reviewPage = ref(1)
+/** 当前页展示的审核记录（客户端分页，reviewList 已全量拉回） */
+const pagedReviews = computed(() => {
+  const start = (reviewPage.value - 1) * REVIEW_PAGE_SIZE
+  return reviewList.value.slice(start, start + REVIEW_PAGE_SIZE)
+})
 /** 闸门 → 中文文案 */
 const gateLabel: Record<string, string> = {
   generate: '生成级',
@@ -516,7 +527,7 @@ onMounted(loadAll)
           <!-- 审核结果 -->
           <el-tab-pane :label="`审核结果 (${reviewList.length})`">
             <el-empty v-if="!reviewList.length" description="暂无审核记录" />
-            <div v-for="r in reviewList" :key="r.id" class="review-item">
+            <div v-for="r in pagedReviews" :key="r.id" class="review-item">
               <div class="review-line">
                 <el-tag size="small" effect="plain">{{ gateLabel[r.gate] ?? r.gate }}</el-tag>
                 <el-tag size="small" :type="resultMap[r.result]?.type ?? 'info'">
@@ -542,6 +553,17 @@ onMounted(loadAll)
               </div>
               <div v-if="r.suggestion" class="review-tip">建议：{{ r.suggestion }}</div>
             </div>
+            <!-- 客户端分页（2026-10-21）：审核记录多时列表过长，每页 10 条 -->
+            <el-pagination
+              v-if="reviewList.length > REVIEW_PAGE_SIZE"
+              v-model:current-page="reviewPage"
+              :page-size="REVIEW_PAGE_SIZE"
+              :total="reviewList.length"
+              layout="prev, pager, next, jumper, total"
+              small
+              background
+              class="review-pagination"
+            />
           </el-tab-pane>
 
           <!-- 版本管理 -->
@@ -755,6 +777,12 @@ onMounted(loadAll)
 .download-link {
   color: var(--mf-brand);
   font-size: var(--mf-fs-sm);
+}
+/* 审核结果分页条（2026-10-21）：列表底部居中 */
+.review-pagination {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--mf-sp-4);
 }
 .review-item {
   padding: var(--mf-sp-2) 0;
