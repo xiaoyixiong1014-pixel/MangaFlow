@@ -10,6 +10,8 @@
 #   - 保留 ffmpeg + fonts-noto-cjk（视频合成、字幕烧录不乱码，P-15/P-16）
 #   - 端口由文档的 8000 调整为本仓库约定的 8300（本机 8000 被其他项目占用）
 #   - HEALTHCHECK 使用 /api/metrics（免鉴权 Prometheus 端点，能同时反映 DB 连通性）
+# V2.0 变更：非 root 运行基线——安装 gosu + appuser，ENTRYPOINT 先修复存储卷
+#   属主再降权执行 uvicorn / ffmpeg（见 deploy/backend-entrypoint.sh）
 # =============================================================================
 
 # ---- 阶段说明：单阶段构建，python:3.12-slim 基础 ----
@@ -28,12 +30,17 @@ ENV PYTHONUNBUFFERED=1 \
     TZ=Asia/Shanghai
 
 # 系统依赖：ffmpeg（成片合成）、中文字体（字幕避免方块）、fontconfig（字体缓存）
+# gosu：entrypoint 完成存储卷属主修复后从 root 降权到 appuser（非 root 运行基线）
 # 说明：requirements 内全部为预编译 wheel（asyncpg/psycopg[binary]/bcrypt 等），
 #       无需 build-essential 编译工具链，保持镜像精简
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fontconfig \
+    && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fontconfig gosu \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
+
+# 非特权运行用户：uvicorn / ffmpeg 以 appuser 身份执行（HOME 供 fontconfig 等写用户级缓存）
+RUN groupadd -r appuser && useradd -r -g appuser -m -d /home/appuser -s /usr/sbin/nologin appuser
+ENV HOME=/home/appuser
 
 # 工作目录：/app（镜像内布局与仓库一致，/app/backend 即仓库的 backend/ 目录）
 WORKDIR /app
@@ -45,6 +52,14 @@ RUN pip install --no-cache-dir -r /app/requirements.txt
 # 再拷贝后端代码（.dockerignore 已排除 .venv/__pycache__/storage/tests 等无关内容）
 COPY backend/ /app/backend/
 WORKDIR /app/backend
+
+# 代码与存储目录属主交给 appuser（存储卷属主由 entrypoint 启动时按需修复）
+RUN chown -R appuser:appuser /app/backend /home/appuser
+
+# 入口脚本：存储卷属主修复 → gosu 降权 → 执行 CMD
+COPY deploy/backend-entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # EXPOSE: 容器内服务端口（本仓库约定 8300）
 EXPOSE 8300

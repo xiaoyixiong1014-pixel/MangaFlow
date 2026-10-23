@@ -27,6 +27,10 @@ ARG NPM_REGISTRY=https://registry.npmjs.org
 # RUN: 将镜像源写入 npm 全局配置（对后续 npm ci / npx 拉包生效）
 RUN npm config set registry "${NPM_REGISTRY}"
 
+# ENV: 限制 V8 老生代堆上限 1536MB——2GB 内存服务器上构建时防止 vite/vue-tsc
+# 默认堆策略吃满内存触发 OOM（配合部署文档的 swap 配置使用）
+ENV NODE_OPTIONS=--max-old-space-size=1536
+
 # 工作目录：/src，镜像内目录布局与仓库一致（mangaflow-design 与 mangaflow-web 平级，
 # 保证 package.json 中 "file:../mangaflow-design" 的相对路径语义不变）
 WORKDIR /src

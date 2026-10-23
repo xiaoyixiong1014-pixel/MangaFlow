@@ -6,18 +6,26 @@
 
 | 文件 | 说明 |
 | ---- | ---- |
-| `backend.Dockerfile` | 后端镜像：python:3.12-slim + uvicorn，容器内端口 8300；内置 ffmpeg 与中文字体（视频合成/字幕烧录，P-15/P-16） |
+| `backend.Dockerfile` | 后端镜像：python:3.12-slim + uvicorn，容器内端口 8300；内置 ffmpeg 与中文字体（视频合成/字幕烧录，P-15/P-16）；V2.0 起非 root 运行（gosu 降权） |
 | `web.Dockerfile` | 创作端镜像：node:22-alpine 构建（镜像内先构建共享包 mangaflow-design）→ nginx:alpine 托管 dist |
-| `admin.Dockerfile` | 管理端镜像：同上，构建时 `vite build --base=/admin/` 适配子路径部署 |
+| `admin.Dockerfile` | 管理端镜像：同上，`ADMIN_BASE` 参数控制资源前缀（默认 `/admin/` 适配网关子路径；生产独立端口形态传 `/`） |
 | `web-nginx.conf` | 创作端镜像内置站点配置（SPA history 路由 fallback） |
 | `admin-nginx.conf` | 管理端镜像内置站点配置（剥 `/admin/` 前缀 + SPA fallback） |
 | `nginx.conf` | **网关**：`/` → 创作端、`/admin/` → 管理端、`/api` `/storage` → 后端（SSE 支持） |
-| `docker-compose.yml` | 全套服务编排（postgres / backend / web / admin-web / nginx） |
-| `.env.example` | 环境变量模板（复制为 `.env` 后按需修改） |
+| `docker-compose.yml` | 开发/演示全套服务编排（postgres / backend / web / admin-web / nginx） |
+| `.env.example` | 环境变量模板（复制为 `.env` 后按需修改，含生产端口与模型渠道 Key 段） |
+| `docker-compose.prod.yml` | ★ **生产编排（腾讯云）**：用户端 8006 / 运营端 8007 独立端口，无网关容器，资源限额 + 密钥必填校验，详见《项目开发文档/漫序 MangaFlow 腾讯云服务器部署方案 V2.0.md》 |
+| `web-nginx.prod.conf` | ★ 用户端生产站点配置（运行时挂载覆盖镜像内置配置：SPA + `/api`、`/storage` 反代 + SSE） |
+| `admin-nginx.prod.conf` | ★ 运营端生产站点配置（根路径形态，运行时挂载） |
+| `backend-entrypoint.sh` | ★ 后端入口脚本：存储卷属主修复 → gosu 降权（非 root 运行基线） |
 
 仓库根的 `.dockerignore` 控制构建上下文体积（排除 `.git`/`node_modules`/`.venv`/`storage`/测试报告/开发文档等）。
 
-## 2. 端口约定（宿主统一 1xxxx 高位）
+## 2. 端口约定
+
+**生产（腾讯云，`docker-compose.prod.yml`）**：仅暴露两个前端端口——宿主 **8006** → web（用户端）、宿主 **8007** → admin-web（运营端）；postgres / backend 不映射宿主端口，公网不可达。完整操作见《项目开发文档/漫序 MangaFlow 腾讯云服务器部署方案 V2.0.md》。
+
+**开发/演示（`docker-compose.yml`，宿主统一 1xxxx 高位）**：
 
 | 宿主端口 | 容器 | 服务 | 备注 |
 | -------- | ---- | ---- | ---- |

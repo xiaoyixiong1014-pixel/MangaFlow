@@ -8,17 +8,19 @@
 # 关键点：
 #   1. 管理端同样依赖本地共享包 "@mangaflow/design": "file:../mangaflow-design"，
 #      构建上下文为仓库根，镜像内先构建设计系统再构建管理端；
-#   2. 管理端以网关子路径 /admin/ 对外服务（RD-58 方案 B：同机独立路径），
-#      构建时通过 vite CLI 参数 --base=/admin/ 指定资源前缀——产物中
-#      <script>/<link> 引用与 vue-router 的 createWebHistory(import.meta.env.BASE_URL)
-#      均自动跟随 /admin/，无需修改任何应用代码。
+#   2. 管理端部署形态由构建参数 ADMIN_BASE 决定（RD-58）：
+#      - 默认 /admin/：网关子路径形态（docker-compose.yml，方案 B 变体），
+#        构建时产物资源引用与 vue-router base 均自动跟随 /admin/；
+#      - 生产独立端口形态传 /（docker-compose.prod.yml，运营端独占宿主 8007），
+#        根路径直连，构建 base=/。
 #
-# 与部署文档 V1.0 §5.6 的对应关系：文档提供"独立域名（方案 A）/独立端口（方案 B）"
-# 两种形态，本实现取方案 B 的变体——统一由网关 80 端口按 /admin/ 路径分流，
-# 省去独立公网端口；如需方案 A，可复用本镜像将网关 server_name 换成独立域名。
+# 与部署文档 V1.0 §5.6 / V2.0 部署方案的对应关系：
+#   - V1.0 网关拓扑取方案 B 变体（统一 80 端口 /admin/ 分流）；
+#   - V2.0 腾讯云生产拓扑改为独立端口直连（宿主 8007 → 容器 80），
+#     生产编排构建时传 ADMIN_BASE=/ 并卷挂载 admin-nginx.prod.conf。
 # =============================================================================
 
-# ---- 阶段一：管理端构建（安装依赖 + vite build --base=/admin/）----
+# ---- 阶段一：管理端构建（安装依赖 + vite build --base=${ADMIN_BASE}）----
 FROM node:22-alpine AS build
 
 # ARG: npm 国内镜像加速开关（默认官方源；国内构建可传
@@ -26,6 +28,13 @@ FROM node:22-alpine AS build
 ARG NPM_REGISTRY=https://registry.npmjs.org
 # RUN: 将镜像源写入 npm 全局配置（对后续 npm ci / npx 拉包生效）
 RUN npm config set registry "${NPM_REGISTRY}"
+
+# ENV: 限制 V8 老生代堆上限 1536MB——2GB 内存服务器上构建时防止 vite/vue-tsc
+# 默认堆策略吃满内存触发 OOM（配合部署文档的 swap 配置使用）
+ENV NODE_OPTIONS=--max-old-space-size=1536
+
+# ARG: 管理端资源前缀（默认 /admin/ 兼容网关拓扑；生产独立端口编排传 /）
+ARG ADMIN_BASE=/admin/
 
 # 工作目录：/src，镜像内目录布局与仓库一致（保证 file:../mangaflow-design 相对路径语义）
 WORKDIR /src
@@ -45,10 +54,10 @@ COPY mangaflow-admin-web/package.json mangaflow-admin-web/package-lock.json ./ma
 # RUN: 同样采用 ci 失败回退 install 的策略
 RUN cd mangaflow-admin-web && (npm ci || npm install)
 
-# 第 4 步：拷贝管理端源码并构建（--base=/admin/ 使产物资源路径与路由 base 一致）
+# 第 4 步：拷贝管理端源码并构建（--base=${ADMIN_BASE} 使产物资源路径与路由 base 一致）
 COPY mangaflow-admin-web/ ./mangaflow-admin-web/
-# RUN: 产出 /src/mangaflow-admin-web/dist（资源引用前缀 /admin/）
-RUN cd mangaflow-admin-web && npx vite build --base=/admin/
+# RUN: 产出 /src/mangaflow-admin-web/dist（资源引用前缀跟随 ADMIN_BASE）
+RUN cd mangaflow-admin-web && npx vite build --base=${ADMIN_BASE}
 
 # ---- 阶段二：nginx 托管静态产物 ----
 FROM nginx:alpine

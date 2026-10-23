@@ -38,10 +38,12 @@ test-report
 项目开发文档
 
 # ---- 部署文件自身（Dockerfile 由 -f/compose 显式引用不受影响；
-#      两个前端站点 nginx 配置需被 COPY 进镜像，此处加白名单保留） ----
+#      两个前端站点 nginx 配置与后端入口脚本需被 COPY 进镜像，
+#      此处加白名单保留；生产站点配置 *.prod.conf 仅运行时卷挂载，无需进镜像） ----
 deploy
 !deploy/web-nginx.conf
 !deploy/admin-nginx.conf
+!deploy/backend-entrypoint.sh
 mangaflow.ps1
 
 # ---- 环境变量文件（防止密钥进镜像；运行时由 compose 注入） ----

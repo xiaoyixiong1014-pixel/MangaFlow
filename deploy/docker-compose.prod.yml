@@ -1,0 +1,263 @@
+# =============================================================================
+# 漫序 MangaFlow 生产部署编排（腾讯云服务器专用，文件级说明）
+#
+# 用途   : docker compose -f deploy/docker-compose.prod.yml up -d
+#          在腾讯云服务器（2核 / 2GB 内存 / Ubuntu 24.04 / Docker 27.5.1）
+#          上拉起生产全套服务，配套《腾讯云服务器部署方案 V2.0》使用。
+# 服务   : postgres（pgvector）→ backend（FastAPI）→ web（用户端 8006）/
+#          admin-web（运营端 8007）
+#
+# 与 docker-compose.yml（开发/演示编排）的差异：
+#   1. 去掉 nginx 网关容器：用户端与运营端各自独占公网端口（8006 / 8007），
+#      由两个前端容器内置 nginx 直接反代 /api 与 /storage（配置见
+#      web-nginx.prod.conf / admin-nginx.prod.conf，运行时卷挂载覆盖镜像内置配置）；
+#   2. postgres / backend 不再映射宿主端口，仅容器网络内可达（生产安全基线）；
+#   3. 敏感变量使用必填语法（${VAR:?}）：未设置强密码/密钥时拒绝启动，
+#      防止带着不安全默认值上线；
+#   4. 增加内存 / CPU 限额（适配 2GB 内存）与日志轮转（json-file 10m×3）；
+#   5. 数据库独立 internal 网络（mf-internal），不访问外网；
+#   6. 项目名 / 容器名 / 卷名带 prod 前缀，与开发编排完全隔离。
+#
+# 端口约定（对外仅暴露两个前端端口）：
+#   宿主 8006 → web       80 （★ 用户端入口，内置 nginx 反代 /api、/storage）
+#   宿主 8007 → admin-web 80 （★ 运营端入口，内置 nginx 反代 /api、/storage）
+# =============================================================================
+
+# compose 项目名（容器 / 网络 / 卷前缀，与开发编排 mangaflow 相互隔离）
+name: mangaflow-prod
+
+# ---- 公共锚点：日志轮转（防止日志写满 50GB 系统盘） ----
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 16 + pgvector：业务库与向量检索（仅容器内网可达，不映射宿主端口）
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: mf-prod-postgres
+    restart: unless-stopped
+    # 低内存调优：限制缓冲与连接数，给后端进程留出内存（2GB 服务器）
+    command:
+      - postgres
+      - -c
+      - shared_buffers=128MB
+      - -c
+      - effective_cache_size=384MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - max_connections=50
+    environment:
+      # 超级用户与业务库（backend lifespan 自动建库建表 + 种子数据）
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      # 必填：未在 deploy/.env 设置强密码时拒绝启动（生产安全基线）
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?请在 deploy/.env 中设置 POSTGRES_PASSWORD（openssl rand -hex 16 生成）}
+      POSTGRES_DB: ${POSTGRES_DB:-mangaflow}
+      TZ: Asia/Shanghai
+    volumes:
+      # 命名卷持久化业务数据（含 pgvector 向量列）
+      - mf_prod_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      # pg_isready 探活：库可接受连接即视为 healthy
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-mangaflow}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    networks: [mf-internal]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: "1.0"
+        reservations:
+          memory: 128M
+
+  # ---------------------------------------------------------------------------
+  # FastAPI 后端：uvicorn 单 worker 启动 app.main:app（容器内 8300，不映射宿主端口）
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      # 构建上下文 = 仓库根（backend.Dockerfile 内按 backend/ 相对路径 COPY；
+      # 前端 file: 依赖也要求仓库根上下文，此处保持一致）
+      context: ..
+      dockerfile: deploy/backend.Dockerfile
+      args:
+        # pip 镜像源（国内服务器构建在 deploy/.env 设
+        # PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple 加速）
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: mangaflow/backend:${IMAGE_TAG:-latest}
+    container_name: mf-prod-backend
+    restart: unless-stopped
+    environment:
+      # 业务库连接串：由 POSTGRES_* 自动拼串（主机名为 compose 服务名 postgres）
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-mangaflow}}
+      # 管理库连接串（init_db 连 postgres 系统库自动创建 mangaflow 业务库）
+      ADMIN_DATABASE_URL: ${ADMIN_DATABASE_URL:-postgresql+asyncpg://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD}@postgres:5432/postgres}
+      # JWT 签名密钥（必填：openssl rand -hex 32 生成）
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:?请在 deploy/.env 中设置 JWT_SECRET_KEY（openssl rand -hex 32 生成）}
+      JWT_ALGORITHM: ${JWT_ALGORITHM:-HS256}
+      # 模型渠道 API Key 的 AES 加密密钥（必填：openssl rand -hex 16 生成 32 字符）
+      AES_KEY: ${AES_KEY:?请在 deploy/.env 中设置 AES_KEY（openssl rand -hex 16 生成）}
+      # ---------- 模型渠道（未配置 Key 的渠道不阻断启动，降级为本地 mock 演示占位） ----------
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-chat}
+      AGNES_LLM_BASE_URL: ${AGNES_LLM_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      AGNES_LLM_API_KEY: ${AGNES_LLM_API_KEY:-}
+      AGNES_LLM_MODEL: ${AGNES_LLM_MODEL:-agnes-3.0-flash}
+      AGNES_IMAGE_BASE_URL: ${AGNES_IMAGE_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      AGNES_IMAGE_API_KEY: ${AGNES_IMAGE_API_KEY:-}
+      AGNES_IMAGE_MODEL: ${AGNES_IMAGE_MODEL:-agnes-image-2.5-flash}
+      AGNES_VIDEO_BASE_URL: ${AGNES_VIDEO_BASE_URL:-https://apihub.agnes-ai.com/v1}
+      AGNES_VIDEO_API_KEY: ${AGNES_VIDEO_API_KEY:-}
+      AGNES_VIDEO_MODEL: ${AGNES_VIDEO_MODEL:-agnes-video-2.5-flash}
+      AGNES_VIDEO_MODE: ${AGNES_VIDEO_MODE:-text}
+      AGNES_VISION_MODEL: ${AGNES_VISION_MODEL:-agnes-3.0-flash-max}
+      BAILIAN_TTS_BASE_URL: ${BAILIAN_TTS_BASE_URL:-https://ws-lhelc7dy7rch25ia.cn-beijing.maas.aliyuncs.com/compatible-mode/v1}
+      BAILIAN_TTS_API_KEY: ${BAILIAN_TTS_API_KEY:-}
+      BAILIAN_TTS_MODEL: ${BAILIAN_TTS_MODEL:-qwen-audio-3.1-tts-flash}
+      BAILIAN_WAN_BASE_URL: ${BAILIAN_WAN_BASE_URL:-https://ws-lhelc7dy7rch25ia.cn-beijing.maas.aliyuncs.com}
+      BAILIAN_WAN_MODEL: ${BAILIAN_WAN_MODEL:-wan2.7-i2v}
+      # ---------- 异步视频轮询 / 业务开关 / 跨域 ----------
+      VIDEO_POLL_INTERVAL_SECONDS: ${VIDEO_POLL_INTERVAL_SECONDS:-5}
+      VIDEO_POLL_TIMEOUT_SECONDS: ${VIDEO_POLL_TIMEOUT_SECONDS:-300}
+      # 启动时是否先执行 Alembic 迁移（默认 false 走 create_all 兜底；升级版本置 true）
+      ALEMBIC_ON_STARTUP: ${ALEMBIC_ON_STARTUP:-false}
+      # 违规分级处罚准入校验（产品上线后置 true 启用拦截）
+      PUNISHMENT_ENABLED: ${PUNISHMENT_ENABLED:-false}
+      # 跨域白名单（前端经同源 nginx 反代 /api，无跨域诉求；JSON 数组格式）
+      CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
+      # 画布插件 endpoint_url 信任域白名单（JSON 数组；空 = 仅强制内网黑名单）
+      PLUGIN_ALLOWED_HOSTS: ${PLUGIN_ALLOWED_HOSTS:-[]}
+      # LangSmith 链路追踪开关（默认关闭零开销）
+      LANGSMITH_TRACING: ${LANGSMITH_TRACING:-false}
+      TZ: Asia/Shanghai
+    volumes:
+      # 本地媒体存储持久化：config.storage_dir 默认解析为 /app/backend/storage
+      - mf_prod_storage:/app/backend/storage
+    depends_on:
+      # 等 postgres 健康后再启动，避免启动初期建库失败
+      postgres:
+        condition: service_healthy
+    networks: [mf-app, mf-internal]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 896M
+          cpus: "1.5"
+        reservations:
+          memory: 256M
+
+  # ---------------------------------------------------------------------------
+  # 用户端（mangaflow-web）：vite 构建 + nginx 托管（宿主 8006 → 容器 80）
+  # 内置 nginx 反代 /api 与 /storage 到 backend（web-nginx.prod.conf 卷挂载）
+  # ---------------------------------------------------------------------------
+  web:
+    build:
+      # 上下文必须为仓库根：构建需同时包含 mangaflow-design/ 与 mangaflow-web/
+      context: ..
+      dockerfile: deploy/web.Dockerfile
+      args:
+        # npm 镜像源（国内构建推荐 https://registry.npmmirror.com）
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: mangaflow/web:${IMAGE_TAG:-latest}
+    container_name: mf-prod-web
+    restart: unless-stopped
+    ports:
+      # ★ 用户端对外入口：http://82.156.216.134:8006
+      - "${WEB_PORT:-8006}:80"
+    volumes:
+      # 生产站点配置：SPA 托管 + /api、/storage 反代 + SSE 长超时
+      # （覆盖镜像内置的 web-nginx.conf，后者面向开发网关拓扑）
+      - ./web-nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      # 前端为纯静态托管，无启动顺序强依赖；声明 backend 仅为编排语义完整
+      backend:
+        condition: service_started
+    healthcheck:
+      # busybox wget 探活本机站点（nginx:alpine 自带 wget）
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks: [mf-app]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.5"
+        reservations:
+          memory: 32M
+
+  # ---------------------------------------------------------------------------
+  # 运营管理端（mangaflow-admin-web）：vite 构建（base=/）+ nginx 托管（宿主 8007 → 容器 80）
+  # 生产以独立端口直连（不再走 /admin/ 子路径），ADMIN_BASE 构建参数置为 /
+  # ---------------------------------------------------------------------------
+  admin-web:
+    build:
+      # 上下文必须为仓库根（理由同 web）
+      context: ..
+      dockerfile: deploy/admin.Dockerfile
+      args:
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        # 资源前缀：生产独立端口形态构建为根路径（开发网关拓扑默认 /admin/）
+        ADMIN_BASE: /
+    image: mangaflow/admin-web:${IMAGE_TAG:-latest}
+    container_name: mf-prod-admin-web
+    restart: unless-stopped
+    ports:
+      # ★ 运营端对外入口：http://82.156.216.134:8007
+      - "${ADMIN_PORT:-8007}:80"
+    volumes:
+      # 生产站点配置：根路径 SPA 托管 + /api、/storage 反代 + SSE 长超时
+      - ./admin-nginx.prod.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      backend:
+        condition: service_started
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/ || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+    networks: [mf-app]
+    logging: *default-logging
+    deploy:
+      resources:
+        limits:
+          memory: 64M
+          cpus: "0.5"
+        reservations:
+          memory: 32M
+
+# ---------------------------------------------------------------------------
+# 命名卷：数据库数据 + 媒体存储（down 不删除；彻底清库用 down -v，谨慎操作）
+# ---------------------------------------------------------------------------
+volumes:
+  mf_prod_postgres_data:
+  mf_prod_storage:
+
+# ---------------------------------------------------------------------------
+# 容器网络：
+#   mf-app      ：对外业务网（web / admin-web / backend 互访，backend 可出公网调模型 API）
+#   mf-internal ：数据内网（postgres 仅与 backend 互通，internal 禁止出公网）
+# ---------------------------------------------------------------------------
+networks:
+  mf-app:
+    driver: bridge
+  mf-internal:
+    driver: bridge
+    internal: true
