@@ -1,0 +1,33 @@
+/* @mangaflow/design · 基础样式（轻量 reset + 全局默认） */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--mf-font);
+  font-size: var(--mf-fs-base);
+  line-height: 1.6;
+  color: var(--mf-text);
+  background: var(--mf-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* 键盘可达：统一焦点环（无障碍基线） */
+:focus-visible {
+  outline: none;
+  box-shadow: var(--mf-ring);
+  border-radius: var(--mf-r-ctl);
+}
+
+::selection {
+  background: var(--mf-brand-soft);
+}

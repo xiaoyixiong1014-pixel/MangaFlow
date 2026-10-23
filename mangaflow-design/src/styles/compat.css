@@ -1,0 +1,39 @@
+/* ============================================================
+   @mangaflow/design · 原型兼容层（可选引入）
+   ------------------------------------------------------------
+   全站原型 HTML 使用的是无前缀变量名（--accent / --surface…）。
+   本文件把旧名映射到 --mf- token，便于原型样式逐步迁移到
+   mangaflow-web / mangaflow-admin-web 时零改动复用；
+   迁移完成后建议统一改用 --mf- 原名并移除本层。
+   ============================================================ */
+
+:root,
+[data-theme='dark'] {
+  --accent: var(--mf-brand);
+  --accent-soft: var(--mf-brand-soft);
+  --brand2: var(--mf-brand2);
+  --brand2-soft: var(--mf-brand2-soft);
+
+  --ok: var(--mf-ok);       --ok-soft: var(--mf-ok-soft);
+  --warn: var(--mf-warn);   --warn-soft: var(--mf-warn-soft);
+  --danger: var(--mf-danger); --danger-soft: var(--mf-danger-soft);
+
+  --bg: var(--mf-bg);
+  --surface: var(--mf-surface);
+  --surface-2: var(--mf-surface-2);
+  --surface-3: var(--mf-surface-3);
+  --sidebar: var(--mf-surface-3);
+  --text: var(--mf-text);
+  --text-2: var(--mf-text-2);
+  --text-3: var(--mf-text-3);
+  --border: var(--mf-border);
+  --border-strong: var(--mf-border-strong);
+
+  --r-card: var(--mf-r-card);
+  --r-ctl: var(--mf-r-ctl);
+  --r-pill: var(--mf-r-pill);
+
+  --shadow: var(--mf-shadow);
+  --font: var(--mf-font);
+  --mono: var(--mf-mono);
+}

@@ -1,0 +1,133 @@
+/* ============================================================
+   @mangaflow/design · 设计 token（单一事实源）
+   ------------------------------------------------------------
+   来源：《漫序 MangaFlow UI原型界面描述清单 V2.1》§0.7 色彩规范
+        + 全站原型实测值（全站原型一/二/三、W01/S02/S04 一致）
+   主题：:root = 浅色（官网门户 / 运营管理端默认）
+        [data-theme="dark"] = 深色（创作端默认）
+   命名：--mf- 前缀，避免与 Element Plus（--el-）及应用变量冲突
+   ============================================================ */
+
+:root {
+  /* ---------- 品牌色 ---------- */
+  --mf-brand: #12B3A6;                       /* 墨青 · Studio 引擎主色 */
+  --mf-brand-soft: rgba(18, 179, 166, .10);  /* 品牌浅底（选中态/徽标底） */
+  --mf-brand-strong: #0B7C73;                /* 深墨青 · 浅底上的品牌文字（链接/选中态），对白底对比 ≥4.5:1 */
+  --mf-brand-contrast: #06332F;              /* 品牌色（实心）上的文字 · 深墨青，对 #12B3A6 对比 5.3:1（WCAG AA） */
+  --mf-brand2: #7C6BF0;                      /* 藤紫 · Canvas 引擎辅色 */
+  --mf-brand2-soft: rgba(124, 107, 240, .12);
+
+  /* ---------- 语义色（基础 + 浅底） ---------- */
+  --mf-ok: #1E9E6A;      --mf-ok-soft: rgba(30, 158, 106, .12);
+  --mf-warn: #B87100;    --mf-warn-soft: rgba(184, 113, 0, .13);
+  --mf-danger: #CE4343;  --mf-danger-soft: rgba(206, 67, 67, .12);
+  --mf-info: #3B73C4;    --mf-info-soft: rgba(59, 115, 196, .12);
+
+  /* ---------- 中性色 ---------- */
+  --mf-bg: #F5F7F6;            /* 页面底 */
+  --mf-surface: #FFFFFF;       /* 卡片/面板 */
+  --mf-surface-2: #FAFAF8;     /* 次级面板 / 悬浮底 */
+  --mf-surface-3: #EFF2F1;     /* 侧栏 / 三级面板 */
+  --mf-text: #14181A;
+  --mf-text-2: #5F6B68;
+  --mf-text-3: #8E9A97;
+  --mf-border: rgba(0, 0, 0, .09);
+  --mf-border-strong: rgba(0, 0, 0, .16);
+
+  /* ---------- 圆角 ---------- */
+  --mf-r-card: 20px;           /* 卡片 */
+  --mf-r-ctl: 12px;            /* 控件（按钮/输入框） */
+  --mf-r-pill: 999px;          /* 胶囊/标签 */
+
+  /* ---------- 阴影 / 焦点环 ---------- */
+  --mf-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 24px -12px rgba(0, 0, 0, .10);
+  --mf-shadow-pop: 0 4px 12px rgba(0, 0, 0, .08), 0 16px 48px -16px rgba(0, 0, 0, .16);
+  --mf-ring: 0 0 0 3px rgba(18, 179, 166, .25);
+
+  /* ---------- 字体 ---------- */
+  --mf-font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+             "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  --mf-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* 字号阶梯 */
+  --mf-fs-xs: 12px;
+  --mf-fs-sm: 13px;
+  --mf-fs-md: 14px;
+  --mf-fs-base: 15px;
+  --mf-fs-lg: 17px;
+  --mf-fs-xl: 20px;
+  --mf-fs-2xl: 24px;
+  --mf-fs-3xl: 32px;
+
+  /* 字重 */
+  --mf-fw-regular: 400;
+  --mf-fw-medium: 500;
+  --mf-fw-semibold: 600;
+  --mf-fw-bold: 700;
+
+  /* ---------- 间距（4px 基准） ---------- */
+  --mf-sp-1: 4px;
+  --mf-sp-2: 8px;
+  --mf-sp-3: 12px;
+  --mf-sp-4: 16px;
+  --mf-sp-5: 20px;
+  --mf-sp-6: 24px;
+  --mf-sp-7: 28px;
+  --mf-sp-8: 32px;
+  --mf-sp-9: 40px;
+  --mf-sp-10: 48px;
+  --mf-sp-11: 56px;
+  --mf-sp-12: 64px;
+
+  /* ---------- 布局尺寸 ---------- */
+  --mf-sidebar-w: 252px;       /* 常驻侧栏宽（W-01 定稿） */
+  --mf-topbar-h: 62px;         /* 顶栏高 */
+
+  /* ---------- 层级 ---------- */
+  --mf-z-dropdown: 100;
+  --mf-z-sticky: 200;
+  --mf-z-drawer: 500;
+  --mf-z-modal: 1000;
+  --mf-z-toast: 1100;
+
+  /* ---------- 顶栏玻璃底（环境光斑透出，避免实色割裂） ---------- */
+  --mf-topbar-bg: rgba(255, 255, 255, 0.82);
+
+  /* ---------- 动效 ---------- */
+  --mf-dur: .18s;
+  --mf-ease: cubic-bezier(.4, 0, .2, 1);
+}
+
+/* ============================================================
+   深色主题（创作端默认）
+   ============================================================ */
+[data-theme="dark"] {
+  --mf-brand: #4FD8CA;
+  --mf-brand-soft: rgba(18, 179, 166, .18);
+  --mf-brand-strong: #4FD8CA;               /* 深色底上直接用亮青即可满足对比 */
+  --mf-brand-contrast: #08302C;
+  --mf-brand2: #9A8CF5;
+  --mf-brand2-soft: rgba(124, 107, 240, .20);
+
+  --mf-ok: #4CC38A;      --mf-ok-soft: rgba(76, 195, 138, .14);
+  --mf-warn: #E0A33A;    --mf-warn-soft: rgba(224, 163, 58, .14);
+  --mf-danger: #F0736F;  --mf-danger-soft: rgba(240, 115, 111, .14);
+  --mf-info: #5E9BE8;    --mf-info-soft: rgba(94, 155, 232, .14);
+
+  --mf-bg: #0E1112;
+  --mf-surface: #15191A;
+  --mf-surface-2: #1C2223;
+  --mf-surface-3: #111516;
+  --mf-text: #E8EDEA;
+  --mf-text-2: #9BA5A2;
+  --mf-text-3: #6B7573;
+  --mf-border: rgba(255, 255, 255, .09);
+  --mf-border-strong: rgba(255, 255, 255, .16);
+
+  --mf-shadow: 0 1px 2px rgba(0, 0, 0, .30), 0 12px 32px -14px rgba(0, 0, 0, .60);
+  --mf-shadow-pop: 0 4px 16px rgba(0, 0, 0, .40), 0 24px 64px -20px rgba(0, 0, 0, .70);
+  --mf-ring: 0 0 0 3px rgba(79, 216, 202, .30);
+
+  /* 深色顶栏玻璃底 */
+  --mf-topbar-bg: rgba(21, 25, 26, .72);
+}

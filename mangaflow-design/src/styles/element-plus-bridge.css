@@ -1,0 +1,188 @@
+/* ============================================================
+   @mangaflow/design · Element Plus 桥接（可选引入）
+   ------------------------------------------------------------
+   用法（应用侧 main.ts）：
+     import '@mangaflow/design/styles.css'
+     import '@mangaflow/design/element-plus.css'
+   作用：把 EP 的主题变量映射到 --mf- token，使 EP 组件
+        与自绘组件共用同一套墨青/藤紫色板与圆角。
+   ============================================================ */
+
+:root,
+[data-theme='light'] {
+  --el-color-primary: var(--mf-brand);
+  --el-color-primary-light-3: color-mix(in srgb, var(--mf-brand) 70%, white);
+  --el-color-primary-light-5: color-mix(in srgb, var(--mf-brand) 50%, white);
+  --el-color-primary-light-7: color-mix(in srgb, var(--mf-brand) 30%, white);
+  --el-color-primary-light-8: color-mix(in srgb, var(--mf-brand) 20%, white);
+  --el-color-primary-light-9: color-mix(in srgb, var(--mf-brand) 10%, white);
+  --el-color-primary-dark-2: color-mix(in srgb, var(--mf-brand) 80%, black);
+
+  --el-color-success: var(--mf-ok);
+  --el-color-warning: var(--mf-warn);
+  --el-color-danger: var(--mf-danger);
+  --el-color-error: var(--mf-danger);
+  --el-color-info: var(--mf-info);
+
+  /* 语义色浅底/深字阶梯：el-alert、el-tag、el-message 等 is-light 组件依赖
+     light-9 作为浅背景色，缺失时回落 EP 默认色板（刺眼浅黄/浅蓝） */
+  --el-color-success-light-3: color-mix(in srgb, var(--mf-ok) 70%, white);
+  --el-color-success-light-5: color-mix(in srgb, var(--mf-ok) 50%, white);
+  --el-color-success-light-7: color-mix(in srgb, var(--mf-ok) 30%, white);
+  --el-color-success-light-8: color-mix(in srgb, var(--mf-ok) 20%, white);
+  --el-color-success-light-9: color-mix(in srgb, var(--mf-ok) 10%, white);
+  --el-color-success-dark-2: color-mix(in srgb, var(--mf-ok) 80%, black);
+  --el-color-warning-light-3: color-mix(in srgb, var(--mf-warn) 70%, white);
+  --el-color-warning-light-5: color-mix(in srgb, var(--mf-warn) 50%, white);
+  --el-color-warning-light-7: color-mix(in srgb, var(--mf-warn) 30%, white);
+  --el-color-warning-light-8: color-mix(in srgb, var(--mf-warn) 20%, white);
+  --el-color-warning-light-9: color-mix(in srgb, var(--mf-warn) 10%, white);
+  --el-color-warning-dark-2: color-mix(in srgb, var(--mf-warn) 80%, black);
+  --el-color-danger-light-3: color-mix(in srgb, var(--mf-danger) 70%, white);
+  --el-color-danger-light-5: color-mix(in srgb, var(--mf-danger) 50%, white);
+  --el-color-danger-light-7: color-mix(in srgb, var(--mf-danger) 30%, white);
+  --el-color-danger-light-8: color-mix(in srgb, var(--mf-danger) 20%, white);
+  --el-color-danger-light-9: color-mix(in srgb, var(--mf-danger) 10%, white);
+  --el-color-danger-dark-2: color-mix(in srgb, var(--mf-danger) 80%, black);
+  --el-color-error-light-3: color-mix(in srgb, var(--mf-danger) 70%, white);
+  --el-color-error-light-5: color-mix(in srgb, var(--mf-danger) 50%, white);
+  --el-color-error-light-7: color-mix(in srgb, var(--mf-danger) 30%, white);
+  --el-color-error-light-8: color-mix(in srgb, var(--mf-danger) 20%, white);
+  --el-color-error-light-9: color-mix(in srgb, var(--mf-danger) 10%, white);
+  --el-color-error-dark-2: color-mix(in srgb, var(--mf-danger) 80%, black);
+  --el-color-info-light-3: color-mix(in srgb, var(--mf-info) 70%, white);
+  --el-color-info-light-5: color-mix(in srgb, var(--mf-info) 50%, white);
+  --el-color-info-light-7: color-mix(in srgb, var(--mf-info) 30%, white);
+  --el-color-info-light-8: color-mix(in srgb, var(--mf-info) 20%, white);
+  --el-color-info-light-9: color-mix(in srgb, var(--mf-info) 10%, white);
+  --el-color-info-dark-2: color-mix(in srgb, var(--mf-info) 80%, black);
+
+  --el-bg-color: var(--mf-surface);
+  --el-bg-color-page: var(--mf-bg);
+  --el-bg-color-overlay: var(--mf-surface);
+  --el-fill-color: var(--mf-surface-3);
+  --el-fill-color-blank: var(--mf-surface);
+  --el-fill-color-light: var(--mf-surface-2);
+  --el-fill-color-lighter: var(--mf-surface-3);
+
+  --el-text-color-primary: var(--mf-text);
+  --el-text-color-regular: var(--mf-text-2);
+  --el-text-color-secondary: var(--mf-text-3);
+
+  --el-border-color: var(--mf-border-strong);
+  --el-border-color-light: var(--mf-border);
+  --el-border-color-lighter: var(--mf-border);
+
+  --el-border-radius-base: var(--mf-r-ctl);
+  --el-border-radius-small: 8px;
+  --el-border-radius-round: var(--mf-r-pill);
+
+  --el-font-family: var(--mf-font);
+  --el-box-shadow: var(--mf-shadow);
+  --el-box-shadow-light: var(--mf-shadow-pop);
+}
+
+/* ============================================================
+   品牌按钮对比度修正（WCAG AA）：
+   - EP primary 实心按钮默认白字，在 --mf-brand（#12B3A6 / #4FD8CA）
+     上对比度仅约 1.8~2.6:1，统一改用 --mf-brand-contrast（深墨青字）
+   - link / text / plain 变体背景透明，文字保持品牌色，但浅色主题下
+     #12B3A6 对白底仅 2.6:1，改用 --mf-brand-strong（深墨青）
+   ============================================================ */
+.el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+  --el-button-text-color: var(--mf-brand-contrast);
+  --el-button-hover-text-color: var(--mf-brand-contrast);
+  --el-button-active-text-color: var(--mf-brand-contrast);
+}
+.el-button--primary.is-link,
+.el-button--primary.is-text {
+  --el-button-text-color: var(--mf-brand-strong);
+  --el-button-hover-link-text-color: var(--mf-brand-strong);
+  --el-button-active-color: var(--mf-brand-strong);
+  --el-button-hover-text-color: var(--mf-brand-strong);
+  --el-button-active-text-color: var(--mf-brand-strong);
+}
+.el-button--primary.is-plain {
+  --el-button-text-color: var(--mf-brand-strong);
+  --el-button-hover-text-color: var(--mf-brand-strong);
+  --el-button-active-text-color: var(--mf-brand-strong);
+}
+/* 深色主题下 hover 提亮实心底，文字保持深墨青仍 ≥4.5:1 */
+[data-theme='dark'] .el-button--primary:not(.is-plain):not(.is-link):not(.is-text) {
+  --el-button-hover-bg-color: var(--mf-brand);
+  --el-button-active-bg-color: color-mix(in srgb, var(--mf-brand) 85%, var(--mf-bg));
+}
+
+[data-theme='dark'] {
+  --el-color-primary: var(--mf-brand);
+  --el-color-primary-light-3: color-mix(in srgb, var(--mf-brand) 70%, var(--mf-bg));
+  --el-color-primary-light-5: color-mix(in srgb, var(--mf-brand) 50%, var(--mf-bg));
+  --el-color-primary-light-7: color-mix(in srgb, var(--mf-brand) 30%, var(--mf-bg));
+  --el-color-primary-light-8: color-mix(in srgb, var(--mf-brand) 20%, var(--mf-bg));
+  --el-color-primary-light-9: color-mix(in srgb, var(--mf-brand) 10%, var(--mf-bg));
+  --el-color-primary-dark-2: color-mix(in srgb, var(--mf-brand) 80%, white);
+
+  --el-color-success: var(--mf-ok);
+  --el-color-warning: var(--mf-warn);
+  --el-color-danger: var(--mf-danger);
+  --el-color-error: var(--mf-danger);
+  --el-color-info: var(--mf-info);
+
+  /* 语义色阶梯（深色）：light 系列向页面底色 --mf-bg 混合（暗底微亮），
+     dark-2 向白混合提亮；缺失时回落 EP 默认浅色值，深色下呈现刺眼亮块 */
+  --el-color-success-light-3: color-mix(in srgb, var(--mf-ok) 70%, var(--mf-bg));
+  --el-color-success-light-5: color-mix(in srgb, var(--mf-ok) 50%, var(--mf-bg));
+  --el-color-success-light-7: color-mix(in srgb, var(--mf-ok) 30%, var(--mf-bg));
+  --el-color-success-light-8: color-mix(in srgb, var(--mf-ok) 20%, var(--mf-bg));
+  --el-color-success-light-9: color-mix(in srgb, var(--mf-ok) 10%, var(--mf-bg));
+  --el-color-success-dark-2: color-mix(in srgb, var(--mf-ok) 80%, white);
+  --el-color-warning-light-3: color-mix(in srgb, var(--mf-warn) 70%, var(--mf-bg));
+  --el-color-warning-light-5: color-mix(in srgb, var(--mf-warn) 50%, var(--mf-bg));
+  --el-color-warning-light-7: color-mix(in srgb, var(--mf-warn) 30%, var(--mf-bg));
+  --el-color-warning-light-8: color-mix(in srgb, var(--mf-warn) 20%, var(--mf-bg));
+  --el-color-warning-light-9: color-mix(in srgb, var(--mf-warn) 10%, var(--mf-bg));
+  --el-color-warning-dark-2: color-mix(in srgb, var(--mf-warn) 80%, white);
+  --el-color-danger-light-3: color-mix(in srgb, var(--mf-danger) 70%, var(--mf-bg));
+  --el-color-danger-light-5: color-mix(in srgb, var(--mf-danger) 50%, var(--mf-bg));
+  --el-color-danger-light-7: color-mix(in srgb, var(--mf-danger) 30%, var(--mf-bg));
+  --el-color-danger-light-8: color-mix(in srgb, var(--mf-danger) 20%, var(--mf-bg));
+  --el-color-danger-light-9: color-mix(in srgb, var(--mf-danger) 10%, var(--mf-bg));
+  --el-color-danger-dark-2: color-mix(in srgb, var(--mf-danger) 80%, white);
+  --el-color-error-light-3: color-mix(in srgb, var(--mf-danger) 70%, var(--mf-bg));
+  --el-color-error-light-5: color-mix(in srgb, var(--mf-danger) 50%, var(--mf-bg));
+  --el-color-error-light-7: color-mix(in srgb, var(--mf-danger) 30%, var(--mf-bg));
+  --el-color-error-light-8: color-mix(in srgb, var(--mf-danger) 20%, var(--mf-bg));
+  --el-color-error-light-9: color-mix(in srgb, var(--mf-danger) 10%, var(--mf-bg));
+  --el-color-error-dark-2: color-mix(in srgb, var(--mf-danger) 80%, white);
+  --el-color-info-light-3: color-mix(in srgb, var(--mf-info) 70%, var(--mf-bg));
+  --el-color-info-light-5: color-mix(in srgb, var(--mf-info) 50%, var(--mf-bg));
+  --el-color-info-light-7: color-mix(in srgb, var(--mf-info) 30%, var(--mf-bg));
+  --el-color-info-light-8: color-mix(in srgb, var(--mf-info) 20%, var(--mf-bg));
+  --el-color-info-light-9: color-mix(in srgb, var(--mf-info) 10%, var(--mf-bg));
+  --el-color-info-dark-2: color-mix(in srgb, var(--mf-info) 80%, white);
+
+  --el-bg-color: var(--mf-surface);
+  --el-bg-color-page: var(--mf-bg);
+  --el-bg-color-overlay: var(--mf-surface-2);
+  /* fill 系列补全：el-card 背景 = --el-fill-color-blank（缺失时白底），
+     fill-color 用于输入框/按钮 hover 底，dark/darker 需比基础层更亮 */
+  --el-fill-color: var(--mf-surface-2);
+  --el-fill-color-blank: var(--mf-surface);
+  --el-fill-color-light: var(--mf-surface-2);
+  --el-fill-color-lighter: var(--mf-surface-3);
+  --el-fill-color-dark: color-mix(in srgb, var(--mf-text) 8%, var(--mf-surface-2));
+  --el-fill-color-darker: color-mix(in srgb, var(--mf-text) 14%, var(--mf-surface-2));
+
+  --el-text-color-primary: var(--mf-text);
+  --el-text-color-regular: var(--mf-text-2);
+  --el-text-color-secondary: var(--mf-text-3);
+
+  --el-border-color: var(--mf-border-strong);
+  --el-border-color-light: var(--mf-border);
+  --el-border-color-lighter: var(--mf-border);
+
+  /* 弹层遮罩：EP 默认白色半透明，深色下会白屏 */
+  --el-mask-color: rgba(0, 0, 0, .6);
+  --el-box-shadow: var(--mf-shadow);
+  --el-box-shadow-light: var(--mf-shadow-pop);
+}

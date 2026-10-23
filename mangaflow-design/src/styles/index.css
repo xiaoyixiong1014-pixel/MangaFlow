@@ -1,0 +1,3 @@
+/* 样式入口：tokens + base（组件样式随组件打包） */
+@import './tokens.css';
+@import './base.css';

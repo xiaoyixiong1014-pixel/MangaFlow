@@ -18,3 +18,6 @@ backend/storage/
 # ---- 前端（各子项目自带 .gitignore，此处兜底） ----
 node_modules/
 dist/
+
+# ---- 设计系统内部仓库备份（避免主仓库误识别为 submodule 的历史保留） ----
+mangaflow-design/.git.bak/
