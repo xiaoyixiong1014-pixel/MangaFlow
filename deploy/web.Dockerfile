@@ -64,6 +64,10 @@ COPY deploy/web-nginx.conf /etc/nginx/conf.d/default.conf
 # 拷贝构建产物到 nginx 默认站点根
 COPY --from=build /src/mangaflow-web/dist /usr/share/nginx/html
 
+# 静态产物权限兜底：a+rX 保证目录可进入、文件可读（nginx worker 为非属主用户），
+# 防御个别环境构建产物权限异常导致 try_files stat 失败 → SPA fallback 循环 500
+RUN chmod -R a+rX /usr/share/nginx/html
+
 # EXPOSE: 容器内托管端口
 EXPOSE 80
 
