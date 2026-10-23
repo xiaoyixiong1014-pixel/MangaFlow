@@ -23,6 +23,10 @@ ARG PIP_INDEX_URL=https://pypi.org/simple
 # ENV: 将 ARG 固化为 pip 运行时索引配置
 ENV PIP_INDEX_URL=${PIP_INDEX_URL}
 
+# ARG: apt 国内镜像加速开关（默认腾讯云内网镜像——腾讯云服务器走内网免流量包
+#   且速度极快；非腾讯云环境可传 mirrors.aliyun.com 等，传空串则保留官方源）
+ARG APT_MIRROR=mirrors.cloud.tencent.com
+
 # ENV: Python 运行行为与时区（日志实时输出、不留字节码、东八区）
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -33,7 +37,14 @@ ENV PYTHONUNBUFFERED=1 \
 # gosu：entrypoint 完成存储卷属主修复后从 root 降权到 appuser（非 root 运行基线）
 # 说明：requirements 内全部为预编译 wheel（asyncpg/psycopg[binary]/bcrypt 等），
 #       无需 build-essential 编译工具链，保持镜像精简
-RUN apt-get update \
+# apt 源替换：trixie 镜像使用 deb822 格式的 debian.sources；APT_MIRROR 为空时跳过
+RUN if [ -n "${APT_MIRROR}" ] && [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi \
+    && if [ -n "${APT_MIRROR}" ] && [ -f /etc/apt/sources.list ]; then \
+        sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list; \
+    fi \
+    && apt-get update \
     && apt-get install -y --no-install-recommends ffmpeg fonts-noto-cjk fontconfig gosu \
     && fc-cache -f \
     && rm -rf /var/lib/apt/lists/*
