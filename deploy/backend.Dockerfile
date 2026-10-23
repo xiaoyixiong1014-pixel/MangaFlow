@@ -56,7 +56,13 @@ ENV HOME=/home/appuser
 # 工作目录：/app（镜像内布局与仓库一致，/app/backend 即仓库的 backend/ 目录）
 WORKDIR /app
 
-# 先拷贝依赖清单并安装（利用 Docker 层缓存：代码变更不重复安装依赖）
+# 先单独安装 CPU 版 torch（lipsync 本地推理依赖）：PyPI 的 Linux wheel 默认
+# 捆绑 CUDA（连同 nvidia 依赖约 2GB+，不适合 2GB 内存服务器），CPU 推理走
+# pytorch 官方 cpu index（约 190MB）。独立成层：代码变更时缓存不失效。
+# requirements.txt 不写 torch，避免 pip 从默认源解析到 CUDA 版。
+RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
+
+# 再拷贝依赖清单并安装（利用 Docker 层缓存：代码变更不重复安装依赖）
 COPY backend/requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
