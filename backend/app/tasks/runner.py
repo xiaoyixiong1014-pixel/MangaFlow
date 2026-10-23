@@ -85,7 +85,6 @@ from app.services.audio_separation import extract_no_vocals
 from app.services.billing_service import consume_frozen, refund_frozen
 from app.services.compose_service import _merge_clip_audio, burn_storyboard_subtitles, compose_film
 from app.services.generation_service import freeze_and_create_task
-from app.services.lipsync_service import lipsync_video
 from app.services.model_router import ResolvedChannel
 from app.services.review_service import (
     apply_violation_penalty,
@@ -1239,6 +1238,37 @@ async def _run_image(db, task: Task, user_id: int, meta: dict) -> None:
     await _succeed_task(db, task, user_id)
 
 
+async def _try_lipsync(video_path: Path, dub_path: Path, synced_path: Path) -> bool:
+    """尝试口型同步（推理依赖惰性导入，内部辅助）。
+
+    Wav2Lip 本地推理依赖 torch/cv2/librosa 等重依赖，部分部署环境（如 2GB
+    内存服务器）未安装——模块导入失败时按 lipsync_service 的既有降级约定
+    返回 False（调用方保留无口型产物），不阻断视频任务主流程，也不影响
+    依赖齐全环境下功能照常启用。
+
+    Args:
+        video_path: 输入视频（已混流配音）路径。
+        dub_path: 驱动配音 WAV 路径。
+        synced_path: 口型同步产物输出路径。
+
+    Returns:
+        bool: 口型同步成功返回 True；依赖缺失或推理失败返回 False。
+
+    Raises:
+        无：导入/执行异常统一按 False 降级（lipsync_video 内部亦自带失败约定）。
+    """
+    try:
+        from app.services.lipsync_service import lipsync_video  # 惰性导入：重依赖仅在实际使用时加载
+
+        return await lipsync_video(
+            video_path, dub_path, synced_path,
+            settings.storage_path() / "models" / "lipsync",
+        )
+    except Exception:  # noqa: BLE001 —— 依赖缺失/导入失败按降级约定返回 False
+        logger.warning("口型同步依赖不可用（torch 等推理依赖未安装），跳过口型同步", exc_info=True)
+        return False
+
+
 async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
     """执行视频片段任务：按渠道降级链生成 → 首帧视觉机审 → 回写分镜 video_url。
 
@@ -1378,10 +1408,7 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
                 if settings.lipsync_enabled:
                     await _set_progress(db, task, 85)
                     synced_path = video_path.with_name(f"{video_path.stem}_sync{video_path.suffix}")
-                    if await lipsync_video(
-                        video_path, dub_path, synced_path,
-                        settings.storage_path() / "models" / "lipsync",
-                    ):
+                    if await _try_lipsync(video_path, dub_path, synced_path):
                         synced_path.replace(video_path)
                         lipsync_applied = True
                     else:

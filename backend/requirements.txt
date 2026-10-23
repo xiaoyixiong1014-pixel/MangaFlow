@@ -21,12 +21,5 @@ psycopg[binary]>=3.2
 openpyxl>=3.1
 fpdf2>=2.7
 prometheus-client>=0.21
-# ---- 对口型（lipsync）本地推理依赖：lipsync_service / lipsync_s3fd 顶层 import ----
-# OpenCV 用 headless 版（服务器无 GUI，避免引入 X11 依赖）
-opencv-python-headless>=4.10
-librosa>=0.10.2
-scipy>=1.13
-# numpy 锁 1.x：与 opencv/librosa/numba/torch CPU 轮子的兼容组合最稳（torch 单独装 CPU 版）
-numpy>=1.26,<2.0
 pytest>=8.3
 pytest-asyncio>=0.24
