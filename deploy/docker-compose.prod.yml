@@ -135,6 +135,8 @@ services:
       ALEMBIC_ON_STARTUP: ${ALEMBIC_ON_STARTUP:-false}
       # 违规分级处罚准入校验（产品上线后置 true 启用拦截）
       PUNISHMENT_ENABLED: ${PUNISHMENT_ENABLED:-false}
+      # 渠道全失败时的演示占位兜底（纯演示部署置 true；生产出真图时置 false）
+      MOCK_FALLBACK_ENABLED: ${MOCK_FALLBACK_ENABLED:-false}
       # 跨域白名单（前端经同源 nginx 反代 /api，无跨域诉求；JSON 数组格式）
       CORS_ORIGINS: ${CORS_ORIGINS:-["*"]}
       # 画布插件 endpoint_url 信任域白名单（JSON 数组；空 = 仅强制内网黑名单）
