@@ -86,4 +86,6 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=5 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8300/api/metrics', timeout=4)"
 
 # CMD: uvicorn 启动 FastAPI 应用（应用在 lifespan 中自动建库/建表/种子，失败降级启动）
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8300"]
+# --workers 2：双进程抗抖动（单 worker 被 CPU 尖峰/慢请求拖住时另一个仍可服务
+# API；建库/种子/启动恢复均幂等，任务抢占 SKIP LOCKED 多进程安全）
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8300", "--workers", "2"]

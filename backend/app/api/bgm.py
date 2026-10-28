@@ -12,6 +12,7 @@
 - 文件名参数做路径穿越防护（禁止 / \\ ..），扩展名白名单校验。
 """
 
+import asyncio
 import re
 import shutil
 import subprocess
@@ -103,11 +104,14 @@ async def list_bgm(
     items: List[BgmItem] = []
     for file in sorted(directory.iterdir(), key=lambda p: p.name):
         if file.is_file() and file.suffix.lower() in _BGM_EXTS:
+            # ffprobe 为同步子进程调用，放线程池执行，避免阻塞事件循环
+            # （多文件逐个探测时累计秒级，会拖慢同 worker 的全部请求）
+            duration = await asyncio.to_thread(_probe_duration, file)
             items.append(BgmItem(
                 name=file.name,
                 url=f"/storage/bgm/{file.name}",
                 size=file.stat().st_size,
-                duration=_probe_duration(file) or None,
+                duration=duration or None,
             ))
     return items
 
