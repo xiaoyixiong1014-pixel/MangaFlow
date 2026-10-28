@@ -78,6 +78,7 @@ from app.providers.image_mock import generate_image
 from app.providers.tts_bailian import generate_tts_real
 from app.providers.tts_mock import generate_tts
 from app.providers.video_agnes import generate_video_real
+from app.providers.video_minimax import generate_video_minimax
 from app.providers.video_mock import generate_video
 from app.providers.video_wan import generate_video_wan
 from app.services import model_router, notification_service
@@ -1310,7 +1311,7 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
         return
 
     async def _generate(channel: ResolvedChannel) -> Optional[Dict]:
-        """单渠道视频生成回调：按渠道协议分派 mock / 百炼 wan / Agnes。
+        """单渠道视频生成回调：按渠道协议分派 mock / 百炼 wan / MiniMax / Agnes。
 
         Args:
             channel: 当前候选渠道。
@@ -1332,6 +1333,12 @@ async def _run_video(db, task: Task, user_id: int, meta: dict) -> None:
             )
         if channel.protocol == "dashscope":
             return await generate_video_wan(
+                prompt, duration, out_dir, task.id, channel, first_frame_path,
+                video_params=video_params, end_frame_path=end_frame_path,
+            )
+        if channel.protocol == "minimax":
+            # MiniMax（海螺）原生异步任务协议：首帧可选（有则图生视频，无则文生视频）
+            return await generate_video_minimax(
                 prompt, duration, out_dir, task.id, channel, first_frame_path,
                 video_params=video_params, end_frame_path=end_frame_path,
             )

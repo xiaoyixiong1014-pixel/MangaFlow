@@ -619,7 +619,8 @@ async def test_channel(
       请求；dashscope 协议向多模态生成端点发无效模型请求——非 401/403 的
       4xx 视为连通（参数合法性不代表渠道不可用，避免真实出图计费）；
     - 仅含 "video" 键：openai 协议向 {base}/videos 发极小主体请求；
-      dashscope 协议向 video-synthesis 端点发无效模型请求（口径同上）；
+      dashscope 协议向 video-synthesis 端点、minimax 协议向 video_generation
+      端点发无效模型请求（口径同上）；
     - 仅含 "tts" 键：dashscope 协议向 SpeechSynthesizer HTTP 端点发无效
       模型请求（qwen-audio-3.1-tts-next 等原生 HTTP 语音模型）；openai
       协议向 {base}/audio/speech 发最短文本请求（与平台渠道健康探测口径
@@ -665,7 +666,10 @@ async def test_channel(
             break
 
     api_key = _decrypt_api_key(channel.api_key_encrypted) or "missing-key"
-    if channel.protocol == "dashscope" and tts_names:
+    if channel.protocol == "minimax" and video_names:
+        # MiniMax 原生视频渠道（海螺系列）：video_generation 端点无效模型探测
+        ok, error = await _probe_minimax_video(channel.base_url, api_key)
+    elif channel.protocol == "dashscope" and tts_names:
         # DashScope 原生语音渠道（百炼 qwen-audio-3.1-tts-next 等）：
         # SpeechSynthesizer HTTP 端点无效模型探测
         ok, error = await _probe_dashscope_tts(channel.base_url, api_key)
@@ -811,6 +815,42 @@ async def _probe_dashscope_tts(base_url: str, api_key: str) -> tuple:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_minimax_video(base_url: str, api_key: str) -> tuple:
+    """向 MiniMax 视频创建端点发起无效模型探测（内部函数，不计费）。
+
+    以非法模型名提交视频生成任务（海螺系列走 video_generation 端点）：
+    401/403 视为鉴权失败（down）；其余 4xx（model not found 等参数错误）
+    证明鉴权通过、端点可达（不会产生真实出片计费）。注意 MiniMax 部分错误
+    以 HTTP 200 + base_resp.status_code 包裹——2xx 一律视为连通（真实生成
+    的参数校验在创建阶段自会失败降级，不影响探测语义）。
+
+    Args:
+        base_url: 渠道接口地址（根域名/版本前缀/完整任务端点均可）。
+        api_key: 明文 API Key。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    from app.providers.video_minimax import _endpoints_from_base
+
+    create_url, _ = _endpoints_from_base(base_url)
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {"model": "__probe_invalid_model__", "prompt": "ping"}
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(create_url, headers=headers, json=payload)
         if resp.status_code in (401, 403):
             return False, f"鉴权失败（HTTP {resp.status_code}）"
         if resp.status_code < 500:
@@ -985,6 +1025,11 @@ async def probe_models(
         HTTPException: 400 —— 地址非法或指向内网/本机。
     """
     _assert_public_http_url(req.base_url)
+    if req.protocol == "minimax":
+        # MiniMax 不提供模型列表端点（模型目录见开放平台文档），引导手动输入
+        return ChannelProbeModelsOut(
+            ok=False,
+            error="MiniMax 未提供模型列表接口，请手动输入模型 ID（如 Hailuo-3、T2V-01、I2V-01 等）")
     base = req.base_url.rstrip("/")
     if req.protocol == "anthropic":
         url = f"{base}/v1/models" if not base.endswith("/v1") else f"{base}/models"

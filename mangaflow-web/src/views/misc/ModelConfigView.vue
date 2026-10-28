@@ -115,7 +115,7 @@ const channelForm = reactive({ name: '', base_url: '', api_key: '' })
 /** 模型 ID 列表（登记到渠道 models.chat，回车/选择即添加） */
 const channelModels = ref<string[]>([])
 /** 当前选择的 API 格式（与后端 protocol 字段一致） */
-const channelProtocol = ref<'openai' | 'openai_responses' | 'anthropic' | 'dashscope'>('openai')
+const channelProtocol = ref<'openai' | 'openai_responses' | 'anthropic' | 'dashscope' | 'minimax'>('openai')
 /** 模型用途（登记能力键）：chat 文本 / image 图像 / video 视频 / tts 语音 */
 const channelCapability = ref<'chat' | 'image' | 'video' | 'tts'>('chat')
 /** 渠道真实模型列表候选（点击「获取模型列表」后填充） */
@@ -183,6 +183,7 @@ const protocolOptions = [
   { value: 'openai_responses', label: 'OpenAI Responses API 格式' },
   { value: 'anthropic', label: 'Anthropic Messages 格式' },
   { value: 'dashscope', label: 'DashScope 格式（阿里云百炼原生，图像/视频/语音）' },
+  { value: 'minimax', label: 'MiniMax 格式（海螺视频生成）' },
 ] as const
 
 /**
@@ -192,6 +193,9 @@ const protocolOptions = [
 function baseUrlTip(): string {
   if (channelProtocol.value === 'dashscope') {
     return '请填写 DashScope 根域名（根域名或带路径均可，如 https://dashscope.aliyuncs.com 或专属实例根域名）；图像/视频/语音任务端点将自动补充。'
+  }
+  if (channelProtocol.value === 'minimax') {
+    return '请填写 MiniMax API 地址（根地址 https://api.minimax.cn、带 /v1 或 /v2 前缀、或完整 video_generation 端点均可识别）；任务创建与轮询端点将自动补充。'
   }
   if (channelProtocol.value === 'anthropic') {
     return '请填写 Anthropic 兼容的服务端点地址（根地址或 /v1 结尾均可）；/v1/messages 将自动补充到地址末尾。'
@@ -204,11 +208,15 @@ function baseUrlTip(): string {
 
 /**
  * 切换 API 格式（内部函数）：DashScope 原生不支持文本对话（百炼文本走
- * 兼容模式），自动切到图像生成；图像/视频/语音用途均允许。
+ * 兼容模式），自动切到图像生成；MiniMax 格式仅实现视频生成，锁定视频用途；
+ * 图像/语音用途均允许 DashScope。
  */
 function onProtocolChange(): void {
   if (channelProtocol.value === 'dashscope' && channelCapability.value === 'chat') {
     channelCapability.value = 'image'
+  }
+  if (channelProtocol.value === 'minimax') {
+    channelCapability.value = 'video'
   }
 }
 
@@ -604,21 +612,25 @@ onMounted(async () => {
                 ? '例如：https://api.openai.com/v1'
                 : channelProtocol === 'dashscope'
                   ? '例如：https://dashscope.aliyuncs.com'
-                  : '例如：https://api.deepseek.com/v1'"
+                  : channelProtocol === 'minimax'
+                    ? '例如：https://api.minimax.cn'
+                    : '例如：https://api.deepseek.com/v1'"
           />
           <div class="field-tip">{{ baseUrlTip() }}</div>
         </el-form-item>
         <el-form-item label="模型用途" required>
           <el-radio-group v-model="channelCapability">
-            <el-radio value="chat" :disabled="channelProtocol === 'dashscope'">文本对话</el-radio>
-            <el-radio value="image">图像生成</el-radio>
+            <el-radio value="chat" :disabled="channelProtocol === 'dashscope' || channelProtocol === 'minimax'">文本对话</el-radio>
+            <el-radio value="image" :disabled="channelProtocol === 'minimax'">图像生成</el-radio>
             <el-radio value="video">视频生成</el-radio>
-            <el-radio value="tts">语音合成</el-radio>
+            <el-radio value="tts" :disabled="channelProtocol === 'minimax'">语音合成</el-radio>
           </el-radio-group>
           <div class="field-tip">
             {{ channelProtocol === 'dashscope' && channelCapability === 'chat'
               ? 'DashScope 原生格式不支持文本对话，请选择图像、视频或语音用途（百炼文本模型请用 OpenAI 兼容格式登记）。'
-              : (capabilityTips[channelCapability] ?? '') }}
+              : channelProtocol === 'minimax'
+                ? 'MiniMax 格式仅支持视频生成（海螺系列，如 Hailuo-3）；其文本模型 MiniMax-M 系列请用 OpenAI 兼容格式登记。'
+                : (capabilityTips[channelCapability] ?? '') }}
           </div>
         </el-form-item>
         <el-form-item label="模型 ID" required>
@@ -667,7 +679,7 @@ onMounted(async () => {
           </div>
           <div class="field-tip">
             须与渠道服务端模型名一致（文本 deepseek-chat / gpt-5 / claude-sonnet-4-5，
-            图像 qwen-image-3.0，视频 wan2.7-i2v，语音 qwen-audio-3.1-tts-next / qwen-audio-3.1-tts-flash）；
+            图像 qwen-image-3.0，视频 wan2.7-i2v / 海螺 Hailuo-3，语音 qwen-audio-3.1-tts-next / qwen-audio-3.1-tts-flash）；
             获取列表需已填写接口地址与 API 密钥。
           </div>
         </el-form-item>

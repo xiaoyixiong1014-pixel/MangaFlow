@@ -11,8 +11,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 # 用户自有渠道支持的 API 协议白名单（OpenAI 兼容 chat / OpenAI Responses /
-# Anthropic Messages / DashScope 原生（百炼：图像/视频/语音，不支持文本对话））
-SUPPORTED_CHANNEL_PROTOCOLS = ("openai", "openai_responses", "anthropic", "dashscope")
+# Anthropic Messages / DashScope 原生（百炼：图像/视频/语音，不支持文本对话）/
+# MiniMax 原生异步任务协议（海螺视频生成））
+SUPPORTED_CHANNEL_PROTOCOLS = ("openai", "openai_responses", "anthropic", "dashscope", "minimax")
 
 
 class CatalogModelOut(BaseModel):
@@ -103,14 +104,15 @@ class ChannelCreateRequest(BaseModel):
         protocol: 协议类型（openai = OpenAI Chat Completions 兼容 /
             openai_responses = OpenAI Responses API / anthropic = Anthropic Messages /
             dashscope = DashScope 原生（百炼：图像多模态生成 / 视频合成 /
-            语音合成 SpeechSynthesizer；不支持文本对话，文本走 openai 兼容模式））。
+            语音合成 SpeechSynthesizer；不支持文本对话，文本走 openai 兼容模式）/
+            minimax = MiniMax 原生异步任务协议（海螺视频生成，仅视频用途））。
         base_url: 接口地址（须以 http:// 或 https:// 开头）。
         api_key: API Key 明文（服务端经 AES 加密后落库，不再返回明文）。
         models: 模型目录（JSONB，如 {"chat": ["model-a"]}，可空）。
     """
 
     name: Optional[str] = Field(default=None, max_length=64)
-    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope"] = "openai"
+    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope", "minimax"] = "openai"
     base_url: str = Field(min_length=1, max_length=255)
     api_key: str = Field(min_length=1, max_length=200)
     models: Optional[Dict[str, Any]] = None
@@ -133,7 +135,7 @@ class ChannelUpdateRequest(BaseModel):
     """
 
     name: Optional[str] = Field(default=None, max_length=64)
-    protocol: Optional[Literal["openai", "openai_responses", "anthropic", "dashscope"]] = None
+    protocol: Optional[Literal["openai", "openai_responses", "anthropic", "dashscope", "minimax"]] = None
     base_url: Optional[str] = Field(default=None, max_length=255)
     api_key: Optional[str] = Field(default=None, min_length=1, max_length=200)
     models: Optional[Dict[str, Any]] = None
@@ -192,7 +194,7 @@ class ChannelProbeModelsRequest(BaseModel):
         api_key: API Key 明文（仅本次请求使用，不落库）。
     """
 
-    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope"] = "openai"
+    protocol: Literal["openai", "openai_responses", "anthropic", "dashscope", "minimax"] = "openai"
     base_url: str = Field(min_length=1, max_length=255)
     api_key: str = Field(min_length=1, max_length=200)
 
