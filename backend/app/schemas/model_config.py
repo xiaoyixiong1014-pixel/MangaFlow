@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 # 用户自有渠道支持的 API 协议白名单（OpenAI 兼容 chat / OpenAI Responses /
-# Anthropic Messages / DashScope 原生（百炼文生图，仅图像用途））
+# Anthropic Messages / DashScope 原生（百炼：图像/视频/语音，不支持文本对话））
 SUPPORTED_CHANNEL_PROTOCOLS = ("openai", "openai_responses", "anthropic", "dashscope")
 
 
@@ -102,7 +102,8 @@ class ChannelCreateRequest(BaseModel):
         name: 渠道备注名（可空，仅用于展示）。
         protocol: 协议类型（openai = OpenAI Chat Completions 兼容 /
             openai_responses = OpenAI Responses API / anthropic = Anthropic Messages /
-            dashscope = DashScope 原生，百炼文生图，仅图像用途）。
+            dashscope = DashScope 原生（百炼：图像多模态生成 / 视频合成 /
+            语音合成 SpeechSynthesizer；不支持文本对话，文本走 openai 兼容模式））。
         base_url: 接口地址（须以 http:// 或 https:// 开头）。
         api_key: API Key 明文（服务端经 AES 加密后落库，不再返回明文）。
         models: 模型目录（JSONB，如 {"chat": ["model-a"]}，可空）。

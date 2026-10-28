@@ -22,6 +22,14 @@ SpeechSynthesizer）调用专属实例的 qwen-audio-3.1-tts-flash 真实合成�
   下一渠道），挂起线程为 daemon 不阻塞进程；锁获取同样带超时，拿不到
   锁直接返回 None，避免多任务在等锁处连环卡死。
 
+DashScope 原生 HTTP 分支（2026-10-28）：渠道 protocol="dashscope" 时走
+官方 SpeechSynthesizer HTTP 端点（POST {root}/api/v1/services/audio/tts/
+SpeechSynthesizer，input.text_prompt + input.format 口径，响应
+output.audio.url 为临时音频地址即时下载）——面向仅提供 HTTP 端点的
+新一代模型（如 qwen-audio-3.1-tts-next，无 WebSocket 推理端点）；音色
+首请求携带映射后的 input.voice，非鉴权类 4xx 时去 voice 重试一次兜底。
+语速/音调参数该端点不支持，忽略。
+
 任何失败返回 None（不抛出），由调用方（tasks/runner.py）降级到下一渠道。
 函数签名与 mock TTS 渠道对齐（text + voice + out_dir + channel → url +
 duration_sec），channel 为 model_router.ResolvedChannel。
@@ -52,6 +60,14 @@ _LOCK_TIMEOUT = 30.0
 _CALL_TIMEOUT = 80.0
 # 外层 asyncio.wait_for 兜底超时（秒）：大于锁+看门狗最坏耗时，仅防线程级异常
 _OUTER_TIMEOUT = 150.0
+
+# DashScope 原生 HTTP TTS 端点路径（相对渠道根域名）：qwen-audio-3.1-tts-next
+# 等新一代模型仅提供该 HTTP 端点，无 WebSocket 推理端点
+_HTTP_TTS_PATH = "/api/v1/services/audio/tts/SpeechSynthesizer"
+# DashScope HTTP TTS 单次请求超时（秒）：同步端点整句合成较慢
+_HTTP_TIMEOUT = 180.0
+# DashScope HTTP 音频结果下载超时（秒）
+_HTTP_DOWNLOAD_TIMEOUT = 120.0
 
 # 业务音色标识 → qwen-audio-3.1-tts-flash 音色名映射
 # （音色列表来源：阿里云百炼 Qwen-Audio-TTS 音色文档，2026-10-12）
@@ -177,6 +193,138 @@ def _read_wav_duration(path: Path) -> Optional[float]:
         return None
 
 
+def _root_from_base(base_url: str) -> str:
+    """由渠道 base_url 提取根域名（内部函数，口径与 image_dashscope 一致）。
+
+    用户可能填根域名或带路径的实例地址，HTTP 端点统一从根域名拼接，
+    避免 /compatible-mode 等路径与 /api/v1 叠加产生 404。
+
+    Args:
+        base_url: 渠道配置的接口地址（http/https）。
+
+    Returns:
+        str: 根域名（scheme://netloc）。
+
+    Raises:
+        无：解析异常时回退原值。
+    """
+    try:
+        if "://" in base_url:
+            scheme, rest = base_url.split("://", 1)
+            return f"{scheme}://{rest.split('/', 1)[0]}"
+        return base_url.rstrip("/")
+    except Exception:  # noqa: BLE001 —— 解析失败按原值回退
+        return base_url
+
+
+def _http_synth_sync(
+    text: str,
+    voice_id: str,
+    out_dir: Path,
+    channel: ResolvedChannel,
+) -> Optional[Dict]:
+    """同步执行 DashScope 原生 HTTP 语音合成并落盘（内部函数，供 to_thread 调用）。
+
+    面向仅提供 HTTP 端点的百炼语音模型（qwen-audio-3.1-tts-next 等，与
+    WebSocket 推理的 qwen-audio-3.1-tts-flash 相区分）：POST {root}/api/v1/
+    services/audio/tts/SpeechSynthesizer，请求体 input.text_prompt +
+    input.format（官方示例口径），响应 output.audio.url 为临时音频地址，
+    即时下载落盘（URL 含签名过期，不可长期缓存）。
+
+    音色策略：首请求携带映射后的 input.voice（flash 系音色命名）；若非
+    鉴权类 4xx 失败（模型不接受 voice 字段等），去 voice 重试一次——
+    tts-next 支持在 text_prompt 内以指令描述音色，缺省同样可出声。
+
+    Args:
+        text: 待合成的台词文本。
+        voice_id: 映射后的音色名（_VOICE_MAP 命中名或默认音色，可空串）。
+        out_dir: 输出目录（storage/generated 的绝对路径）。
+        channel: 已解析的候选渠道（protocol="dashscope"，base_url 为实例根域名）。
+
+    Returns:
+        Optional[Dict]: 成功返回
+            {"url": "/storage/generated/tts_xxx.wav",
+             "duration_sec": 时长秒数,
+             "meta": {"provider": "bailian-dashscope", "channel_id": 渠道ID,
+                      "voice": 音色名, ["estimated": True]}}；
+            失败返回 None。
+
+    Raises:
+        无：全部异常收敛为 None（由调用方降级下一渠道）。
+    """
+    import httpx
+
+    url = f"{_root_from_base(channel.base_url)}{_HTTP_TTS_PATH}"
+    headers = {"Authorization": f"Bearer {channel.api_key}", "Content-Type": "application/json"}
+
+    def _payload(with_voice: bool) -> Dict:
+        """构造请求体（内部函数）：voice 字段按重试阶段开关。
+
+        Args:
+            with_voice: 是否携带 input.voice。
+
+        Returns:
+            Dict: DashScope SpeechSynthesizer 请求体。
+        """
+        input_body: Dict[str, str] = {"text_prompt": text, "format": "wav"}
+        if with_voice and voice_id:
+            input_body["voice"] = voice_id
+        return {"model": channel.model, "input": input_body}
+
+    try:
+        with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+            audio_url: Optional[str] = None
+            # 音色两段式重试：先带 voice，非鉴权类失败则去 voice 再试一次
+            for with_voice in (True, False):
+                resp = client.post(url, headers=headers, json=_payload(with_voice))
+                if resp.status_code in (401, 403):
+                    logger.warning("渠道 %s 语音合成鉴权失败（HTTP %s）", channel.name, resp.status_code)
+                    return None
+                if resp.status_code >= 400:
+                    if with_voice:
+                        logger.warning(
+                            "渠道 %s 语音合成带 voice 请求失败（HTTP %s），去 voice 重试：%s",
+                            channel.name, resp.status_code, resp.text[:200])
+                        continue
+                    logger.warning("渠道 %s 语音合成失败（HTTP %s，model=%s）：%s",
+                                   channel.name, resp.status_code, channel.model, resp.text[:300])
+                    return None
+                data = resp.json() or {}
+                audio_field = (data.get("output") or {}).get("audio")
+                # 官方形态 output.audio.url；兼容 output.audio 直接为字符串
+                audio_url = audio_field.get("url") if isinstance(audio_field, dict) else audio_field
+                if audio_url:
+                    break
+                if not with_voice:
+                    logger.warning("渠道 %s 语音合成响应缺少音频 URL", channel.name)
+                    return None
+                logger.warning("渠道 %s 语音合成响应缺少音频 URL，去 voice 重试", channel.name)
+            if not audio_url:
+                return None
+            # OSS 临时签名 URL 须即时下载落盘
+            dl = client.get(audio_url, timeout=_HTTP_DOWNLOAD_TIMEOUT)
+        if dl.status_code != 200 or not dl.content:
+            logger.warning("渠道 %s 语音结果下载失败（HTTP %s）", channel.name, dl.status_code)
+            return None
+
+        filename = f"tts_{int(time.time())}_{abs(hash((text or '', voice_id))) % 100000}.wav"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        path = out_dir / filename
+        path.write_bytes(dl.content)
+
+        # 时长：优先真实帧数计算，失败按文本长度估算（meta 标注 estimated）
+        duration = _read_wav_duration(path)
+        meta: Dict = {"provider": "bailian-dashscope", "channel_id": channel.channel_id, "voice": voice_id}
+        if duration is None:
+            duration = round(min(max(len(text or ""), 1) * _SECONDS_PER_CHAR, 60.0), 2)
+            meta["estimated"] = True
+
+        return {"url": f"{_URL_PREFIX}/{filename}", "duration_sec": duration, "meta": meta}
+    except Exception as exc:  # noqa: BLE001 —— provider 失败由调用方降级处理
+        logger.warning("渠道 %s DashScope HTTP 语音合成异常：%s", channel.name, exc)
+        return None
+
+
 def _synth_sync(
     text: str,
     voice_id: str,
@@ -267,21 +415,26 @@ async def generate_tts_real(
     speed: float = 1.0,
     pitch: float = 1.0,
 ) -> Optional[Dict]:
-    """调用百炼渠道（qwen-audio-3.1-tts-flash WebSocket）真实合成一段配音 WAV。
+    """调用百炼渠道真实合成一段配音 WAV（按渠道协议自动分派）。
+
+    分派规则：protocol="dashscope" 走 DashScope 原生 HTTP SpeechSynthesizer
+    端点（qwen-audio-3.1-tts-next 等新一代模型）；其余协议（openai 兼容
+    渠道登记百炼 TTS）走 dashscope SDK WebSocket 推理（qwen-audio-3.1-tts-
+    flash 专属实例）。HTTP 端点不支持语速/音调参数，speed/pitch 仅 WS 路径生效。
 
     Args:
         text: 待合成的台词文本。
         voice: 业务音色标识（male_01/female_01/narrator 等，按 _VOICE_MAP 映射）。
         out_dir: 输出目录（storage/generated 的绝对路径）。
         channel: 已解析的候选渠道（含 base_url/api_key/model）。
-        speed: 语速倍率（voice_note 推导，0.5~2.0）。
-        pitch: 音调倍率（voice_note 推导，0.5~2.0）。
+        speed: 语速倍率（voice_note 推导，0.5~2.0；仅 WebSocket 路径生效）。
+        pitch: 音调倍率（voice_note 推导，0.5~2.0；仅 WebSocket 路径生效）。
 
     Returns:
         Optional[Dict]: 成功返回
             {"url": "/storage/generated/tts_xxx.wav",
              "duration_sec": 时长秒数,
-             "meta": {"provider": "bailian", "channel_id": 渠道ID,
+             "meta": {"provider": "bailian"/"bailian-dashscope", "channel_id": 渠道ID,
                       "voice": 模型音色名, ["estimated": True]}}；
             请求失败/响应异常返回 None（由调用方降级到下一渠道）。
 
@@ -290,6 +443,13 @@ async def generate_tts_real(
     """
     voice_id = _VOICE_MAP.get(voice, _DEFAULT_VOICE)
     try:
+        if channel.protocol == "dashscope":
+            # DashScope 原生 HTTP 端点（qwen-audio-3.1-tts-next 等）：同步
+            # HTTP 调用放线程池避免阻塞事件循环
+            return await asyncio.wait_for(
+                asyncio.to_thread(_http_synth_sync, text, voice_id, out_dir, channel),
+                timeout=_OUTER_TIMEOUT,
+            )
         # SDK 为同步 WebSocket 客户端，放线程池避免阻塞事件循环；
         # 锁与看门狗均在 _synth_sync 内部生效（本 wait_for 仅为线程级
         # 异常的最后防线，超时值大于锁+看门狗最坏耗时）

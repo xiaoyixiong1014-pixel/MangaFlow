@@ -182,7 +182,7 @@ const protocolOptions = [
   { value: 'openai', label: 'OpenAI Chat Completions 格式' },
   { value: 'openai_responses', label: 'OpenAI Responses API 格式' },
   { value: 'anthropic', label: 'Anthropic Messages 格式' },
-  { value: 'dashscope', label: 'DashScope 格式（阿里云百炼原生，图像生成）' },
+  { value: 'dashscope', label: 'DashScope 格式（阿里云百炼原生，图像/视频/语音）' },
 ] as const
 
 /**
@@ -191,7 +191,7 @@ const protocolOptions = [
  */
 function baseUrlTip(): string {
   if (channelProtocol.value === 'dashscope') {
-    return '请填写 DashScope 根域名（根域名或带路径均可，如 https://dashscope.aliyuncs.com 或专属实例根域名）；文生图任务端点将自动补充。'
+    return '请填写 DashScope 根域名（根域名或带路径均可，如 https://dashscope.aliyuncs.com 或专属实例根域名）；图像/视频/语音任务端点将自动补充。'
   }
   if (channelProtocol.value === 'anthropic') {
     return '请填写 Anthropic 兼容的服务端点地址（根地址或 /v1 结尾均可）；/v1/messages 将自动补充到地址末尾。'
@@ -203,11 +203,11 @@ function baseUrlTip(): string {
 }
 
 /**
- * 切换 API 格式（内部函数）：DashScope 原生不支持文本对话与语音合成
- * （百炼文本走兼容模式、语音走 WS 推理），自动切到图像生成。
+ * 切换 API 格式（内部函数）：DashScope 原生不支持文本对话（百炼文本走
+ * 兼容模式），自动切到图像生成；图像/视频/语音用途均允许。
  */
 function onProtocolChange(): void {
-  if (channelProtocol.value === 'dashscope' && (channelCapability.value === 'chat' || channelCapability.value === 'tts')) {
+  if (channelProtocol.value === 'dashscope' && channelCapability.value === 'chat') {
     channelCapability.value = 'image'
   }
 }
@@ -217,7 +217,7 @@ const capabilityTips: Record<string, string> = {
   chat: '文本渠道将优先用于剧本创作等文本生成任务，使用自有 Key 免生成积分。',
   image: '图像渠道将优先用于图像生成任务（角色定妆 / 分镜关键帧等），使用自有 Key 免生成积分。',
   video: '视频渠道将优先用于视频生成任务（分镜动态化 / 图生视频等），使用自有 Key 免生成积分。',
-  tts: '语音渠道将优先用于台词配音任务（按百炼 WS 推理协议调用，建议登记百炼 TTS 模型），使用自有 Key 免生成积分。',
+  tts: '语音渠道将优先用于台词配音任务（DashScope 原生语音模型走 SpeechSynthesizer HTTP 端点，如 qwen-audio-3.1-tts-next），使用自有 Key 免生成积分。',
 }
 
 /**
@@ -613,11 +613,11 @@ onMounted(async () => {
             <el-radio value="chat" :disabled="channelProtocol === 'dashscope'">文本对话</el-radio>
             <el-radio value="image">图像生成</el-radio>
             <el-radio value="video">视频生成</el-radio>
-            <el-radio value="tts" :disabled="channelProtocol === 'dashscope'">语音合成</el-radio>
+            <el-radio value="tts">语音合成</el-radio>
           </el-radio-group>
           <div class="field-tip">
-            {{ channelProtocol === 'dashscope' && (channelCapability === 'chat' || channelCapability === 'tts')
-              ? 'DashScope 原生格式不支持文本对话与语音合成，请选择图像或视频用途。'
+            {{ channelProtocol === 'dashscope' && channelCapability === 'chat'
+              ? 'DashScope 原生格式不支持文本对话，请选择图像、视频或语音用途（百炼文本模型请用 OpenAI 兼容格式登记）。'
               : (capabilityTips[channelCapability] ?? '') }}
           </div>
         </el-form-item>
@@ -667,7 +667,7 @@ onMounted(async () => {
           </div>
           <div class="field-tip">
             须与渠道服务端模型名一致（文本 deepseek-chat / gpt-5 / claude-sonnet-4-5，
-            图像 qwen-image-3.0，视频 wan2.7-i2v，语音 qwen-audio-tts-flash）；
+            图像 qwen-image-3.0，视频 wan2.7-i2v，语音 qwen-audio-3.1-tts-next / qwen-audio-3.1-tts-flash）；
             获取列表需已填写接口地址与 API 密钥。
           </div>
         </el-form-item>

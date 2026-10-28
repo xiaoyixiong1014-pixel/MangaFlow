@@ -620,8 +620,10 @@ async def test_channel(
       4xx 视为连通（参数合法性不代表渠道不可用，避免真实出图计费）；
     - 仅含 "video" 键：openai 协议向 {base}/videos 发极小主体请求；
       dashscope 协议向 video-synthesis 端点发无效模型请求（口径同上）；
-    - 仅含 "tts" 键：向 {base}/audio/speech 发最短文本请求（与平台渠道
-      健康探测口径一致；注意语音合成实际执行走百炼 WS 推理协议，本探测
+    - 仅含 "tts" 键：dashscope 协议向 SpeechSynthesizer HTTP 端点发无效
+      模型请求（qwen-audio-3.1-tts-next 等原生 HTTP 语音模型）；openai
+      协议向 {base}/audio/speech 发最短文本请求（与平台渠道健康探测口径
+      一致；注意 openai 协议语音合成实际执行走百炼 WS 推理协议，本探测
       仅验证地址与 Key 的鉴权层有效性）。
 
     Args:
@@ -663,7 +665,11 @@ async def test_channel(
             break
 
     api_key = _decrypt_api_key(channel.api_key_encrypted) or "missing-key"
-    if channel.protocol == "dashscope" and video_names:
+    if channel.protocol == "dashscope" and tts_names:
+        # DashScope 原生语音渠道（百炼 qwen-audio-3.1-tts-next 等）：
+        # SpeechSynthesizer HTTP 端点无效模型探测
+        ok, error = await _probe_dashscope_tts(channel.base_url, api_key)
+    elif channel.protocol == "dashscope" and video_names:
         # DashScope 原生视频渠道（百炼 wan 系列）：video-synthesis 端点无效模型探测
         ok, error = await _probe_dashscope_video(channel.base_url, api_key)
     elif channel.protocol == "dashscope":
@@ -762,6 +768,45 @@ async def _probe_dashscope_video(base_url: str, api_key: str) -> tuple:
         "model": "__probe_invalid_model__",
         "input": {"media": [{"type": "first_frame", "url": "data:image/png;base64,iVBORw0KGgo="}]},
         "parameters": {"duration": 2},
+    }
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code in (401, 403):
+            return False, f"鉴权失败（HTTP {resp.status_code}）"
+        if resp.status_code < 500:
+            return True, None
+        return False, f"HTTP {resp.status_code}: {resp.text[:200]}"
+    except Exception as exc:  # noqa: BLE001 —— 探测需要捕获一切异常
+        return False, str(exc)
+
+
+async def _probe_dashscope_tts(base_url: str, api_key: str) -> tuple:
+    """向 DashScope 原生语音合成端点发起无效模型探测（内部函数，不计费）。
+
+    以非法模型名同步提交语音合成请求（qwen-audio-3.1-tts-next 等走
+    SpeechSynthesizer HTTP 端点）：401/403 视为鉴权失败（down）；其余 4xx
+    （model not found 等参数错误）证明鉴权通过、端点可达（不会产生真实
+    合成计费）。
+
+    Args:
+        base_url: 渠道接口地址（根域名或带路径均可，含协议）。
+        api_key: 明文 API Key。
+
+    Returns:
+        tuple: (是否连通, 失败原因；成功为 None)。
+
+    Raises:
+        无：全部异常收敛进返回值。
+    """
+    root = base_url.rstrip("/")
+    if "://" in root:
+        root = root.split("://", 1)[0] + "://" + root.split("://", 1)[1].split("/", 1)[0]
+    url = f"{root}/api/v1/services/audio/tts/SpeechSynthesizer"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    payload = {
+        "model": "__probe_invalid_model__",
+        "input": {"text_prompt": "ping", "format": "wav"},
     }
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
