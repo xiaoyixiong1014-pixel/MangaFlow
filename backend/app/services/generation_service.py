@@ -760,6 +760,71 @@ def _strip_dialogue_speakers(dialogue: Optional[str]) -> str:
     return " ".join(x for x in lines if x)
 
 
+# 说话人名匹配时忽略的装饰字符（全半角空白/常见标点/括号引号——LLM 生成
+# 对白时说话人前缀可能混入空格、句点、括号情绪标注残留等噪声）
+_SPEAKER_STRIP_CHARS = "　\t .。,，!！?？~～·•-—_（）()[]【】\"'“”‘’：:"
+
+
+def _normalize_speaker(name: Optional[str]) -> str:
+    """说话人名规范化：剔除全部空白与装饰标点（内部辅助，模糊匹配预处理）。
+
+    Args:
+        name: 原始说话人名（对白行「说话人：台词」的前缀，可空）。
+
+    Returns:
+        str: 规范化后的名字（无空白/标点；输入为空时返回空串）。
+
+    Raises:
+        无：纯字符串处理，不产生异常路径。
+    """
+    return "".join(
+        c for c in str(name or "") if not c.isspace() and c not in _SPEAKER_STRIP_CHARS
+    )
+
+
+def _match_bound_character(
+    speaker: Optional[str], bound_by_name: Dict[str, "Character"]
+) -> Optional["Character"]:
+    """对白说话人 → 该镜绑定角色的容错匹配（内部辅助，配音音色对齐核心）。
+
+    LLM 生成的对白说话人名可能与角色库名存在细微漂移（简称/别名/夹带标点
+    空白），旧逻辑精确匹配失败后静默回退旁白音色，导致用户锁定的角色音色
+    失效。三级匹配逐步容错，全部失败返回 None（由调用方显式拦截报错）：
+
+    1. 精确匹配：speaker 与角色名逐字一致；
+    2. 规范化匹配：双方剔除空白/标点后比较（容忍「林小满 」vs「林小满」）；
+    3. 包含匹配：规范化后双向包含（容忍「小满」vs「林小满」简称/别名），
+       按角色名长度降序遍历，避免短名误吸长名。
+
+    Args:
+        speaker: 对白行说话人前缀（可空/None——旁白行）。
+        bound_by_name: 该镜绑定角色映射（角色名 → Character）。
+
+    Returns:
+        Optional[Character]: 匹配到的绑定角色；旁白行或全部匹配失败时 None。
+
+    Raises:
+        无：纯内存匹配，不产生异常路径。
+    """
+    if not speaker:
+        return None
+    ch = bound_by_name.get(speaker)
+    if ch is not None:
+        return ch
+    norm = _normalize_speaker(speaker)
+    if not norm:
+        return None
+    norm_map = {_normalize_speaker(n): c for n, c in bound_by_name.items()}
+    hit = norm_map.get(norm)
+    if hit is not None:
+        return hit
+    for name, c in sorted(bound_by_name.items(), key=lambda kv: -len(kv[0])):
+        nn = _normalize_speaker(name)
+        if nn and (nn in norm or norm in nn):
+            return c
+    return None
+
+
 # 情绪标签 → 语音表现乘数（语速乘数, 音调乘数）：叠加在 voice_note 基调上
 _EMOTION_MODIFIERS: Dict[str, Tuple[float, float]] = {
     "压抑": (0.92, 0.92), "低落": (0.9, 0.9), "悲伤": (0.85, 0.9), "沮丧": (0.9, 0.9),
@@ -833,7 +898,8 @@ async def create_tts_task(
         Task: 已落库的新配音任务（meta.segments 携带分段参数）。
 
     Raises:
-        HTTPException: 400 —— 分镜无可配音文本 / 说话人角色音色未锁定 /
+        HTTPException: 400 —— 分镜无可配音文本 / 对白说话人无法匹配绑定角色
+            （严格模式，静默回退会违背锁定音色）/ 说话人角色音色未锁定 /
             段下标越界；409 —— 积分不足 / 同镜同段配音任务进行中。
     """
     # 音频先行对白处理：剥离「说话人：」前缀只合成台词（角色名不进语音）。
@@ -875,8 +941,12 @@ async def create_tts_task(
     if emotion:
         base_speed, base_pitch = _apply_emotion(base_speed, base_pitch, emotion)
     # 段级构建：每个对白行独立音色/语速/音调（说话人角色锁定音色 +
-    # 自身 voice_note 推导 + 情绪叠加）；无匹配说话人行用旁白基调
+    # 自身 voice_note 推导 + 情绪叠加）；无说话人前缀的旁白行用旁白基调。
+    # 严格匹配（2026-10-29）：说话人经三级容错匹配（精确/规范化/包含）对齐
+    # 绑定角色，匹配失败的行收集后整镜 400 拦截——不再静默回退旁白音色
+    # （旧逻辑下 LLM 写简称/别名即导致用户锁定音色失效且门禁被绕过）
     segments: List[Dict] = []
+    unmatched_speakers: List[str] = []
     for line in str(storyboard.dialogue or "").splitlines():
         line = line.strip()
         if not line:
@@ -886,8 +956,12 @@ async def create_tts_task(
         seg_text = (m.group(2) if m else line).strip()
         if not seg_text:
             continue
-        ch = bound_by_name.get(speaker or "") if speaker else None
+        ch = _match_bound_character(speaker, bound_by_name) if speaker else None
+        if speaker and ch is None:
+            unmatched_speakers.append(speaker)
+            continue
         if ch is not None:
+            speaker = ch.name  # 统一为角色库名（段参数/字幕/前端展示一致）
             seg_voice = ch.voice_selected or resolve_voice(ch.voice_note, ch.gender)
             seg_speed, seg_pitch = resolve_speech_params(ch.voice_note)
         else:
@@ -902,6 +976,17 @@ async def create_tts_task(
             "speed": seg_speed,
             "pitch": seg_pitch,
         })
+    # 未识别说话人整镜拦截（先于段级下标校验：名字修正前下标不可信）；
+    # dict.fromkeys 去重保序，错误信息附绑定角色名单辅助用户修正
+    if unmatched_speakers:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"对白说话人「{'、'.join(dict.fromkeys(unmatched_speakers))}」无法匹配该镜"
+                f"绑定角色（{'、'.join(bound_by_name) or '无绑定角色'}）。"
+                "请修正分镜对白中的角色名（须与角色名单逐字一致）后再生成配音"
+            ),
+        )
     if not segments:
         segments = [{"speaker": "", "text": text, "voice": resolved_voice,
                      "speed": base_speed, "pitch": base_pitch}]
