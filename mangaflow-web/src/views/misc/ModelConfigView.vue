@@ -68,24 +68,46 @@ const capabilityKeyLabels: Record<string, string> = {
   tts: '语音合成',
 }
 
+/** Tab 键 → 渠道能力键映射（「文本」Tab 键为 llm，渠道 models 目录键为 chat，其余同名） */
+const TAB_CAPABILITY_KEY: Record<string, string> = {
+  llm: 'chat',
+  image: 'image',
+  video: 'video',
+  tts: 'tts',
+}
+
 /**
- * 读取渠道登记的能力键（内部函数）：models 目录第一个非空键。
+ * 判定渠道是否登记了指定能力（内部函数）：该能力键下模型列表非空即真。
  * @param ch 渠道对象
- * @returns 能力键（chat/image/video/tts）；未登记返回空串
+ * @param cap 能力键（chat/image/video/tts）
+ * @returns 登记了该能力返回 True
  */
-function channelCapabilityKey(ch: Channel): string {
+function channelHasCapability(ch: Channel, cap: string): boolean {
+  const list = (ch.models ?? {})[cap]
+  return Array.isArray(list) && list.length > 0
+}
+
+/**
+ * 读取渠道登记的全部能力键（内部函数，用途列多标签渲染用）。
+ * @param ch 渠道对象
+ * @returns 能力键数组（按 chat/image/video/tts 顺序，未登记为空数组）
+ */
+function channelCapabilityKeys(ch: Channel): string[] {
   const models = ch.models ?? {}
-  return CAPABILITY_KEYS.find((k) => {
+  return CAPABILITY_KEYS.filter((k) => {
     const v = models[k]
     return Array.isArray(v) && v.length > 0
-  }) ?? ''
+  })
 }
 
 /**
  * 当前能力 Tab 下的我的模型列表（随 Tab 联动过滤）。
+ * 按渠道是否登记了该能力判定（而非单一归属键）：一个渠道登记多个用途时，
+ * 会在每个对应分类下都可见，避免「添加后找不到」（旧逻辑单键归属，
+ * 用途选错分类时渠道看起来像凭空消失）。
  */
 const filteredChannels = computed<Channel[]>(() =>
-  channels.value.filter((ch) => channelCapabilityKey(ch) === capability.value))
+  channels.value.filter((ch) => channelHasCapability(ch, TAB_CAPABILITY_KEY[capability.value] ?? capability.value)))
 
 /** 健康状态中文与颜色映射 */
 const healthLabels: Record<string, { label: string; type: 'success' | 'warning' | 'danger' | 'info' }> = {
@@ -229,15 +251,26 @@ const capabilityTips: Record<string, string> = {
 }
 
 /**
- * 从渠道 models 目录提取模型 ID 列表（内部函数）：按 chat > image > video > tts
- * 优先级取第一个非空能力键。
+ * 渠道登记的全部模型 ID（内部函数）：聚合各能力键下的模型列表。
  * @param ch 渠道对象
- * @returns 模型 ID 字符串数组（结构异常时为空数组）
+ * @returns 模型 ID 列表（按 chat/image/video/tts 顺序聚合去重）
  */
 function channelModelList(ch: Channel): string[] {
   const models = ch.models ?? {}
-  const list = models['chat'] ?? models['image'] ?? models['video'] ?? models['tts']
-  return Array.isArray(list) ? list.map(String) : []
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const k of CAPABILITY_KEYS) {
+    const v = models[k]
+    if (!Array.isArray(v)) continue
+    for (const m of v) {
+      const s = String(m)
+      if (!seen.has(s)) {
+        seen.add(s)
+        list.push(s)
+      }
+    }
+  }
+  return list
 }
 
 /** 能力键优先级（编辑回显用） */
@@ -254,7 +287,10 @@ function openCreate(): void {
   channelForm.api_key = ''
   channelModels.value = []
   channelProtocol.value = 'openai'
-  channelCapability.value = 'chat'
+  // 模型用途默认跟随当前所在分类 Tab（旧逻辑固定 chat：在视频/语音 Tab
+  // 点「添加模型」而未改用途下拉时，渠道会被登记到文本分类下，看起来像
+  // 「添加后不显示」；Tab 键经映射转换为渠道能力键，llm → chat）
+  channelCapability.value = (TAB_CAPABILITY_KEY[capability.value] ?? 'chat') as typeof channelCapability.value
   modelOptions.value = []
   modelInput.value = ''
   probedOptionsShown.value = false
@@ -359,23 +395,24 @@ async function submitChannel(): Promise<void> {
         return
       }
       await catalogApi.addChannel({
-        name: channelForm.name.trim() || undefined,
+        // 名称留空时用首个模型 ID 兜底（避免列表里出现「未命名模型」）
+        name: channelForm.name.trim() || channelModels.value[0],
         protocol: channelProtocol.value,
         base_url: channelForm.base_url.trim(),
         api_key: channelForm.api_key.trim(),
         models,
       })
-      ElMessage.success('渠道已添加（Key 已加密保存）')
+      ElMessage.success(`渠道已添加（用途：${capabilityKeyLabels[channelCapability.value] ?? channelCapability.value}，Key 已加密保存）`)
     } else if (editingId.value != null) {
       await catalogApi.updateChannel(editingId.value, {
-        name: channelForm.name.trim(),
+        name: channelForm.name.trim() || channelModels.value[0],
         protocol: channelProtocol.value,
         base_url: channelForm.base_url.trim(),
         models,
         // 留空 = 保持原 Key；填写则更换（服务端加密覆盖）
         ...(channelForm.api_key.trim() ? { api_key: channelForm.api_key.trim() } : {}),
       })
-      ElMessage.success('渠道已更新（健康状态已重置，建议重新测试连通）')
+      ElMessage.success(`渠道已更新（用途：${capabilityKeyLabels[channelCapability.value] ?? channelCapability.value}，健康状态已重置，建议重新测试连通）`)
     }
     channelDialogVisible.value = false
     await fetchChannels()
@@ -487,7 +524,7 @@ onMounted(async () => {
         v-if="!channelsLoading && filteredChannels.length === 0"
         :description="channels.length === 0
           ? '还没有添加模型，官方模型已可直接使用'
-          : `当前「${capabilityTabs.find((t) => t.value === capability)?.label}」分类下暂无自有模型`"
+          : `当前「${capabilityTabs.find((t) => t.value === capability)?.label}」分类下暂无自有模型；若刚添加过模型，说明其「模型用途」登记在其他分类，切换上方分类即可看到`"
         :image-size="80"
       />
       <el-table v-else :data="filteredChannels" v-loading="channelsLoading" class="channel-table">
@@ -497,9 +534,16 @@ onMounted(async () => {
             <code class="model-ids">{{ channelModelList(row).join('、') }}</code>
           </template>
         </el-table-column>
-        <el-table-column label="用途" width="110">
+        <el-table-column label="用途" width="130">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ capabilityKeyLabels[channelCapabilityKey(row)] || '未设置' }}</el-tag>
+            <el-tag
+              v-for="cap in channelCapabilityKeys(row)"
+              :key="cap"
+              size="small"
+              effect="plain"
+              class="usage-tag"
+            >{{ capabilityKeyLabels[cap] || cap }}</el-tag>
+            <span v-if="!channelCapabilityKeys(row).length" class="usage-none">未设置</span>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="180">
@@ -797,6 +841,14 @@ onMounted(async () => {
   font-family: var(--mf-mono);
   font-size: var(--mf-fs-xs);
   color: var(--mf-text-2);
+}
+/* 用途列多标签间距（渠道登记多个能力时并排展示） */
+.usage-tag + .usage-tag {
+  margin-left: 4px;
+}
+.usage-none {
+  font-size: var(--mf-fs-xs);
+  color: var(--mf-text-3);
 }
 .field-tip {
   width: 100%;
