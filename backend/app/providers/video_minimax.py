@@ -207,8 +207,11 @@ async def generate_video_minimax(
                "Content-Type": "application/json"}
     poll_headers = {"Authorization": f"Bearer {channel.api_key}"}
 
-    # 首帧 data URI（v1 为 first_frame_image 字段；v2 追加进 content 消息数组）
+    # 首帧读取：v1 用 data URI（first_frame_image 字段）；v2 的 image_url
+    # 仅接受公网 URL（data URI 触发 2013 Mismatch type of schema），需把
+    # 本地首帧写盘后经 settings.public_base_url 暴露为公网直链
     data_uri: Optional[str] = None
+    img_bytes: Optional[bytes] = None
     if first_frame_path and first_frame_path.is_file():
         try:
             img_bytes = first_frame_path.read_bytes()
@@ -218,12 +221,30 @@ async def generate_video_minimax(
             logger.warning("渠道 %s 首帧图片读取失败，退化为文生视频：%s",
                            channel.name, first_frame_path)
 
+    # v2 首帧公网化：写盘 storage/generated → {PUBLIC_BASE_URL}/storage 直链
+    first_frame_url: Optional[str] = None
+    if use_v2 and img_bytes:
+        if settings.public_base_url:
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+                ff_name = f"ff_{seed}_{int(time.time())}.png"
+                (out_dir / ff_name).write_bytes(img_bytes)
+                first_frame_url = (f"{settings.public_base_url.rstrip('/')}"
+                                   f"{_URL_PREFIX}/{ff_name}")
+            except Exception:  # noqa: BLE001 —— 首帧公网化失败退化文生视频
+                logger.warning("渠道 %s v2 首帧公网化失败，退化文生视频：%s",
+                               channel.name, first_frame_path)
+        else:
+            logger.warning(
+                "渠道 %s v2 契约首帧需公网 URL（未配置 PUBLIC_BASE_URL），本次退化文生视频",
+                channel.name)
+
     # 请求体按契约版本构造：v1 旧式字段；v2 必填 content 消息数组
     # （curl 实测 v2 缺 content 返回 2013 binding: expr_path=content）
     if use_v2:
         content: list = [{"type": "text", "text": prompt}]
-        if data_uri:
-            content.append({"type": "image_url", "image_url": [data_uri]})
+        if first_frame_url:
+            content.append({"type": "image_url", "image_url": [first_frame_url]})
         payload: Dict = {"model": channel.model, "content": content}
     else:
         payload = {"model": channel.model, "prompt": prompt}
@@ -232,7 +253,7 @@ async def generate_video_minimax(
     logger.info(
         "渠道 %s MiniMax 视频任务提交（%s，model=%s，首帧=%s，期望时长=%ss）",
         channel.name, "v2/content 契约" if use_v2 else "v1 契约",
-        channel.model, bool(data_uri), duration_sec)
+        channel.model, bool(first_frame_url or data_uri), duration_sec)
 
     try:
         async with httpx.AsyncClient(timeout=_HTTP_TIMEOUT) as client:

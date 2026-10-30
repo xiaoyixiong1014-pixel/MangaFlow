@@ -151,6 +151,13 @@ class Settings(BaseSettings):
     video_poll_interval_seconds: int = 5
     video_poll_timeout_seconds: int = 300
 
+    # ---------- 站点公网地址（MiniMax v2 图生视频依赖，2026-10-30） ----------
+    # 站点对外访问地址（如 http://82.156.216.134:8006）：MiniMax v2 契约的
+    # image_url 仅接受公网 URL（data URI 触发 2013 Mismatch type of schema），
+    # 本地首帧写盘后经 {public_base_url}/storage/generated/xxx 暴露为公网直链；
+    # 留空时 v2 图生视频自动退化为文生视频（不影响 v1 data URI 路径）
+    public_base_url: str = ""
+
     # ---------- 口型同步（Wav2Lip 本地推理，2026-10-20） ----------
     # 配音生成后对分镜视频做口型对齐：True=该镜有配音时自动口型同步
     # （失败自动降级为不做口型同步，不阻断任务）；模型权重位于
